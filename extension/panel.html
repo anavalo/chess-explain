@@ -1,0 +1,65 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fafaf9; --card: #fff; --text: #1c1917; --muted: #78716c; --border: #e7e5e4;
+    --accent: #2563eb; --good: #15803d; --good-bg: #f0fdf4; --bad: #b91c1c; --bad-bg: #fef2f2;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1917; --card: #262220; --text: #e7e5e4; --muted: #a8a29e; --border: #3a3532;
+      --accent: #60a5fa; --good: #4ade80; --good-bg: #14261b; --bad: #f87171; --bad-bg: #2c1717;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { font: 15px/1.6 system-ui, -apple-system, sans-serif; margin: 0; padding: 16px; background: var(--bg); color: var(--text); }
+  h1 { font-size: 13px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin: 0 0 4px; }
+  .hint { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+  form { display: flex; gap: 8px; margin-bottom: 16px; }
+  input { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--card); color: var(--text); font: inherit; }
+  input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button { padding: 8px 16px; border: 0; border-radius: 8px; background: var(--accent); color: #fff; font: 600 14px system-ui, sans-serif; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: wait; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; margin-bottom: 12px; }
+  .moves { display: grid; gap: 6px; }
+  .move { display: flex; justify-content: space-between; align-items: center; padding: 6px 10px; border-radius: 8px; font-weight: 600; }
+  .move.best { background: var(--good-bg); color: var(--good); }
+  .move.compared { background: var(--bad-bg); color: var(--bad); }
+  .move small { font-weight: 400; opacity: .8; margin-right: auto; margin-left: 8px; }
+  .eval { font: 600 13px ui-monospace, monospace; }
+  .answer p { margin: 0 0 .8em; }
+  .answer p:last-child { margin-bottom: 0; }
+  .answer h3 { font-size: 15px; margin: 1em 0 .4em; }
+  .answer ul, .answer ol { margin: 0 0 .8em; padding-left: 1.3em; }
+  .answer li { margin: .25em 0; }
+  .answer strong { color: var(--text); font-weight: 650; }
+  .answer code { font: 13px ui-monospace, monospace; background: var(--bg); padding: 1px 4px; border-radius: 4px; }
+  details { color: var(--muted); font-size: 13px; }
+  summary { cursor: pointer; user-select: none; }
+  .line { font: 12px/1.5 ui-monospace, monospace; margin-top: 8px; word-break: break-word; }
+  .status { display: flex; align-items: center; gap: 10px; color: var(--muted); }
+  .spinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #settings { margin-bottom: 16px; font-size: 13px; color: var(--muted); }
+  #settings form { margin: 8px 0 4px; }
+  #settings button { background: var(--card); color: var(--text); border: 1px solid var(--border); }
+  .error { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
+</style>
+<h1>chess-explain</h1>
+<p class="hint">Why lichess's top move beats the next game move, or a move you type. Turn on lichess's engine first.</p>
+<details id="settings">
+  <summary>Anthropic API key: <span id="key-status">not set</span></summary>
+  <form id="key-form">
+    <input id="key" type="password" placeholder="sk-ant-..." autocomplete="off">
+    <button>Save</button>
+  </form>
+  Stored only in this browser profile (chrome.storage.local) and sent only to your local server.
+</details>
+<form id="form">
+  <input id="move" placeholder="Compare with (default: next game move)" autocomplete="off">
+  <button id="go">Explain</button>
+</form>
+<div id="out"></div>
+<script src="md.js"></script>
+<script src="panel.js"></script>
