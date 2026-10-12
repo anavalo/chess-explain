@@ -1,5 +1,6 @@
 import { explain as askClaude, handle, startEngines, uciEngine } from './explain.js';
 import { md } from './md.js';
+import { Chess, parseFen, parseSan } from './vendor/chessops.js';
 
 // Runs inside the lichess tab. The engine panel (.pv_box) only exists when lichess allows analysis,
 // which it never does during a live game.
@@ -74,15 +75,55 @@ function moveRow(parent, cls, label, m) {
   el('span', 'eval', { text: m.eval }, row);
 }
 
-function render(data) {
+const GLYPH = { king: '♚', queen: '♛', rook: '♜', bishop: '♝', knight: '♞', pawn: '♟' };
+
+/** Draws `pos` from the side to move's view (`flip` for Black) and highlights the last move. */
+function drawBoard(board, pos, flip, move) {
+  board.replaceChildren();
+  for (let i = 0; i < 64; i++) {
+    const row = i >> 3, col = i & 7;
+    const rank = flip ? row : 7 - row, file = flip ? 7 - col : col, sq = rank * 8 + file;
+    const p = pos.board.get(sq);
+    const last = move && (sq === move.from || sq === move.to) ? ' last' : '';
+    // U+FE0E keeps the pawn from turning into an emoji
+    el('div', `sq ${(rank + file) % 2 ? 'light' : 'dark'}${last}${p ? ' ' + p.color : ''}`, { text: p ? GLYPH[p.role] + '︎' : '' }, board);
+  }
+}
+
+/** An engine line ('12. you Bc3 [labels] (eval) 12... opp ...') as one button per move; each shows the board after it. */
+function lineRow(parent, label, line, start, board, flip) {
+  const row = el('div', 'line', { text: `${label}: ` }, parent);
+  let pos = start;
+  for (const [text, san] of line.matchAll(/\d+\.(?:\.\.)? (?:you|opp) (\S+).*?(?=\s\d+\.(?:\.\.)? (?:you|opp) |$)/g)) {
+    const mv = parseSan(pos, san);
+    if (!mv) break;
+    pos = pos.clone();
+    pos.play(mv);
+    const after = pos;
+    el('button', 'ply', { text }, row).onclick = e => {
+      parent.querySelector('.ply.on')?.classList.remove('on');
+      e.currentTarget.classList.add('on');
+      board.ariaLabel = `Position after ${san}`;
+      drawBoard(board, after, flip, mv);
+    };
+    row.append(' ');
+  }
+}
+
+function render(data, fen) {
   const moves = el('div', 'card moves');
   moveRow(moves, 'best', 'engine move', data.best);
   moveRow(moves, 'compared', 'compared', data.compared);
   el('div', 'card answer', { html: md(data.text) });
   const details = el('details', 'card');
-  el('summary', '', { text: 'Engine lines' }, details);
-  el('div', 'line', { text: `${data.best.move}: ${data.best.line}` }, details);
-  el('div', 'line', { text: `${data.compared.move}: ${data.compared.line}` }, details);
+  el('summary', '', { text: 'Engine lines (click a move to see the position)' }, details);
+  const start = Chess.fromSetup(parseFen(fen).unwrap()).unwrap(), flip = start.turn === 'black';
+  const board = el('div', 'board', {}, details);
+  board.role = 'img';
+  board.ariaLabel = 'Position before any move';
+  drawBoard(board, start, flip);
+  lineRow(details, data.best.move, data.best.line, start, board, flip);
+  lineRow(details, data.compared.move, data.compared.line, start, board, flip);
 }
 
 async function explain() {
@@ -110,7 +151,7 @@ async function explain() {
     const llm = (...args) => ((stage = 'Asking Claude'), askClaude(...args));
     const data = await Promise.race([handle(ready, { fen: b.fen, move, best: b.best, user: b.user }, apiKey, llm), crashed]);
     out.replaceChildren();
-    render(data);
+    render(data, b.fen);
   } catch (e) {
     console.error(e);
     out.replaceChildren();
