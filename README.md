@@ -77,7 +77,7 @@ lichess, for the fair-play check. See [PRIVACY.md](PRIVACY.md).
 
 ## Hacking on it
 
-The whole thing is about 600 lines of plain JavaScript, with no framework and no build step for
+The whole thing is about 800 lines of plain JavaScript, with no framework and no build step for
 the extension itself.
 
 - `extension/explain.js`: the core. Engine I/O, the fact builder, the prompt and the Claude call.
@@ -88,7 +88,7 @@ the extension itself.
 
 ### Command line
 
-The same code runs in [Node.js](https://nodejs.org/) (Node 24 or newer), without the extension:
+The same code runs in [Node.js](https://nodejs.org/) (Node 24.2 or newer), without the extension:
 
 ```sh
 ANTHROPIC_API_KEY=... node extension/explain.js "<FEN>" <move> [--vs <move>] [--effort low|medium|high] [--no-llm]
