@@ -368,9 +368,12 @@ Rules:
 5. Never mention moves, squares or pieces that are not supported by the facts. Under 120 words. No headings.
    Stop once the decisive point is made: do not narrate the rest of a line, and do not judge trades you were not told about.
 6. The board the player sees is the position before any move. When you describe something that happens later in a line,
-   name the moves that lead there first ("after 14...Rfe8 15.Nbd2 Ne7 16.g3 c5 17.a5 Bg4, 18.Ne5 attacks your bishop on g4"), so a piece
-   that moves during the line is never described as if it already stood there. Prefer the first few moves of a line:
-   later moves are less reliable. Always write move numbers as in that example, so it is clear which side plays each move.
+   name the moves that lead there first, so a piece that moves during the line is never described as if it already stood there.
+   Write every variation on its own line, starting on a new line, like this:
+   "Later your bishop on g4 gets attacked:
+   14...Rfe8 15.Nbd2 Ne7 16.g3 c5 17.a5 Bg4 18.Ne5"
+   Prefer the first few moves of a line: later moves are less reliable.
+   Always write move numbers as in that example, with no space after the dot, so it is clear which side plays each move.
 7. The "[line ends mid-exchange ...]" note is for you only: do not quote it, just do not count the last capture as final.`;
 
 export async function explain(facts, apiKey, effort = 'high') {
