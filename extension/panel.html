@@ -37,16 +37,6 @@
   .answer code { font: 13px ui-monospace, monospace; background: var(--bg); padding: 1px 4px; border-radius: 4px; }
   details { color: var(--muted); font-size: 13px; }
   summary { cursor: pointer; user-select: none; }
-  .line { font: 12px/1.5 ui-monospace, monospace; margin-top: 8px; word-break: break-word; }
-  .ply { all: unset; cursor: pointer; border-radius: 3px; }
-  .ply:hover, .ply.on { background: var(--border); color: var(--text); }
-  .ply:focus-visible { outline: 2px solid var(--accent); }
-  .board { display: grid; grid-template-columns: repeat(8, 1fr); width: min(100%, 288px); margin: 10px 0 4px; border-radius: 4px; overflow: hidden; }
-  .sq { aspect-ratio: 1; display: grid; place-items: center; font-size: 26px; line-height: 1; color: #000; }
-  .sq.light { background: #f0d9b5; }
-  .sq.dark { background: #b58863; }
-  .sq.last { box-shadow: inset 0 0 0 100px rgba(155, 199, 0, .41); }
-  .sq.white { color: #fff; text-shadow: 0 0 2px #000, 0 0 1px #000; }
   .status { display: flex; align-items: center; gap: 10px; color: var(--muted); }
   .spinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
