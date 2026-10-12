@@ -362,7 +362,9 @@ Rules:
 1. Explain why the alternative is better than the played move (or why the played move is fine, if the gap is small).
 2. If the line wins or loses material or mates, lead with the concrete tactic, using only moves from the given lines.
 3. Only if the SF 15.1 total gap is at least half the latest Stockfish gap, name the 2-3 biggest term differences in plain chess language, with their size in pawns.
-4. Otherwise do not list terms: the reason is in the line (a tactic, a trap, or a plan the classical rules cannot see). Point to the moves in the line that decide it. Never invent a reason.
+4. Otherwise the main reason is in the line (a tactic, a trap, or a plan the classical rules cannot see): point to the moves in the line that decide it. Never invent a reason.
+   You may still name up to two terms that favour the better move by at least 0.25 pawns each and match something in the line
+   (for example a bishop given up for a knight, or broken king pawns), as part of the reason, with their size. Never present them as the main reason.
 5. Never mention moves, squares or pieces that are not supported by the facts. Under 120 words. No headings.
    Stop once the decisive point is made: do not narrate the rest of a line, and do not judge trades you were not told about.
 6. The board the player sees is the position before any move. When you describe something that happens later in a line,
