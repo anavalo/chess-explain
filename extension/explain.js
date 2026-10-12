@@ -179,6 +179,7 @@ export function pins(pos, color) {
   for (const pinner of b[opposite(color)].intersect(b.bishop.union(b.rook).union(b.queen))) {
     const slider = b.get(pinner), seen = attacks(slider, pinner, occ);
     for (const pinned of seen.intersect(b[color]).diff(b.king)) {
+      if (attacks(b.get(pinned), pinned, occ).has(pinner)) continue; // it can just take the pinner
       // removing the pinned piece only extends the line through it: whatever is newly attacked stands behind it
       const behind = attacks(slider, pinner, occ.without(pinned)).diff(seen).intersect(b[color]).first();
       if (behind === undefined) continue;
