@@ -81,6 +81,7 @@ const position = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
 const fenOf = pos => makeFen(pos.toSetup());
 const play = (pos, uci) => { const p = pos.clone(); p.play(parseUci(uci)); return p; };
 const san = (pos, uci) => makeSan(pos, parseUci(uci));
+const moveNo = pos => `${pos.fullmoves}${pos.turn === 'white' ? '.' : '...'}`; // '12.' for White, '12...' for Black
 
 /** UCI as engines write it: castling is the king's two-square move (chessops plays it as king takes rook). */
 function toUci(pos, mv) {
@@ -116,7 +117,7 @@ function lineToLeaf(pos, pv, maxPlies = 12) {
   for (const uci of pv.slice(0, maxPlies)) {
     const mv = parseUci(uci);
     const noisy = isCapture(b, mv) || mv.promotion;
-    sans.push(san(b, uci));
+    sans.push(`${b.turn === 'white' || !sans.length ? moveNo(b) : ''}${san(b, uci)}`); // 25...Ng8 26.Qxg7+ Ke8
     b = play(b, uci);
     if (!b.isCheck()) {
       calm = [b, [...sans]]; // fallback when the whole line is noisy
@@ -169,7 +170,7 @@ function threats(pos, sq, attackedBefore, owner) {
   return out;
 }
 
-/** 'you Bc3 (-7.52) opp Bb4 (-7.50) you Bd2 (-7.68) opp Qxa1 [takes rook, material -5] (-7.38) ...':
+/** '12. you Bc3 (-7.52) 12... opp Bb4 (-7.50) 13. you Bd2 (-7.68) 13... opp Qxa1 [takes rook, material -5] (-7.38) ...':
     Stockfish 19's eval after every move, from the original mover's ("you") view. */
 async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20) {
   let b = pos, captured = false;
@@ -177,7 +178,7 @@ async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20) {
   for (const uci of pv.slice(0, maxPlies)) {
     const mv = parseUci(uci);
     const who = b.turn === pos.turn ? 'you' : 'opp';
-    let text = `${who} ${san(b, uci)}`;
+    let text = `${moveNo(b)} ${who} ${san(b, uci)}`;
     const labels = [];
     captured = isCapture(b, mv);
     if (captured) labels.push(`takes ${isEnPassant(b, mv) ? 'pawn' : b.board.getRole(mv.to)}`);
@@ -332,8 +333,8 @@ export async function buildFacts({ sf, sf15 }, fen, played, vs, nodes = NODES) {
 export const SYSTEM = `You are a chess coach for club players (around 1200-1800 rating).
 You get facts from two engines about one position and two candidate moves:
 - "latest_sf_eval" and "line_with_evals" come from the latest Stockfish. They are the truth about which move is better.
-  The player who asks is the side to move: call them "you". In "line_with_evals" every move is tagged "you" or "opp"
-  (opponent) and followed by the eval after it, from your view (in pawns, or mate). Always say who plays a move.
+  The player who asks is the side to move: call them "you". In "line_with_evals" every move has its move number ("12." for White,
+  "12..." for Black), is tagged "you" or "opp" (opponent) and is followed by the eval after it, from your view (in pawns, or mate). Always say who plays a move.
   Captures are labelled "[takes <piece>, material <balance>]"; the balance is in pawns from your view.
   Compare with "eval_before_any_move". If the eval collapses on the played move itself, the opponent's reply in that line
   is the refutation: explain what the reply threatens. Name lost pieces only from the capture labels.
@@ -365,9 +366,9 @@ Rules:
 5. Never mention moves, squares or pieces that are not supported by the facts. Under 120 words. No headings.
    Stop once the decisive point is made: do not narrate the rest of a line, and do not judge trades you were not told about.
 6. The board the player sees is the position before any move. When you describe something that happens later in a line,
-   name the moves that lead there first ("after Rfe8 Nbd2 Ne7 g3 c5 a5 Bg4, Ne5 attacks your bishop on g4"), so a piece
+   name the moves that lead there first ("after 14...Rfe8 15.Nbd2 Ne7 16.g3 c5 17.a5 Bg4, 18.Ne5 attacks your bishop on g4"), so a piece
    that moves during the line is never described as if it already stood there. Prefer the first few moves of a line:
-   later moves are less reliable.
+   later moves are less reliable. Always write move numbers as in that example, so it is clear which side plays each move.
 7. The "[line ends mid-exchange ...]" note is for you only: do not quote it, just do not count the last capture as final.`;
 
 export async function explain(facts, apiKey, effort = 'high') {
