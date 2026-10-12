@@ -44,7 +44,10 @@ your game. It will still be a blunder afterwards, and we can talk about it then.
 ## Install
 
 You need Chrome (or another Chromium-based browser) and an
-[Anthropic API key](https://console.anthropic.com/). An explanation is one short Claude Haiku call.
+[Anthropic API key](https://console.anthropic.com/). You pay Anthropic for what you use, and it is not
+much: an explanation is one call to Claude Haiku 5.5, Anthropic's smallest and cheapest model, with
+effort set to high so it thinks the facts through before it writes. The engines do the heavy lifting
+for free on your own machine; the model only has to put a one-page fact sheet into words.
 
 1. Install chess-explain from the
    [Chrome Web Store](https://chromewebstore.google.com/detail/bjdphipaglklkipdgnafphplndgplipc).
