@@ -49,6 +49,11 @@ much: an explanation is one call to Claude Haiku 5.5, Anthropic's smallest and c
 effort set to high so it thinks the facts through before it writes. The engines do the heavy lifting
 for free on your own machine; the model only has to put a one-page fact sheet into words.
 
+In numbers (Anthropic's prices as of October 2026): Haiku 5.5 costs $0.10 per million input tokens and
+$0.50 per million output tokens. An explanation sends about 3,000 tokens and gets back a short answer
+plus the model's thinking, which comes to a fraction of a cent. Even if the model used its whole
+16,000-token output limit, one explanation would cost less than one cent.
+
 1. Install chess-explain from the
    [Chrome Web Store](https://chromewebstore.google.com/detail/bjdphipaglklkipdgnafphplndgplipc).
    The listing is in review right now; until it goes live, install from source (below).
