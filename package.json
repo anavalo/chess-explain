@@ -4,6 +4,7 @@
   "type": "module",
   "license": "GPL-3.0-or-later",
   "scripts": {
+    "zip": "rm -f chess-explain.zip && cd extension && zip -qr ../chess-explain.zip . -x '*.DS_Store'",
     "vendor": "rm -rf extension/vendor && mkdir -p extension/vendor/stockfish/sf15 && echo \"export * from 'chessops'; export * from 'chessops/fen'; export * from 'chessops/san'; export { castlingSide } from 'chessops/chess';\" | esbuild --bundle --format=esm --outfile=extension/vendor/chessops.js && cd extension/vendor/stockfish && cp ../../../node_modules/sf19/bin/stockfish-19-lite.js ../../../node_modules/sf19/bin/stockfish-19-lite.wasm ../../../node_modules/sf19/Copying.txt . && cp ../../../node_modules/sf15/src/stockfish.js ../../../node_modules/sf15/src/stockfish.wasm sf15/ && echo '{\"type\": \"commonjs\"}' > package.json"
   },
   "devDependencies": {

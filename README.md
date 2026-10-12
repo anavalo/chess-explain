@@ -47,7 +47,7 @@ move played next in the game; type a move in the box to compare with that instea
 
 Each explanation takes about 15–25 seconds and one Claude Haiku call. The position, the engine lines
 and their evaluations are sent to Anthropic; your lichess username is sent only to lichess, for the
-fair-play check.
+fair-play check. See [PRIVACY.md](PRIVACY.md).
 
 ## Command line
 
