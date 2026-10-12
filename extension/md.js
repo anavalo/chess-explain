@@ -1,6 +1,6 @@
 // Minimal markdown for the model's answers: paragraphs, - / 1. lists, # headings, **bold**, *italic*, `code`.
 // HTML is escaped first, so the only tags in the output are the ones added here.
-function md(text) {
+export function md(text) {
   const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const inline = s => esc(s)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
@@ -30,5 +30,3 @@ function md(text) {
   flush();
   return html.join('');
 }
-
-if (typeof module !== 'undefined') module.exports = md;

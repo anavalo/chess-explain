@@ -1,4 +1,5 @@
-const SERVER = 'http://127.0.0.1:8765/explain';
+import { explain as askClaude, handle, startEngines, uciEngine } from './explain.js';
+import { md } from './md.js';
 
 // Runs inside the lichess tab. The engine panel (.pv_box) only exists when lichess allows analysis,
 // which it never does during a live game.
@@ -19,9 +20,20 @@ function readBoard() {
 }
 
 const out = document.getElementById('out');
+
+// Both Stockfish builds run as Web Workers for as long as the panel is open. Their threads need
+// SharedArrayBuffer, so the panel must be cross-origin isolated (the manifest's COOP/COEP keys).
+// Without it the engines hang without any error, so they are not started at all.
+const engines = crossOriginIsolated && startEngines(path => {
+  const w = new Worker(path);
+  const e = uciEngine(line => w.postMessage(line));
+  w.onmessage = m => e.onLine(m.data);
+  w.onerror = m => error(`Stockfish failed to start: ${m.message}`);
+  return e;
+});
 const keyInput = document.getElementById('key');
 
-// The key lives in chrome.storage.local (this profile only, never synced) and goes only to the local server.
+// The key lives in chrome.storage.local (this profile only, never synced) and goes only to api.anthropic.com.
 async function showKeyStatus() {
   const { apiKey } = await chrome.storage.local.get('apiKey');
   document.getElementById('key-status').textContent = apiKey ? `set (…${apiKey.slice(-4)})` : 'not set';
@@ -82,21 +94,23 @@ async function explain() {
 
   const status = el('div', 'card status');
   el('div', 'spinner', {}, status);
-  const label = el('span', '', { text: `Analysing ${move}…` }, status);
+  let stage = 'Starting Stockfish';
+  const label = el('span', '', { text: `${stage}…` }, status);
   const started = Date.now();
-  const timer = setInterval(() => (label.textContent = `Analysing ${move}… ${Math.round((Date.now() - started) / 1000)} s`), 1000);
+  const timer = setInterval(() => (label.textContent = `${stage}… ${Math.round((Date.now() - started) / 1000)} s`), 1000);
   try {
-    const r = await fetch(SERVER, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Anthropic-Key': apiKey },
-      body: JSON.stringify({ fen: b.fen, move, best: b.best, user: b.user }),
-    });
-    const data = await r.json();
+    if (!engines) throw new Error('Stockfish cannot start: the panel is not cross-origin isolated. Reload the extension at chrome://extensions.');
+    const ready = await Promise.race([engines, new Promise((_, fail) =>
+      setTimeout(() => fail(new Error('Stockfish did not start within 30 s.')), 30_000))]);
+    stage = `Analysing ${move}`;
+    const llm = (...args) => ((stage = 'Asking Claude'), askClaude(...args));
+    const data = await handle(ready, { fen: b.fen, move, best: b.best, user: b.user }, apiKey, llm);
     out.replaceChildren();
-    r.ok ? render(data) : error(data.error);
+    render(data);
   } catch (e) {
+    console.error(e);
     out.replaceChildren();
-    error(`Server not running? Start it with: uv run server.py (${e.message})`);
+    error(e.message);
   } finally {
     clearInterval(timer);
   }

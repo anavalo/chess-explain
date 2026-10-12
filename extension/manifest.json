@@ -2,19 +2,21 @@
   "manifest_version": 3,
   "name": "chess-explain",
   "version": "0.1",
-  "description": "Explains why lichess's engine move is better, using a local server.",
+  "description": "Explains why lichess's engine move is better. Stockfish runs in the browser.",
   "permissions": [
     "sidePanel",
     "scripting",
     "storage"
   ],
   "host_permissions": [
-    "https://lichess.org/*",
-    "http://127.0.0.1:8765/*"
+    "https://lichess.org/*"
   ],
   "background": {
     "service_worker": "background.js"
   },
+  "content_security_policy": { "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self';" },
+  "cross_origin_embedder_policy": { "value": "require-corp" },
+  "cross_origin_opener_policy": { "value": "same-origin" },
   "side_panel": {
     "default_path": "panel.html"
   },

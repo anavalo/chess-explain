@@ -3307,6 +3307,7 @@ export {
   between,
   bishopAttacks,
   boardEquals,
+  castlingSide,
   charToRole,
   compat_exports as compat,
   debug_exports as debug,
