@@ -274,7 +274,7 @@ export function endNotes(pos, you) {
 async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20) {
   let b = pos, captured = false;
   const out = [], seenTrapped = new Set();
-  for (const uci of pv.slice(0, maxPlies)) {
+  for (const [i, uci] of pv.slice(0, maxPlies).entries()) {
     const mv = parseUci(uci);
     const who = b.turn === pos.turn ? 'you' : 'opp';
     let text = `${moveNo(b)} ${who} ${san(b, uci)}`;
@@ -306,12 +306,44 @@ async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20) {
       // what the mover would play next if the other side passed: catches batteries, discovered attacks, mate threats
       const [, threat] = await opponentThreat(sf, b, nodes, score);
       if (threat && /[x+#]/.test(threat.move)) labels.push(`threatens ${threat.move}`); // quiet threats are mostly noise mid-line
+      const next = pv[i + 1] && parseUci(pv[i + 1]);
+      if (captured && next && next.to !== mv.to) {
+        const failed = await failedRecapture(sf, b, mv.to, score, nodes, pos.turn);
+        if (failed) labels.push(`${b.turn === pos.turn ? 'your' : "opp's"} recapture ${failed}`);
+      }
     }
     if (labels.length) text += ` [${labels.join(', ')}]`;
     out.push(`${text} (${ev})`);
   }
   if (out.length && captured) out.push('[line ends mid-exchange: a recapture may follow, so the last material count is not final]');
   return out.join(' ');
+}
+
+/** Moves as '2.gxf3 Qd7 3.f4 Qxh3'. */
+function sanLine(pos, ucis) {
+  let b = pos;
+  const out = [];
+  for (const u of ucis) {
+    out.push(`${b.turn === 'white' || !out.length ? moveNo(b) : ''}${san(b, u)}`);
+    b = play(b, u);
+  }
+  return out.join(' ');
+}
+
+/** The line didn't take back on `sq`: if the cheapest recapture loses at least a pawn more than the line's `score`
+    (side to move's view), returns '2.gxf3 fails: 2...Qd7 3.f4 Qxh3 (-8.47)', so a defended piece is not called undefended. */
+async function failedRecapture(sf, b, sq, score, nodes, you) {
+  let from;
+  for (const s of b.board[b.turn])
+    if (b.dests(s).has(sq) && (from === undefined || VALUE[b.board.getRole(s)] < VALUE[b.board.getRole(from)])) from = s;
+  if (from === undefined) return null;
+  const promotes = b.board.getRole(from) === 'pawn' && (squareRank(sq) === 0 || squareRank(sq) === 7);
+  const rec = makeUci({ from, to: sq, promotion: promotes ? 'queen' : undefined });
+  const after = play(b, rec);
+  if (after.isEnd()) return null;
+  const r = (await search(sf, after, nodes))[0];
+  if (cpOf(flip(r.score)) > cpOf(score) - 100) return null; // about as good: the line just preferred another move first
+  return `${sanLine(b, [rec])} fails: ${sanLine(after, r.pv.slice(0, 4))} (${scoreStr(pov(r.score, after, you))})`;
 }
 
 /** The piece on `sq` is attacked by a cheaper piece, or attacked more times than defended. */
@@ -446,6 +478,8 @@ You get facts from two engines about one position and two candidate moves:
   Captures are labelled "[takes <piece>, material <balance>]"; the balance is in pawns from your view.
   Compare with "eval_before_any_move". If the eval collapses on the played move itself, the opponent's reply in that line
   is the refutation: explain what the reply threatens. Name lost pieces only from the capture labels.
+  "<side> recapture 2.gxf3 fails: <moves> (<eval>)" means the captured piece was defended, but taking back loses to those moves:
+  say so and show them. Never call a piece undefended unless the facts say it is.
   Labels "check", "attacks your|opp's <piece> on <square>" and "threatens <move>" (what that side would play next if allowed) mark threats.
   "pins your|opp's <piece> on <square> to <piece> on <square>" means the first piece cannot move without exposing the second
   (to the king it cannot legally move at all), so it also cannot defend or recapture.
