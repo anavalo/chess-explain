@@ -8,8 +8,8 @@
 //   node extension/explain.js FEN MOVE [--vs MOVE] [--nodes N] [--effort low|medium|high] [--no-llm]
 
 import {
-  Chess, attacks, castlingSide, kingCastlesTo, makeFen, makeSan, makeSquare, makeUci, opposite, parseFen, parseSan,
-  parseUci,
+  Chess, SquareSet, attacks, castlingSide, kingCastlesTo, makeFen, makeSan, makeSquare, makeUci, opposite, parseFen,
+  parseSan, parseUci, pawnAttacks, squareFile, squareRank,
 } from './vendor/chessops.js';
 
 export const NODES = 2_000_000;
@@ -194,6 +194,81 @@ export function pins(pos, color) {
 const pinText = (pos, { pinned, behind }) =>
   `${pos.board.getRole(pinned)} on ${makeSquare(pinned)} to ${pos.board.getRole(behind)} on ${makeSquare(behind)}`;
 
+const LIGHT = SquareSet.lightSquares(), DARK = SquareSet.darkSquares();
+const CENTRE_FILES = [2, 3, 4, 5].map(f => SquareSet.fromFile(f)).reduce((a, b) => a.union(b)); // c-f
+const ahead = (color, sq) => (color === 'white' ? sq + 8 : sq - 8);
+const sameColour = sq => (LIGHT.has(sq) ? LIGHT : DARK);
+
+function hasBishopPair(board, color) {
+  const bishops = board.bishop.intersect(board[color]);
+  return bishops.intersects(LIGHT) && bishops.intersects(DARK);
+}
+
+/** A square on `color`'s 4th-6th rank, protected by a `color` pawn, that no enemy pawn can ever attack.
+    ponytail: an enemy pawn that is blocked still counts as able to attack it. */
+export function isOutpost(board, sq, color) {
+  const r = squareRank(sq), rel = color === 'white' ? r : 7 - r;
+  if (rel < 3 || rel > 5 || !pawnAttacks(opposite(color), sq).intersects(board.pawn.intersect(board[color]))) return false;
+  for (const p of board.pawn.intersect(board[opposite(color)]))
+    if (Math.abs(squareFile(p) - squareFile(sq)) === 1 && (color === 'white' ? squareRank(p) > r : squareRank(p) < r)) return false;
+  return true;
+}
+
+/** `color`'s isolated, doubled and backward pawns, as SF 15 defines them (src/pawns.cpp). */
+export function pawnWeaknesses(board, color) {
+  const own = board.pawn.intersect(board[color]), theirs = board.pawn.diff(own), out = new Set();
+  for (const p of own) {
+    const f = squareFile(p), file = SquareSet.fromFile(f), name = 'abcdefgh'[f];
+    const neighbours = own.intersect(SquareSet.fromFile(Math.max(f - 1, 0)).union(SquareSet.fromFile(Math.min(f + 1, 7)))).diff(file);
+    if (own.intersect(file).size() > 1) out.add(`${name}-pawns doubled`);
+    if (neighbours.isEmpty()) { out.add(`${name}-pawn isolated`); continue; }
+    // behind all its neighbours, and the square in front is blocked or attacked by an enemy pawn
+    const behind = [...neighbours].every(n => (color === 'white' ? squareRank(n) > squareRank(p) : squareRank(n) < squareRank(p)));
+    const up = ahead(color, p);
+    if (behind && (theirs.has(up) || pawnAttacks(color, up).intersects(theirs))) out.add(`pawn on ${makeSquare(p)} backward`);
+  }
+  return out;
+}
+
+/** Positional labels for move `uci` from `b` to `next`; `you` is the side the explanation is for. */
+export function moveLabels(b, next, uci, you) {
+  const mv = parseUci(uci), role = b.board.getRole(mv.from), victim = b.board.getRole(mv.to);
+  const owner = color => (color === you ? 'your' : "opp's"), labels = [];
+  // SF 15's Space term only counts squares behind your own pawns, so it hardly sees a pawn pushed forward
+  const rank = squareRank(mv.to) + 1;
+  if (role === 'pawn' && !isCapture(b, mv) && (b.turn === 'white' ? rank >= 4 : rank <= 5)) labels.push('pawn gains space');
+  if ((role === 'knight' || role === 'bishop') && isOutpost(next.board, mv.to, b.turn)) labels.push(`${role} on outpost ${makeSquare(mv.to)}`);
+  if (role === 'rook' && squareFile(mv.from) !== squareFile(mv.to)) {
+    const pawns = next.board.pawn.intersect(SquareSet.fromFile(squareFile(mv.to)));
+    if (pawns.isEmpty()) labels.push('rook on open file');
+    else if (!pawns.intersects(next.board[b.turn])) labels.push('rook on semi-open file');
+  }
+  const them = opposite(b.turn);
+  if (hasBishopPair(b.board, them) && !hasBishopPair(next.board, them)) labels.push(`${owner(them)} bishop pair gone`);
+  if (role === 'pawn' || victim === 'pawn' || isEnPassant(b, mv))
+    for (const color of [b.turn, them]) {
+      const before = pawnWeaknesses(b.board, color);
+      for (const w of pawnWeaknesses(next.board, color)) if (!before.has(w)) labels.push(`${owner(color)} ${w}`);
+    }
+  return labels;
+}
+
+/** Facts about the position at the end of a line: opposite-coloured bishops and bad bishops
+    (at least two own centre pawns on the bishop's colour, each blocked by an enemy pawn). */
+export function endNotes(pos, you) {
+  const b = pos.board, notes = [];
+  const w = b.bishop.intersect(b.white), k = b.bishop.intersect(b.black);
+  if (w.size() === 1 && k.size() === 1 && w.intersects(LIGHT) !== k.intersects(LIGHT)) notes.push('opposite-coloured bishops');
+  for (const sq of b.bishop) {
+    const color = b.getColor(sq), owner = color === you ? 'your' : "opp's";
+    const fixed = [...b.pawn.intersect(b[color]).intersect(sameColour(sq)).intersect(CENTRE_FILES)]
+      .filter(p => b.pawn.intersect(b[opposite(color)]).has(ahead(color, p)));
+    if (fixed.length >= 2)
+      notes.push(`${owner} bishop on ${makeSquare(sq)} is bad: ${owner} pawns on ${fixed.map(makeSquare).join(', ')} are fixed on its colour`);
+  }
+  return notes.length ? notes : null;
+}
+
 /** '12. you Bc3 (-7.52) 12... opp Bb4 (-7.50) 13. you Bd2 (-7.68) 13... opp Qxa1 [takes rook, material -5] (-7.38) ...':
     Stockfish 19's eval after every move, from the original mover's ("you") view. */
 async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20) {
@@ -206,12 +281,9 @@ async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20) {
     const labels = [];
     captured = isCapture(b, mv);
     if (captured) labels.push(`takes ${isEnPassant(b, mv) ? 'pawn' : b.board.getRole(mv.to)}`);
-    // SF 15's Space term only counts squares behind your own pawns, so it hardly sees a pawn pushed forward
-    const rank = (mv.to >> 3) + 1;
-    if (!captured && b.board.getRole(mv.from) === 'pawn' && (b.turn === 'white' ? rank >= 4 : rank <= 5))
-      labels.push('pawn gains space');
     const before = attacks(b.board.get(mv.from), mv.from, b.board.occupied);
     const pinsBefore = new Set(pins(b, opposite(b.turn)).map(p => `${p.pinner} ${p.pinned}`));
+    const prev = b;
     b = play(b, uci);
     if (b.isCheck()) labels.push('check');
     const owner = who === 'you' ? "opp's" : 'your';
@@ -219,6 +291,7 @@ async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20) {
     // new pins, by the moved piece or by a line it opened
     for (const p of pins(b, b.turn)) if (!pinsBefore.has(`${p.pinner} ${p.pinned}`)) labels.push(`pins ${owner} ${pinText(b, p)}`);
     if (captured) labels.push(`material ${signed(material(b, pos.turn))}`);
+    labels.push(...moveLabels(prev, b, uci, pos.turn));
     for (const sq of trapped(b)) {
       if (seenTrapped.has(sq)) continue;
       labels.push(`${owner} ${b.board.getRole(sq)} on ${makeSquare(sq)} is trapped`);
@@ -339,6 +412,7 @@ export async function buildFacts({ sf, sf15 }, fen, played, vs, nodes = NODES) {
       line_with_evals: await lineWithEvals(sf, pos, pv, lineNodes),
       explained_at_position_after: leafSans.join(' '),
       explained_fen: leaf ? fenOf(leaf) : null,
+      notes_at_that_position: leaf ? endNotes(leaf, pos.turn) : null,
       sf15_terms: leaf ? await sf15Terms(sf15, leaf, pos.turn) : {},
     };
     if (threat) lines[label].if_opp_plays_the_threat_at_once = await answerToThreat(sf, pos, mv, threat, lineNodes);
@@ -376,7 +450,11 @@ You get facts from two engines about one position and two candidate moves:
   "pins your|opp's <piece> on <square> to <piece> on <square>" means the first piece cannot move without exposing the second
   (to the king it cannot legally move at all), so it also cannot defend or recapture.
   "pawn gains space" marks a pawn pushed to its 4th rank or beyond; several on one wing are a pawn storm. The SF 15 "Space" term
-  hardly counts these, so name the space gain from the labels even when that term is small. "<piece> is trapped" means that piece is attacked and every
+  hardly counts these, so name the space gain from the labels even when that term is small.
+  Structure labels: "<knight|bishop> on outpost <square>" (a pawn-protected square on the 4th-6th rank that no enemy pawn can attack),
+  "rook on open|semi-open file", "<side> bishop pair gone", "<side> <file>-pawn isolated", "<side> <file>-pawns doubled",
+  "<side> pawn on <square> backward" (behind its neighbours, cannot safely advance). They often explain a terms difference.
+  "<piece> is trapped" means that piece is attacked and every
   square it can go to is unsafe: if a trapped piece is later captured, explain the trap (which moves attacked it and took
   away its squares), not just the capture. Describe threats, attacks and defences only from
   these labels; do not work out board geometry yourself.
@@ -390,6 +468,8 @@ You get facts from two engines about one position and two candidate moves:
   collapses, your move ignored the threat. When the threat decides the gap, lead with it: "the opponent threatened X; the
   better move answers it with Y; your move did not."
 - "sf15_terms" are Stockfish 15.1's hand-crafted evaluation terms, measured at the quiet position reached at the end of each line ("explained_at_position_after"). Their difference says WHY one move is better.
+  "notes_at_that_position" describes that same position: "opposite-coloured bishops" makes an endgame drawish even a pawn or two
+  down (SF 15 counts it in Winnable), and a bad bishop is one hemmed in by its own fixed centre pawns.
 
 Term meanings: Material = piece count. Imbalance = piece combinations (bishop pair, knights love pawns, two rooks overlap).
 Pawns = pawn structure (isolated, doubled, backward, connected). Knights/Bishops = outposts, bad bishop (own pawns on its colour, blocked centre), long diagonal, distance to king.

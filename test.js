@@ -2,8 +2,10 @@
 // thread (node-limited single-thread search is deterministic) and calls lichess for the fair-play check.
 // usage: node test.js   (about 3 minutes)
 import assert from 'node:assert/strict';
-import { Chess, parseFen, parseSquare } from './extension/vendor/chessops.js';
-import { Refused, handle, nodeEngines, pins, trapped } from './extension/explain.js';
+import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
+import {
+  Refused, endNotes, handle, isOutpost, moveLabels, nodeEngines, pawnWeaknesses, pins, trapped,
+} from './extension/explain.js';
 import { md } from './extension/md.js';
 
 const pos = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
@@ -25,6 +27,20 @@ assert.deepEqual(pins(pos('k7/1q6/2p5/8/8/8/6B1/K7 w - - 0 1'), 'black'),
   [{ pinner: parseSquare('g2'), pinned: parseSquare('c6'), behind: parseSquare('b7') }]);
 assert.deepEqual(pins(pos('k7/1p6/2q5/8/8/8/6B1/K7 w - - 0 1'), 'black'), []);
 assert.deepEqual(pins(pos('6k1/8/8/8/8/8/8/3r1RK1 w - - 0 1'), 'white'), []); // Rxd1 just takes the pinner
+
+// structure: outposts, pawn weaknesses, move labels, notes at the end of a line
+assert.equal(isOutpost(pos('4k3/8/8/8/4P3/8/8/4K3 w - - 0 1').board, parseSquare('d5'), 'white'), true);
+assert.equal(isOutpost(pos('4k3/8/2p5/8/4P3/8/8/4K3 w - - 0 1').board, parseSquare('d5'), 'white'), false); // ...c5 hits it
+assert.deepEqual([...pawnWeaknesses(pos('4k3/8/8/8/8/2P5/2P5/4K3 w - - 0 1').board, 'white')], ['c-pawns doubled', 'c-pawn isolated']);
+assert.deepEqual([...pawnWeaknesses(pos('4k3/8/8/4p3/2P1P3/3P4/8/4K3 w - - 0 1').board, 'white')], ['pawn on d3 backward']);
+const labels = (fen, uci) => { const p = pos(fen), q = p.clone(); q.play(parseUci(uci)); return moveLabels(p, q, uci, 'white'); };
+assert.deepEqual(labels('4k3/8/8/8/8/2n5/1PP5/4K3 w - - 0 1', 'b2c3'), ['your c-pawns doubled', 'your c-pawn isolated']);
+assert.deepEqual(labels('4k3/8/8/8/8/8/8/R3K3 w - - 0 1', 'a1d1'), ['rook on open file']);
+assert.deepEqual(labels('2b1kb2/8/8/8/8/8/8/2R1K3 w - - 0 1', 'c1c8'), ["opp's bishop pair gone"]);
+assert.deepEqual(labels('4k3/8/8/8/4P3/2N5/8/4K3 w - - 0 1', 'c3d5'), ['knight on outpost d5']);
+assert.deepEqual(endNotes(pos('2b1k3/8/8/8/8/8/8/2B1K3 w - - 0 1'), 'white'), ['opposite-coloured bishops']);
+assert.deepEqual(endNotes(pos('4k3/8/4p3/3pP3/3P4/8/8/2B1K3 w - - 0 1'), 'white'),
+  ['your bishop on c1 is bad: your pawns on d4, e5 are fixed on its colour']);
 
 const engines = await nodeEngines(1);
 let facts;
