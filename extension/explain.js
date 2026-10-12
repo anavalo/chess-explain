@@ -206,6 +206,10 @@ async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20) {
     const labels = [];
     captured = isCapture(b, mv);
     if (captured) labels.push(`takes ${isEnPassant(b, mv) ? 'pawn' : b.board.getRole(mv.to)}`);
+    // SF 15's Space term only counts squares behind your own pawns, so it hardly sees a pawn pushed forward
+    const rank = (mv.to >> 3) + 1;
+    if (!captured && b.board.getRole(mv.from) === 'pawn' && (b.turn === 'white' ? rank >= 4 : rank <= 5))
+      labels.push('pawn gains space');
     const before = attacks(b.board.get(mv.from), mv.from, b.board.occupied);
     const pinsBefore = new Set(pins(b, opposite(b.turn)).map(p => `${p.pinner} ${p.pinned}`));
     b = play(b, uci);
@@ -370,7 +374,9 @@ You get facts from two engines about one position and two candidate moves:
   is the refutation: explain what the reply threatens. Name lost pieces only from the capture labels.
   Labels "check", "attacks your|opp's <piece> on <square>" and "threatens <move>" (what that side would play next if allowed) mark threats.
   "pins your|opp's <piece> on <square> to <piece> on <square>" means the first piece cannot move without exposing the second
-  (to the king it cannot legally move at all), so it also cannot defend or recapture. "<piece> is trapped" means that piece is attacked and every
+  (to the king it cannot legally move at all), so it also cannot defend or recapture.
+  "pawn gains space" marks a pawn pushed to its 4th rank or beyond; several on one wing are a pawn storm. The SF 15 "Space" term
+  hardly counts these, so name the space gain from the labels even when that term is small. "<piece> is trapped" means that piece is attacked and every
   square it can go to is unsafe: if a trapped piece is later captured, explain the trap (which moves attacked it and took
   away its squares), not just the capture. Describe threats, attacks and defences only from
   these labels; do not work out board geometry yourself.

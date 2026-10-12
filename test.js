@@ -56,6 +56,8 @@ try {
   assert.match(r.compared.line, /opp Rxg6 \[takes queen/);
   r = await ask('r2q1rk1/pp1n1ppb/2p4p/b4p1P/3P4/2PBBN2/PP3PP1/R2QR1K1 w - - 0 16', 'Qd2', 'd1b3');
   assert.match(r.best.line, /you Qb3 \[[^\]]*pins opp's pawn on f7 to king on g8/);
+  r = await ask('r1br2k1/1pq1nppp/p1n1p3/8/2B1P3/1NQ1B3/PP3PPP/2R2RK1 w - - 0 1', 'Rcd1', 'f2f4');
+  assert.match(r.best.line, /^1\. you f4 \[pawn gains space\]/);
   console.log('ok');
 } finally {
   engines.quit();
