@@ -33,11 +33,14 @@ tell (logged out, network error), it refuses.
 Requirements: Chrome (or another Chromium-based browser) and an
 [Anthropic API key](https://console.anthropic.com/).
 
-1. Download or clone this repository.
-2. Open `chrome://extensions`, turn on Developer mode, click **Load unpacked** and pick the
-   `extension/` folder. Click the extension's toolbar icon to open the side panel.
+1. Install chess-explain from the
+   [Chrome Web Store](https://chromewebstore.google.com/detail/bjdphipaglklkipdgnafphplndgplipc).
+2. Click the extension's toolbar icon to open the side panel.
 3. Set your API key in the panel's settings. It is stored in `chrome.storage.local` (this browser
    profile only, not synced) and sent only to the Anthropic API.
+
+To run it from source instead, open `chrome://extensions`, turn on Developer mode, click
+**Load unpacked** and pick the `extension/` folder of a clone.
 
 ## Use
 
