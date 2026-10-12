@@ -155,7 +155,7 @@ function material(pos, color) {
 
 /** Enemy pieces newly attacked by the piece that just moved to `sq`, if worth more than it
     or attacked more times than defended. `owner` ("your"/"opp's") names whose pieces they are.
-    ponytail: direct attacks only; discovered attacks and pins are not labelled. */
+    ponytail: direct attacks only; discovered attacks are not labelled. */
 function threats(pos, sq, attackedBefore, owner) {
   const mover = pos.board.get(sq), out = [];
   for (const t of attacks(mover, sq, pos.board.occupied).intersect(pos.board[opposite(mover.color)])) {
@@ -170,6 +170,29 @@ function threats(pos, sq, attackedBefore, owner) {
   return out;
 }
 
+/** Pins against `color`: an enemy bishop, rook or queen attacks a `color` piece, and behind it stands the king,
+    or a more valuable piece the pinner could win (worth more than the pinner, or undefended).
+    Returns [{pinner, pinned, behind}] (squares).
+    ponytail: skewers (the more valuable piece in front) are not reported. */
+export function pins(pos, color) {
+  const out = [], b = pos.board, occ = b.occupied;
+  for (const pinner of b[opposite(color)].intersect(b.bishop.union(b.rook).union(b.queen))) {
+    const slider = b.get(pinner), seen = attacks(slider, pinner, occ);
+    for (const pinned of seen.intersect(b[color]).diff(b.king)) {
+      // removing the pinned piece only extends the line through it: whatever is newly attacked stands behind it
+      const behind = attacks(slider, pinner, occ.without(pinned)).diff(seen).intersect(b[color]).first();
+      if (behind === undefined) continue;
+      const v = VALUE[b.getRole(behind)];
+      if (v > VALUE[b.getRole(pinned)] && (v > VALUE[slider.role] || attackers(pos, color, behind).isEmpty()))
+        out.push({ pinner, pinned, behind });
+    }
+  }
+  return out;
+}
+
+const pinText = (pos, { pinned, behind }) =>
+  `${pos.board.getRole(pinned)} on ${makeSquare(pinned)} to ${pos.board.getRole(behind)} on ${makeSquare(behind)}`;
+
 /** '12. you Bc3 (-7.52) 12... opp Bb4 (-7.50) 13. you Bd2 (-7.68) 13... opp Qxa1 [takes rook, material -5] (-7.38) ...':
     Stockfish 19's eval after every move, from the original mover's ("you") view. */
 async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20) {
@@ -183,13 +206,16 @@ async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20) {
     captured = isCapture(b, mv);
     if (captured) labels.push(`takes ${isEnPassant(b, mv) ? 'pawn' : b.board.getRole(mv.to)}`);
     const before = attacks(b.board.get(mv.from), mv.from, b.board.occupied);
+    const pinsBefore = new Set(pins(b, opposite(b.turn)).map(p => `${p.pinner} ${p.pinned}`));
     b = play(b, uci);
     if (b.isCheck()) labels.push('check');
-    labels.push(...threats(b, mv.to, before, who === 'you' ? "opp's" : 'your'));
+    const owner = who === 'you' ? "opp's" : 'your';
+    labels.push(...threats(b, mv.to, before, owner));
+    // new pins, by the moved piece or by a line it opened
+    for (const p of pins(b, b.turn)) if (!pinsBefore.has(`${p.pinner} ${p.pinned}`)) labels.push(`pins ${owner} ${pinText(b, p)}`);
     if (captured) labels.push(`material ${signed(material(b, pos.turn))}`);
     for (const sq of trapped(b)) {
       if (seenTrapped.has(sq)) continue;
-      const owner = b.turn === pos.turn ? 'your' : "opp's";
       labels.push(`${owner} ${b.board.getRole(sq)} on ${makeSquare(sq)} is trapped`);
       seenTrapped.add(sq);
     }
@@ -250,14 +276,17 @@ export function trapped(pos) {
   return out;
 }
 
-/** What is already on the board before you move: check, your loose pieces, enemy pieces you can win. */
+/** What is already on the board before you move: check, loose pieces, pins. */
 function positionBefore(pos) {
   const checkers = [...pos.ctx().checkers].map(s => `${pos.board.getRole(s)} on ${makeSquare(s)}`);
   const or = list => (list.length ? list : null);
+  const pinned = color => or(pins(pos, color).map(p => `${pinText(pos, p)}, by ${pos.board.getRole(p.pinner)} on ${makeSquare(p.pinner)}`));
   return {
     you_are_in_check_from: or(checkers),
     your_pieces_in_danger: or(loosePieces(pos, pos.turn)),
     opponent_pieces_you_can_win: or(loosePieces(pos, opposite(pos.turn))),
+    your_pinned_pieces: pinned(pos.turn),
+    opponent_pinned_pieces: pinned(opposite(pos.turn)),
   };
 }
 
@@ -338,12 +367,14 @@ You get facts from two engines about one position and two candidate moves:
   Captures are labelled "[takes <piece>, material <balance>]"; the balance is in pawns from your view.
   Compare with "eval_before_any_move". If the eval collapses on the played move itself, the opponent's reply in that line
   is the refutation: explain what the reply threatens. Name lost pieces only from the capture labels.
-  Labels "check", "attacks your|opp's <piece> on <square>" and "threatens <move>" (what that side would play next if allowed) mark threats. "<piece> is trapped" means that piece is attacked and every
+  Labels "check", "attacks your|opp's <piece> on <square>" and "threatens <move>" (what that side would play next if allowed) mark threats.
+  "pins your|opp's <piece> on <square> to <piece> on <square>" means the first piece cannot move without exposing the second
+  (to the king it cannot legally move at all), so it also cannot defend or recapture. "<piece> is trapped" means that piece is attacked and every
   square it can go to is unsafe: if a trapped piece is later captured, explain the trap (which moves attacked it and took
   away its squares), not just the capture. Describe threats, attacks and defences only from
   these labels; do not work out board geometry yourself.
 - "position_before_move" lists what was already on the board: a check you had to answer, your pieces in danger,
-  and opponent pieces you could win. A blunder often ignores one of these: say so first when it applies.
+  opponent pieces you could win, and pinned pieces on both sides. A blunder often ignores one of these: say so first when it applies.
   If "you_are_in_check_from" is set, your first sentence must say you were in check and from which piece,
   and that every legal move had to answer that check. If it is null, do not mention check at all.
 - "opponent_threat" (when not null) is what the opponent would play if you could pass a move, and the eval it would reach.
@@ -374,7 +405,10 @@ Rules:
    14...Rfe8 15.Nbd2 Ne7 16.g3 c5 17.a5 Bg4 18.Ne5"
    Prefer the first few moves of a line: later moves are less reliable.
    Always write move numbers as in that example, with no space after the dot, so it is clear which side plays each move.
-7. The "[line ends mid-exchange ...]" note is for you only: do not quote it, just do not count the last capture as final.`;
+7. The "[line ends mid-exchange ...]" note is for you only: do not quote it, just do not count the last capture as final.
+8. Only the first move of each line is a choice being judged. Every later move is the engine's best play for both sides:
+   never call one careless, a mistake or the cause of the problem. If the eval shifts inside a line, the reason is the
+   first move, not a later one.`;
 
 export async function explain(facts, apiKey, effort = 'high') {
   const r = await fetch('https://api.anthropic.com/v1/messages', {

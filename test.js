@@ -3,7 +3,7 @@
 // usage: node test.js   (about 3 minutes)
 import assert from 'node:assert/strict';
 import { Chess, parseFen, parseSquare } from './extension/vendor/chessops.js';
-import { Refused, handle, nodeEngines, trapped } from './extension/explain.js';
+import { Refused, handle, nodeEngines, pins, trapped } from './extension/explain.js';
 import { md } from './extension/md.js';
 
 const pos = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
@@ -19,6 +19,11 @@ assert.equal(md('Qxh2# and 2*3'), '<p>Qxh2# and 2*3</p>');
 // white bishop on a7: attacked by the rook, b6 is covered by the c7 pawn, b8 by the rook
 assert.deepEqual(trapped(pos('r3k3/B1p5/1p6/8/8/8/8/4K3 w - - 0 1')), [parseSquare('a7')]);
 assert.deepEqual(trapped(pos('r3k3/B7/1p6/8/8/8/8/4K3 w - - 0 1')), []); // Bxb6 escapes
+
+// bishop on g2 pins the c6 pawn to the queen on b7; with queen and pawn swapped it is a skewer, not a pin
+assert.deepEqual(pins(pos('k7/1q6/2p5/8/8/8/6B1/K7 w - - 0 1'), 'black'),
+  [{ pinner: parseSquare('g2'), pinned: parseSquare('c6'), behind: parseSquare('b7') }]);
+assert.deepEqual(pins(pos('k7/1p6/2q5/8/8/8/6B1/K7 w - - 0 1'), 'black'), []);
 
 const engines = await nodeEngines(1);
 let facts;
@@ -48,6 +53,8 @@ try {
   assert.match(facts.alternative.if_opp_plays_the_threat_at_once, /opp Bxc4 .* you Bxa5 \[takes queen/);
   r = await ask('2bq4/r4kb1/n3pn1r/p2pB1Qp/P2P2p1/N1PB4/5PPP/R4RK1 w - - 12 25', 'Qg6+', 'f2f3');
   assert.match(r.compared.line, /opp Rxg6 \[takes queen/);
+  r = await ask('r2q1rk1/pp1n1ppb/2p4p/b4p1P/3P4/2PBBN2/PP3PP1/R2QR1K1 w - - 0 16', 'Qd2', 'd1b3');
+  assert.match(r.best.line, /you Qb3 \[[^\]]*pins opp's pawn on f7 to king on g8/);
   console.log('ok');
 } finally {
   engines.quit();
