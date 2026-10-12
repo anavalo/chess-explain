@@ -24,11 +24,15 @@ const out = document.getElementById('out');
 // Both Stockfish builds run as Web Workers for as long as the panel is open. Their threads need
 // SharedArrayBuffer, so the panel must be cross-origin isolated (the manifest's COOP/COEP keys).
 // Without it the engines hang without any error, so they are not started at all.
+// A crashed worker never answers again, so `crashed` rejects every request from then on.
+let crash;
+const crashed = new Promise((_, fail) => (crash = fail));
+crashed.catch(() => {});
 const engines = crossOriginIsolated && startEngines(path => {
   const w = new Worker(path);
   const e = uciEngine(line => w.postMessage(line));
   w.onmessage = m => e.onLine(m.data);
-  w.onerror = m => error(`Stockfish failed to start: ${m.message}`);
+  w.onerror = m => crash(new Error(`Stockfish crashed (${m.message}). Close and reopen the panel.`));
   return e;
 });
 const keyInput = document.getElementById('key');
@@ -100,11 +104,11 @@ async function explain() {
   const timer = setInterval(() => (label.textContent = `${stage}… ${Math.round((Date.now() - started) / 1000)} s`), 1000);
   try {
     if (!engines) throw new Error('Stockfish cannot start: the panel is not cross-origin isolated. Reload the extension at chrome://extensions.');
-    const ready = await Promise.race([engines, new Promise((_, fail) =>
+    const ready = await Promise.race([engines, crashed, new Promise((_, fail) =>
       setTimeout(() => fail(new Error('Stockfish did not start within 30 s.')), 30_000))]);
     stage = `Analysing ${move}`;
     const llm = (...args) => ((stage = 'Asking Claude'), askClaude(...args));
-    const data = await handle(ready, { fen: b.fen, move, best: b.best, user: b.user }, apiKey, llm);
+    const data = await Promise.race([handle(ready, { fen: b.fen, move, best: b.best, user: b.user }, apiKey, llm), crashed]);
     out.replaceChildren();
     render(data);
   } catch (e) {

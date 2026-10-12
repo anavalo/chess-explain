@@ -291,8 +291,9 @@ export async function buildFacts({ sf, sf15 }, fen, played, vs, nodes = NODES) {
   let other = vs;
   if (!other) {
     const infos = await search(sf, pos, nodes, { multipv: 2 });
-    other = infos[0].pv[0] !== played ? infos[0].pv[0] : infos[1].pv[0];
+    other = infos.map(i => i.pv[0]).find(m => m !== played);
   }
+  if (!played || !other) throw new Error('There is only one legal move here: nothing to compare.');
   const lineNodes = Math.max(Math.floor(nodes / 10), 100_000);
   const lines = {};
   for (const [label, mv] of [['played', played], ['alternative', other]]) {
@@ -442,10 +443,11 @@ export async function handle(engines, req, apiKey, llm = explain) {
 export async function nodeEngines(threads = THREADS) {
   const { spawn } = await import('node:child_process');
   const { createInterface } = await import('node:readline');
+  const { fileURLToPath } = await import('node:url');
   const procs = [];
   const start = path => {
     // the SF 15 build's old emscripten loader breaks on node's fetch
-    const p = spawn(process.execPath, ['--import', 'data:text/javascript,delete globalThis.fetch', new URL(path, import.meta.url).pathname]);
+    const p = spawn(process.execPath, ['--import', 'data:text/javascript,delete globalThis.fetch', fileURLToPath(new URL(path, import.meta.url))]);
     procs.push(p);
     const e = uciEngine(l => p.stdin.write(l + '\n'));
     createInterface({ input: p.stdout }).on('line', e.onLine);
@@ -454,7 +456,7 @@ export async function nodeEngines(threads = THREADS) {
   return { ...await startEngines(start, threads), quit: () => procs.forEach(p => p.stdin.end('quit\n')) };
 }
 
-if (globalThis.process?.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop())) {
+if (import.meta.main) { // node 24.2+; undefined in the browser
   const { parseArgs } = await import('node:util');
   const { values: o, positionals: [fen, move] } = parseArgs({
     allowPositionals: true,
