@@ -15,6 +15,8 @@ reply), and asks Claude to turn them into a few sentences a human can use.
 
 Free, open source, and no server of ours anywhere: the engines run on your machine.
 
+**[Install chess-explain from the Chrome Web Store](https://chromewebstore.google.com/detail/chess-explain/bjdphipaglklkipdgnafphplndgplipc)**
+
 ## How it works
 
 1. The side panel reads the position, lichess's top engine move, and the next game move from the
@@ -55,7 +57,7 @@ plus the model's thinking, which comes to a fraction of a cent. Even if the mode
 16,000-token output limit, one explanation would cost less than one cent.
 
 1. Install chess-explain from the
-   [Chrome Web Store](https://chromewebstore.google.com/detail/bjdphipaglklkipdgnafphplndgplipc).
+   [Chrome Web Store](https://chromewebstore.google.com/detail/chess-explain/bjdphipaglklkipdgnafphplndgplipc).
 2. Click the extension's toolbar icon to open the side panel.
 3. Set your API key in the panel's settings. It is stored in `chrome.storage.local` (this browser
    profile only, not synced) and sent only to the Anthropic API.
