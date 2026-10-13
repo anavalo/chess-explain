@@ -270,13 +270,14 @@ export function endNotes(pos, you) {
 }
 
 /** '12. you Bc3 (-7.52) 12... opp Bb4 (-7.50) 13. you Bd2 (-7.68) 13... opp Qxa1 [takes rook, material -5] (-7.38) ...':
-    Stockfish 19's eval after every move, from the original mover's ("you") view. */
-async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20) {
+    Stockfish 19's eval after every move, from `you`'s view. A skipped recapture that loses is played out on its own line below.
+    `nested` is set for those lines, so they do not branch again. */
+async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20, you = pos.turn, nested = false) {
   let b = pos, captured = false;
-  const out = [], seenTrapped = new Set();
+  const out = [], why = [], seenTrapped = new Set();
   for (const [i, uci] of pv.slice(0, maxPlies).entries()) {
     const mv = parseUci(uci);
-    const who = b.turn === pos.turn ? 'you' : 'opp';
+    const who = b.turn === you ? 'you' : 'opp';
     let text = `${moveNo(b)} ${who} ${san(b, uci)}`;
     const labels = [];
     captured = isCapture(b, mv);
@@ -290,8 +291,8 @@ async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20) {
     labels.push(...threats(b, mv.to, before, owner));
     // new pins, by the moved piece or by a line it opened
     for (const p of pins(b, b.turn)) if (!pinsBefore.has(`${p.pinner} ${p.pinned}`)) labels.push(`pins ${owner} ${pinText(b, p)}`);
-    if (captured) labels.push(`material ${signed(material(b, pos.turn))}`);
-    labels.push(...moveLabels(prev, b, uci, pos.turn));
+    if (captured) labels.push(`material ${signed(material(b, you))}`);
+    labels.push(...moveLabels(prev, b, uci, you));
     for (const sq of trapped(b)) {
       if (seenTrapped.has(sq)) continue;
       labels.push(`${owner} ${b.board.getRole(sq)} on ${makeSquare(sq)} is trapped`);
@@ -302,37 +303,28 @@ async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20) {
     else if (b.isEnd()) ev = 'draw';
     else {
       const { score } = (await search(sf, b, nodes))[0];
-      ev = scoreStr(pov(score, b, pos.turn));
+      ev = scoreStr(pov(score, b, you));
       // what the mover would play next if the other side passed: catches batteries, discovered attacks, mate threats
       const [, threat] = await opponentThreat(sf, b, nodes, score);
       if (threat && /[x+#]/.test(threat.move)) labels.push(`threatens ${threat.move}`); // quiet threats are mostly noise mid-line
       const next = pv[i + 1] && parseUci(pv[i + 1]);
-      if (captured && next && next.to !== mv.to) {
-        const failed = await failedRecapture(sf, b, mv.to, score, nodes, pos.turn);
-        if (failed) labels.push(`${b.turn === pos.turn ? 'your' : "opp's"} recapture ${failed}`);
+      const failed = captured && !nested && next && next.to !== mv.to && await failedRecapture(sf, b, mv.to, score, nodes);
+      if (failed) {
+        const rec = `${moveNo(b)}${san(b, failed[0])}`;
+        labels.push(`${b.turn === you ? 'your' : "opp's"} recapture ${rec} fails (line below)`);
+        why.push(`Why ${rec} fails: ${await lineWithEvals(sf, b, failed, nodes, 7, you, true)}`);
       }
     }
     if (labels.length) text += ` [${labels.join(', ')}]`;
     out.push(`${text} (${ev})`);
   }
   if (out.length && captured) out.push('[line ends mid-exchange: a recapture may follow, so the last material count is not final]');
-  return out.join(' ');
-}
-
-/** Moves as '2.gxf3 Qd7 3.f4 Qxh3'. */
-function sanLine(pos, ucis) {
-  let b = pos;
-  const out = [];
-  for (const u of ucis) {
-    out.push(`${b.turn === 'white' || !out.length ? moveNo(b) : ''}${san(b, u)}`);
-    b = play(b, u);
-  }
-  return out.join(' ');
+  return [out.join(' '), ...why].join('\n');
 }
 
 /** The line didn't take back on `sq`: if the cheapest recapture loses at least a pawn more than the line's `score`
-    (side to move's view), returns '2.gxf3 fails: 2...Qd7 3.f4 Qxh3 (-8.47)', so a defended piece is not called undefended. */
-async function failedRecapture(sf, b, sq, score, nodes, you) {
+    (side to move's view), returns it with the engine's best reply line (UCI), so a defended piece is not called undefended. */
+async function failedRecapture(sf, b, sq, score, nodes) {
   let from;
   for (const s of b.board[b.turn])
     if (b.dests(s).has(sq) && (from === undefined || VALUE[b.board.getRole(s)] < VALUE[b.board.getRole(from)])) from = s;
@@ -343,7 +335,7 @@ async function failedRecapture(sf, b, sq, score, nodes, you) {
   if (after.isEnd()) return null;
   const r = (await search(sf, after, nodes))[0];
   if (cpOf(flip(r.score)) > cpOf(score) - 100) return null; // about as good: the line just preferred another move first
-  return `${sanLine(b, [rec])} fails: ${sanLine(after, r.pv.slice(0, 4))} (${scoreStr(pov(r.score, after, you))})`;
+  return [rec, ...r.pv];
 }
 
 /** The piece on `sq` is attacked by a cheaper piece, or attacked more times than defended. */
@@ -478,8 +470,9 @@ You get facts from two engines about one position and two candidate moves:
   Captures are labelled "[takes <piece>, material <balance>]"; the balance is in pawns from your view.
   Compare with "eval_before_any_move". If the eval collapses on the played move itself, the opponent's reply in that line
   is the refutation: explain what the reply threatens. Name lost pieces only from the capture labels.
-  "<side> recapture 2.gxf3 fails: <moves> (<eval>)" means the captured piece was defended, but taking back loses to those moves:
-  say so and show them. Never call a piece undefended unless the facts say it is.
+  "<side> recapture 2.gxf3 fails (line below)" means the captured piece was defended, but taking back loses: the line after
+  "Why 2.gxf3 fails:" plays it out. Explain from its labels what goes wrong (for example the threat it allows) and show its first
+  moves. Never call a piece undefended, lost for free or a free shot unless the facts say it is undefended.
   Labels "check", "attacks your|opp's <piece> on <square>" and "threatens <move>" (what that side would play next if allowed) mark threats.
   "pins your|opp's <piece> on <square> to <piece> on <square>" means the first piece cannot move without exposing the second
   (to the king it cannot legally move at all), so it also cannot defend or recapture.

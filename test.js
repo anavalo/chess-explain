@@ -76,7 +76,8 @@ try {
   assert.match(r.best.line, /^1\. you f4 \[pawn gains space\]/);
   // the knight on f3 is defended, but gxf3 opens the king: the line must say why White does not take back
   r = await ask('r2qr1k1/ppp2ppp/2bb1pn1/8/2PP4/4BN1P/PP1QNPP1/2R2RK1 w - - 0 1', 'b4', 'd4d5');
-  assert.match(r.compared.line, /opp Bxf3 \[takes knight, material -3, your recapture 2\.gxf3 fails: 2\.\.\.Q/);
+  assert.match(r.compared.line, /opp Bxf3 \[takes knight, material -3, your recapture 2\.gxf3 fails \(line below\)\]/);
+  assert.match(r.compared.line, /\nWhy 2\.gxf3 fails: 2\. you gxf3 \[takes bishop/);
   console.log('ok');
 } finally {
   engines.quit();
