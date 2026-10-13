@@ -226,6 +226,28 @@ export function pawnWeaknesses(board, color) {
   return out;
 }
 
+/** `color`'s passed pawns: no enemy pawn ahead of it on its own or a neighbouring file. */
+function passedPawns(board, color) {
+  const own = board.pawn.intersect(board[color]), theirs = board.pawn.diff(own), out = new Set();
+  for (const p of own) {
+    const f = squareFile(p), r = squareRank(p);
+    if (![...theirs].some(t => Math.abs(squareFile(t) - f) <= 1 && (color === 'white' ? squareRank(t) > r : squareRank(t) < r)))
+      out.add(`passed ${'abcdefgh'[f]}-pawn`);
+  }
+  return out;
+}
+
+/** Holes in the pawn shield of `color`'s castled king (on its back rank, not on the d/e-file): files next to
+    the king with no own pawn on the 2nd or 3rd rank. Files as in SF 15's shelter (king file kept within b-g). */
+function shieldHoles(board, color) {
+  const out = new Set(), k = board.kingOf(color), back = color === 'white' ? 0 : 7;
+  if (k === undefined || squareRank(k) !== back || squareFile(k) === 3 || squareFile(k) === 4) return out;
+  const own = [...board.pawn.intersect(board[color])], c = Math.min(Math.max(squareFile(k), 1), 6);
+  for (let f = c - 1; f <= c + 1; f++)
+    if (!own.some(p => squareFile(p) === f && Math.abs(squareRank(p) - back) <= 2)) out.add(`king shield lost its ${'abcdefgh'[f]}-pawn`);
+  return out;
+}
+
 /** Positional labels for move `uci` from `b` to `next`; `you` is the side the explanation is for. */
 export function moveLabels(b, next, uci, you) {
   const mv = parseUci(uci), role = b.board.getRole(mv.from), victim = b.board.getRole(mv.to);
@@ -234,18 +256,25 @@ export function moveLabels(b, next, uci, you) {
   const rank = squareRank(mv.to) + 1;
   if (role === 'pawn' && !isCapture(b, mv) && (b.turn === 'white' ? rank >= 4 : rank <= 5)) labels.push('pawn gains space');
   if ((role === 'knight' || role === 'bishop') && isOutpost(next.board, mv.to, b.turn)) labels.push(`${role} on outpost ${makeSquare(mv.to)}`);
+  const them = opposite(b.turn);
   if (role === 'rook' && squareFile(mv.from) !== squareFile(mv.to)) {
     const pawns = next.board.pawn.intersect(SquareSet.fromFile(squareFile(mv.to)));
     if (pawns.isEmpty()) labels.push('rook on open file');
     else if (!pawns.intersects(next.board[b.turn])) labels.push('rook on semi-open file');
   }
-  const them = opposite(b.turn);
+  // the 7th only counts with enemy pawns to attack there or the enemy king held on its back rank
+  const seventh = b.turn === 'white' ? 6 : 1;
+  if (role === 'rook' && squareRank(mv.to) === seventh && squareRank(mv.from) !== seventh
+    && (next.board.pawn.intersect(next.board[them]).intersects(SquareSet.fromRank(seventh))
+      || squareRank(next.board.kingOf(them)) === (b.turn === 'white' ? 7 : 0)))
+    labels.push('rook on 7th rank');
   if (hasBishopPair(b.board, them) && !hasBishopPair(next.board, them)) labels.push(`${owner(them)} bishop pair gone`);
   if (role === 'pawn' || victim === 'pawn' || isEnPassant(b, mv))
-    for (const color of [b.turn, them]) {
-      const before = pawnWeaknesses(b.board, color);
-      for (const w of pawnWeaknesses(next.board, color)) if (!before.has(w)) labels.push(`${owner(color)} ${w}`);
-    }
+    for (const color of [b.turn, them])
+      for (const features of [pawnWeaknesses, passedPawns, shieldHoles]) {
+        const before = features(b.board, color);
+        for (const w of features(next.board, color)) if (!before.has(w)) labels.push(`${owner(color)} ${w}`);
+      }
   return labels;
 }
 
@@ -478,7 +507,10 @@ You get facts from two engines about one position and two candidate moves:
   hardly counts these, so name the space gain from the labels even when that term is small.
   Structure labels: "<knight|bishop> on outpost <square>" (a pawn-protected square on the 4th-6th rank that no enemy pawn can attack),
   "rook on open|semi-open file", "<side> bishop pair gone", "<side> <file>-pawn isolated", "<side> <file>-pawns doubled",
-  "<side> pawn on <square> backward" (behind its neighbours, cannot safely advance). They often explain a terms difference.
+  "<side> pawn on <square> backward" (behind its neighbours, cannot safely advance), "<side> passed <file>-pawn" (no enemy pawn
+  can stop it, SF 15 counts it in Passed), "<side> king shield lost its <file>-pawn" (a pawn in front of the castled king moved
+  away or was taken, SF 15 counts it in King safety), "rook on 7th rank" (attacks pawns there or holds the king on its back rank).
+  They often explain a terms difference.
   "<piece> is trapped" means that piece is attacked and every
   square it can go to is unsafe: if a trapped piece is later captured, explain the trap (which moves attacked it and took
   away its squares), not just the capture. Describe threats, attacks and defences only from
@@ -520,7 +552,11 @@ Rules:
 7. The "[line ends mid-exchange ...]" note is for you only: do not quote it, just do not count the last capture as final.
 8. Only the first move of each line is a choice being judged. Every later move is the engine's best play for both sides:
    never call one careless, a mistake or the cause of the problem. If the eval shifts inside a line, the reason is the
-   first move, not a later one.`;
+   first move, not a later one.
+9. A term difference is a number, not a reason. Give a cause for a term only from what still stands at
+   "explained_at_position_after": a structure label or a capture label on a move up to that point, or
+   "notes_at_that_position", and name that move. Pins, attacks and threats do not count: they may be gone by then.
+   With no such fact, give the term and its size only: no "because", and do not remark that the cause is not shown.`;
 
 export async function explain(facts, apiKey, effort = 'high') {
   const r = await fetch('https://api.anthropic.com/v1/messages', {

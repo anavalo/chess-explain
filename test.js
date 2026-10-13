@@ -38,6 +38,11 @@ assert.deepEqual(labels('4k3/8/8/8/8/2n5/1PP5/4K3 w - - 0 1', 'b2c3'), ['your c-
 assert.deepEqual(labels('4k3/8/8/8/8/8/8/R3K3 w - - 0 1', 'a1d1'), ['rook on open file']);
 assert.deepEqual(labels('2b1kb2/8/8/8/8/8/8/2R1K3 w - - 0 1', 'c1c8'), ["opp's bishop pair gone"]);
 assert.deepEqual(labels('4k3/8/8/8/4P3/2N5/8/4K3 w - - 0 1', 'c3d5'), ['knight on outpost d5']);
+assert.deepEqual(labels('4k3/8/8/3p4/2P5/8/8/4K3 w - - 0 1', 'c4d5'), ['your d-pawn isolated', 'your passed d-pawn']);
+assert.deepEqual(labels('6k1/8/8/8/8/8/5PPP/6K1 w - - 0 1', 'g2g4'), ['pawn gains space', 'your king shield lost its g-pawn']);
+assert.deepEqual(labels('6k1/8/8/8/8/8/5PPP/6K1 w - - 0 1', 'h2h3'), []); // luft keeps the shield
+assert.deepEqual(labels('4k3/1p6/8/8/8/8/8/R3K3 w - - 0 1', 'a1a7'), ['rook on 7th rank']);
+assert.deepEqual(labels('8/8/4k3/8/8/8/8/R3K3 w - - 0 1', 'a1a7'), []); // nothing to attack there
 assert.deepEqual(endNotes(pos('2b1k3/8/8/8/8/8/8/2B1K3 w - - 0 1'), 'white'), ['opposite-coloured bishops']);
 assert.deepEqual(endNotes(pos('4k3/8/4p3/3pP3/3P4/8/8/2B1K3 w - - 0 1'), 'white'),
   ['your bishop on c1 is bad: your pawns on d4, e5 are fixed on its colour']);
@@ -73,7 +78,7 @@ try {
   r = await ask('r2q1rk1/pp1n1ppb/2p4p/b4p1P/3P4/2PBBN2/PP3PP1/R2QR1K1 w - - 0 16', 'Qd2', 'd1b3');
   assert.match(r.best.line, /you Qb3 \[[^\]]*pins opp's pawn on f7 to king on g8/);
   r = await ask('r1br2k1/1pq1nppp/p1n1p3/8/2B1P3/1NQ1B3/PP3PPP/2R2RK1 w - - 0 1', 'Rcd1', 'f2f4');
-  assert.match(r.best.line, /^1\. you f4 \[pawn gains space\]/);
+  assert.match(r.best.line, /^1\. you f4 \[pawn gains space[,\]]/);
   // the knight on f3 is defended, but gxf3 opens the king: the line must say why White does not take back
   r = await ask('r2qr1k1/ppp2ppp/2bb1pn1/8/2PP4/4BN1P/PP1QNPP1/2R2RK1 w - - 0 1', 'b4', 'd4d5');
   assert.match(r.compared.line, /opp Bxf3 \[takes knight, material -3, your recapture 2\.gxf3 fails \(line below\)\]/);
