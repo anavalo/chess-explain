@@ -25,7 +25,7 @@ Free, open source, and no server of ours anywhere: the engines run on your machi
    after every move of each line, captures, checks, new attacks, trapped pieces, and what the opponent
    threatens (a null-move search: "what would you do if I passed?").
 3. Stockfish 15's classical evaluation terms (mobility, king safety, pawn structure, ...) are compared
-   at the end of each line, for the positional part of the answer. Modern Stockfish evaluates with a
+   a few moves into each line, for the positional part of the answer. Modern Stockfish evaluates with a
    neural network, which is brilliant and completely unable to explain itself, so the old hand-written
    terms are brought back to do the explaining. They are rescaled to match Stockfish 15.1's values.
 4. Claude Haiku turns that fact sheet into a short explanation. The prompt forbids it from inventing

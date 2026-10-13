@@ -1,7 +1,7 @@
 // Explain why one chess move is better than another.
 //
 // Stockfish 19 decides WHICH move is better (eval + main line).
-// Stockfish 15's hand-crafted eval explains WHY (term-by-term diff at the end of each line).
+// Stockfish 15's hand-crafted eval explains WHY (term-by-term diff a few moves into each line).
 // An LLM turns those numbers into plain language.
 //
 // Runs in the side panel (engines in Web Workers) and in node (engines as child processes):
@@ -13,8 +13,9 @@ import {
 } from './vendor/chessops.js';
 
 const NODES = 2_000_000;
-const THREADS = 4;
+const THREADS = 1; // one search thread: a node-limited search then gives the same lines every run
 const EQUAL_GAP = 0.3; // pawns; below this both moves are called equal and the LLM is skipped
+const LEAF_PLIES = 6; // SF 15 terms are measured within this many plies of each line
 
 // SF 15 game phase (src/material.cpp): non-pawn material between these limits maps to 0..128
 const MIDGAME_LIMIT = 15258, ENDGAME_LIMIT = 3915;
@@ -44,14 +45,14 @@ export function uciEngine(send) {
 
 /** Starts both engines with `start(path)` (path relative to this file), which returns a uciEngine.
     The WASM builds drop input that arrives before they have loaded, so nothing else is sent until uciok. */
-export async function startEngines(start, threads = THREADS) {
+export async function startEngines(start) {
   const setup = async (e, options) => {
     await e.until(['uci'], l => l === 'uciok');
     await e.until([...options.map(([k, v]) => `setoption name ${k} value ${v}`), 'isready'], l => l === 'readyok');
     return e;
   };
   return {
-    sf: await setup(start('vendor/stockfish/stockfish-19-lite.js'), [['Threads', threads], ['Hash', 256]]),
+    sf: await setup(start('vendor/stockfish/stockfish-19-lite.js'), [['Threads', THREADS], ['Hash', 256]]),
     sf15: await setup(start('vendor/stockfish/sf15/stockfish.js'), [['Use NNUE', false]]),
   };
 }
@@ -105,12 +106,13 @@ const flip = s => ('mate' in s ? { mate: -s.mate } : { cp: -s.cp });
 const pov = (s, pos, color) => (pos.turn === color ? s : flip(s)); // `s` is from pos's side to move
 const cpOf = s => ('mate' in s ? (s.mate > 0 ? 10000 - s.mate : -10000 - s.mate) : s.cp);
 
-/** Play the engine line and stop at the last quiet position (no check, last move not a capture),
-    so the static eval is not taken in the middle of an exchange. */
+/** Play the first LEAF_PLIES of the engine line and stop at the last quiet position (no check, last move not
+    a capture), so the static eval is not taken in the middle of an exchange. Kept short: the first moves of a
+    line are the most reliable, and they are the ones the answer quotes. */
 function lineToLeaf(pos, pv) {
   let b = pos, quiet = null, calm = null;
   const sans = [];
-  for (const uci of pv.slice(0, 12)) {
+  for (const uci of pv.slice(0, LEAF_PLIES)) {
     const mv = parseUci(uci);
     const noisy = isCapture(b, mv) || mv.promotion;
     sans.push(`${b.turn === 'white' || !sans.length ? moveNo(b) : ''}${san(b, uci)}`); // 25...Ng8 26.Qxg7+ Ke8
@@ -295,12 +297,13 @@ export function endNotes(pos, you) {
 }
 
 /** '12. you Bc3 (-7.52) 12... opp Bb4 (-7.50) 13. you Bd2 (-7.68) 13... opp Qxa1 [takes rook, material -5] (-7.38) ...':
-    Stockfish 19's eval after every move, from `you`'s view. A skipped recapture that loses is played out on its own line below.
-    `nested` is set for those lines, so they do not branch again. */
+    Stockfish 19's eval after every move, from `you`'s view, for `maxPlies` plies and then on until an exchange is over.
+    A skipped recapture that loses is played out on its own line below. `nested` is set for those lines, so they do not branch again. */
 async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20, you = pos.turn, nested = false) {
   let b = pos, captured = false;
   const out = [], why = [], seenTrapped = new Set();
-  for (const [i, uci] of pv.slice(0, maxPlies).entries()) {
+  for (const [i, uci] of pv.entries()) {
+    if (i >= maxPlies && !captured) break; // past the limit, play on only to finish an exchange
     const mv = parseUci(uci);
     const who = b.turn === you ? 'you' : 'opp';
     let text = `${moveNo(b)} ${who} ${san(b, uci)}`;
@@ -524,7 +527,7 @@ You get facts from two engines about one position and two candidate moves:
   there, your move stops the threat: explain how, from the labels (for example the reply that punishes the threat). If the eval
   collapses, your move ignored the threat. When the threat decides the gap, lead with it: "the opponent threatened X; the
   better move answers it with Y; your move did not."
-- "sf15_terms" are Stockfish 15.1's hand-crafted evaluation terms, measured at the quiet position reached at the end of each line ("explained_at_position_after"). Their difference says WHY one move is better.
+- "sf15_terms" are Stockfish 15.1's hand-crafted evaluation terms, measured at the quiet position reached a few moves into each line ("explained_at_position_after"). Their difference says WHY one move is better.
   "notes_at_that_position" describes that same position: "opposite-coloured bishops" makes an endgame drawish even a pawn or two
   down (SF 15 counts it in Winnable), and a bad bishop is one hemmed in by its own fixed centre pawns.
 
@@ -608,6 +611,8 @@ export async function handle(engines, req, apiKey, llm = explain) {
   let pos;
   try { pos = position(req.fen); } catch { throw new Error('invalid position'); }
   let move = parseMove(pos, req.move);
+  // the hash and history tables carry over from earlier requests: clear them, so the same request gives the same lines
+  await engines.sf.until(['ucinewgame', 'isready'], l => l === 'readyok');
   const best = req.best ? parseMove(pos, req.best) : null;
   // you played lichess's move: still explain that move, against the best other move
   if (best === move) move = await otherBest(engines.sf, pos, move, NODES);
@@ -625,7 +630,7 @@ export async function handle(engines, req, apiKey, llm = explain) {
 // ---- node ----
 
 /** Node only: the two WASM engines as child processes. Returns {sf, sf15, quit}. */
-export async function nodeEngines(threads = THREADS) {
+export async function nodeEngines() {
   const { spawn } = await import('node:child_process');
   const { createInterface } = await import('node:readline');
   const { fileURLToPath } = await import('node:url');
@@ -638,7 +643,7 @@ export async function nodeEngines(threads = THREADS) {
     createInterface({ input: p.stdout }).on('line', e.onLine);
     return e;
   };
-  return { ...await startEngines(start, threads), quit: () => procs.forEach(p => p.stdin.end('quit\n')) };
+  return { ...await startEngines(start), quit: () => procs.forEach(p => p.stdin.end('quit\n')) };
 }
 
 if (import.meta.main) { // node 24.2+; undefined in the browser

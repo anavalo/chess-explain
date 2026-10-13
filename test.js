@@ -47,7 +47,7 @@ assert.deepEqual(endNotes(pos('2b1k3/8/8/8/8/8/8/2B1K3 w - - 0 1'), 'white'), ['
 assert.deepEqual(endNotes(pos('4k3/8/4p3/3pP3/3P4/8/8/2B1K3 w - - 0 1'), 'white'),
   ['your bishop on c1 is bad: your pawns on d4, e5 are fixed on its colour']);
 
-const engines = await nodeEngines(1);
+const engines = await nodeEngines();
 let facts;
 const stub = f => ((facts = f), '(stub)');
 const ask = (fen, move, best) => handle(engines, { fen, move, best, user: 'fable6' }, null, stub);
