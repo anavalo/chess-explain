@@ -134,8 +134,8 @@ Some things that would make it better:
 
 - **Speed.** Analysis in Chrome is about 3x slower than the same analysis in Node. Nobody has profiled
   why yet.
-- **Smarter labels.** Attacks are labelled only when they are direct. Pins, batteries and discovered
-  attacks show up only through the "threatens" labels.
+- **Smarter labels.** Attacks are labelled only when they are direct. Pins are labelled, skewers are
+  not, and batteries and discovered attacks show up only through the "threatens" labels.
 - **Other browsers.** Firefox has no side panel API, so it needs a port to its sidebar.
 
 ## Limitations
