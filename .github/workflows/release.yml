@@ -1,0 +1,17 @@
+name: release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches the manifest version
+        run: test "v$(jq -r .version extension/manifest.json)" = "$GITHUB_REF_NAME"
+      - run: npm run zip
+      - run: gh release create "$GITHUB_REF_NAME" chess-explain.zip --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

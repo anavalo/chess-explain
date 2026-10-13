@@ -56,7 +56,6 @@ plus the model's thinking, which comes to a fraction of a cent. Even if the mode
 
 1. Install chess-explain from the
    [Chrome Web Store](https://chromewebstore.google.com/detail/bjdphipaglklkipdgnafphplndgplipc).
-   The listing is in review right now; until it goes live, install from source (below).
 2. Click the extension's toolbar icon to open the side panel.
 3. Set your API key in the panel's settings. It is stored in `chrome.storage.local` (this browser
    profile only, not synced) and sent only to the Anthropic API.
@@ -118,6 +117,10 @@ npm run vendor
 ```
 
 `npm run zip` packages `extension/` as `chess-explain.zip` for the Chrome Web Store.
+
+To release, set `version` in `extension/manifest.json`, commit, then tag and push (`git tag v0.2 && git push
+origin v0.2`). The release workflow checks the tag matches the manifest and attaches the zip to a GitHub
+release.
 
 ## Contributing
 
