@@ -12,9 +12,9 @@ import {
   parseSan, parseUci, pawnAttacks, squareFile, squareRank,
 } from './vendor/chessops.js';
 
-export const NODES = 2_000_000;
-export const THREADS = 4;
-export const EQUAL_GAP = 0.3; // pawns; below this both moves are called equal and the LLM is skipped
+const NODES = 2_000_000;
+const THREADS = 4;
+const EQUAL_GAP = 0.3; // pawns; below this both moves are called equal and the LLM is skipped
 
 // SF 15 game phase (src/material.cpp): non-pawn material between these limits maps to 0..128
 const MIDGAME_LIMIT = 15258, ENDGAME_LIMIT = 3915;
@@ -83,16 +83,12 @@ const play = (pos, uci) => { const p = pos.clone(); p.play(parseUci(uci)); retur
 const san = (pos, uci) => makeSan(pos, parseUci(uci));
 const moveNo = pos => `${pos.fullmoves}${pos.turn === 'white' ? '.' : '...'}`; // '12.' for White, '12...' for Black
 
-/** UCI as engines write it: castling is the king's two-square move (chessops plays it as king takes rook). */
-function toUci(pos, mv) {
-  const side = castlingSide(pos, mv);
-  return makeUci(side ? { from: mv.from, to: kingCastlesTo(pos.turn, side) } : mv);
-}
-
-export function parseMove(pos, text) {
+/** SAN or UCI -> UCI as engines write it: castling is the king's two-square move (chessops plays it as king takes rook). */
+function parseMove(pos, text) {
   const mv = parseSan(pos, text) ?? parseUci(text);
   if (!mv || !pos.isLegal(mv)) throw new Error(`${text} is not a legal move here`);
-  return toUci(pos, mv);
+  const side = castlingSide(pos, mv);
+  return makeUci(side ? { from: mv.from, to: kingCastlesTo(pos.turn, side) } : mv);
 }
 
 const isEnPassant = (pos, mv) => pos.board.getRole(mv.from) === 'pawn' && mv.to === pos.epSquare;
@@ -111,10 +107,10 @@ const cpOf = s => ('mate' in s ? (s.mate > 0 ? 10000 - s.mate : -10000 - s.mate)
 
 /** Play the engine line and stop at the last quiet position (no check, last move not a capture),
     so the static eval is not taken in the middle of an exchange. */
-function lineToLeaf(pos, pv, maxPlies = 12) {
+function lineToLeaf(pos, pv) {
   let b = pos, quiet = null, calm = null;
   const sans = [];
-  for (const uci of pv.slice(0, maxPlies)) {
+  for (const uci of pv.slice(0, 12)) {
     const mv = parseUci(uci);
     const noisy = isCapture(b, mv) || mv.promotion;
     sans.push(`${b.turn === 'white' || !sans.length ? moveNo(b) : ''}${san(b, uci)}`); // 25...Ng8 26.Qxg7+ Ke8
@@ -415,16 +411,18 @@ async function answerToThreat(sf, pos, move, threat, nodes) {
   return lineWithEvals(sf, pos, [move, threat, ...pv], nodes, 6);
 }
 
+/** The engine's best move other than `not` (UCI); undefined if there is none. */
+async function otherBest(sf, pos, not, nodes) {
+  const infos = await search(sf, pos, nodes, { multipv: 2 });
+  return infos.map(i => i.pv[0]).find(m => m !== not);
+}
+
 /** `played` and `vs` are UCI moves; `vs` null means the engine's best other move. */
-export async function buildFacts({ sf, sf15 }, fen, played, vs, nodes = NODES) {
+async function buildFacts({ sf, sf15 }, fen, played, vs, nodes = NODES) {
   const pos = position(fen);
   const before = (await search(sf, pos, nodes))[0].score;
   const [threat, threatFacts] = await opponentThreat(sf, pos, nodes, before);
-  let other = vs;
-  if (!other) {
-    const infos = await search(sf, pos, nodes, { multipv: 2 });
-    other = infos.map(i => i.pv[0]).find(m => m !== played);
-  }
+  const other = vs ?? await otherBest(sf, pos, played, nodes);
   if (!played || !other) throw new Error('There is only one legal move here: nothing to compare.');
   const lineNodes = Math.max(Math.floor(nodes / 10), 100_000);
   const lines = {};
@@ -462,7 +460,7 @@ export async function buildFacts({ sf, sf15 }, fen, played, vs, nodes = NODES) {
 
 // ---- the LLM ----
 
-export const SYSTEM = `You are a chess coach for club players (around 1200-1800 rating).
+const SYSTEM = `You are a chess coach for club players (around 1200-1800 rating).
 You get facts from two engines about one position and two candidate moves:
 - "latest_sf_eval" and "line_with_evals" come from the latest Stockfish. They are the truth about which move is better.
   The player who asks is the side to move: call them "you". In "line_with_evals" every move has its move number ("12." for White,
@@ -553,7 +551,7 @@ export async function explain(facts, apiKey, effort = 'high') {
 // ---- one panel request ----
 
 /** Fair play: fail closed unless lichess confirms `user` is not in a game. */
-export async function checkNotPlaying(user) {
+async function checkNotPlaying(user) {
   if (!/^[A-Za-z0-9_-]{2,30}$/.test(user ?? '')) throw new Refused('Log in to lichess so I can check you are not playing a game.');
   let status;
   try {
@@ -575,11 +573,8 @@ export async function handle(engines, req, apiKey, llm = explain) {
   try { pos = position(req.fen); } catch { throw new Error('invalid position'); }
   let move = parseMove(pos, req.move);
   const best = req.best ? parseMove(pos, req.best) : null;
-  if (best === move) {
-    // you played lichess's move: still explain that move, against the best other move
-    const infos = await search(engines.sf, pos, NODES, { multipv: 2 });
-    move = infos.map(i => i.pv[0]).find(m => m !== move);
-  }
+  // you played lichess's move: still explain that move, against the best other move
+  if (best === move) move = await otherBest(engines.sf, pos, move, NODES);
   const facts = await buildFacts(engines, req.fen, move, best, NODES);
   const line = k => ({ move: facts[k].move, eval: facts[k].latest_sf_eval, line: facts[k].line_with_evals });
   const gap = Math.abs(facts.latest_sf_gap);
@@ -587,7 +582,7 @@ export async function handle(engines, req, apiKey, llm = explain) {
   const text = gap < EQUAL_GAP
     ? `**${facts.played.move}** is about as good as **${facts.alternative.move}**: the difference is ${gap.toFixed(2)} pawns, `
       + 'which is within the engine\'s noise. Either move is fine.'
-    : await llm(facts, apiKey, 'high');
+    : await llm(facts, apiKey);
   return { text, best: line('alternative'), compared: line('played') };
 }
 

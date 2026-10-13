@@ -42,14 +42,8 @@ async function showKeyStatus() {
   const { apiKey } = await chrome.storage.local.get('apiKey');
   document.getElementById('key-status').textContent = apiKey ? `set (…${apiKey.slice(-4)})` : 'not set';
   document.getElementById('settings').open = !apiKey;
-  document.getElementById('key-delete').hidden = !apiKey;
   return apiKey;
 }
-
-document.getElementById('key-delete').onclick = async () => {
-  await chrome.storage.local.remove('apiKey');
-  showKeyStatus();
-};
 
 document.getElementById('key-form').onsubmit = async e => {
   e.preventDefault();

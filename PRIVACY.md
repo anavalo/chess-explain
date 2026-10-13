@@ -27,8 +27,8 @@ Stockfish runs inside the extension; no analysis is sent anywhere else.
 ## What it stores
 
 Your Anthropic API key is stored in `chrome.storage.local`: on this computer, in this browser profile
-only, not synced. It is sent only to api.anthropic.com. You can remove it at any time with the Delete
-button in the panel's settings, or by removing the extension.
+only, not synced. It is sent only to api.anthropic.com. You can remove it at any time by saving an
+empty key in the panel's settings, or by removing the extension.
 
 Nothing else is stored. The extension does not sell or share data, and does not use it for anything
 other than writing the explanation you asked for.
