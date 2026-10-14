@@ -92,6 +92,16 @@ function parseMove(pos, text) {
   return makeUci(side ? { from: mv.from, to: kingCastlesTo(pos.turn, side) } : mv);
 }
 
+/** SAN moves played one after another from `fen` -> the same moves in UCI, as engines write them. */
+export function sanToUci(fen, sans) {
+  let pos = position(fen);
+  return sans.map(s => {
+    const uci = parseMove(pos, s);
+    pos = play(pos, uci);
+    return uci;
+  });
+}
+
 const isEnPassant = (pos, mv) => pos.board.getRole(mv.from) === 'pawn' && mv.to === pos.epSquare;
 const isCapture = (pos, mv) => pos.board.getColor(mv.to) === opposite(pos.turn) || isEnPassant(pos, mv);
 const attackers = (pos, color, sq) => pos.kingAttackers(sq, color, pos.board.occupied);
@@ -617,7 +627,10 @@ export async function handle(engines, req, apiKey, llm = explain) {
   // you played lichess's move: still explain that move, against the best other move
   if (best === move) move = await otherBest(engines.sf, pos, move, NODES);
   const facts = await buildFacts(engines, req.fen, move, best, NODES);
-  const line = k => ({ move: facts[k].move, eval: facts[k].latest_sf_eval, line: facts[k].line_with_evals });
+  const line = k => ({
+    move: facts[k].move, eval: facts[k].latest_sf_eval, line: facts[k].line_with_evals,
+    threat_line: facts[k].if_opp_plays_the_threat_at_once,
+  });
   const gap = Math.abs(facts.latest_sf_gap);
   // the engines' lines differ for reasons too small to explain; a story would only invent one
   const text = gap < EQUAL_GAP

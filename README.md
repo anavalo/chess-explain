@@ -70,6 +70,7 @@ plus the model's thinking, which comes to a fraction of a cent. Even if the mode
 Open a game or position on lichess's analysis board, turn on lichess's engine, step to the position
 where you want an explanation, and click **Explain**. By default it compares lichess's top move with the
 move played next in the game; type a move in the box to compare with that instead.
+Click a move in the answer to play its line on the board, up to that move.
 
 Each explanation takes about 45 seconds. That is two engines running dozens of searches in a
 browser tab, so make a cup of tea, or use the time to guess the answer yourself. The position, the

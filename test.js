@@ -4,9 +4,9 @@
 import assert from 'node:assert/strict';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  Refused, endNotes, handle, isOutpost, moveLabels, nodeEngines, pawnWeaknesses, pins, trapped,
+  Refused, endNotes, handle, isOutpost, moveLabels, nodeEngines, pawnWeaknesses, pins, sanToUci, trapped,
 } from './extension/explain.js';
-import { md } from './extension/md.js';
+import { linkMoves, md } from './extension/md.js';
 
 const pos = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
 
@@ -17,6 +17,16 @@ assert.equal(md('Terms:\n- **Material** +0.5\n- Mobility'),
 assert.equal(md('1. f3\n2. Bc7'), '<ol><li>f3</li><li>Bc7</li></ol>');
 assert.equal(md('<img src=x onerror=alert(1)>'), '<p>&lt;img src=x onerror=alert(1)&gt;</p>');
 assert.equal(md('Qxh2# and 2*3'), '<p>Qxh2# and 2*3</p>');
+
+// move links: each numbered variation links to its line at that move; a "Why" line keeps its main line's moves
+// before it; a move with two possible histories (1...Kd8) or no move number before it (Kd2) is not linked
+const links = html => [...html.matchAll(/<a href="#" data-line="([^"]*)">([^<]*)<\/a>/g)].map(m => `${m[2]}: ${m[1]}`);
+assert.deepEqual(links(linkMoves(md('1.Ra7 Kd8 2.Kd2+ wins.\n\n1...Kd8 and Kd2. Not 1.Rb1 Kd8 2.Kf2 Kc7.'), [
+    '1. you Ra7 (+9) 1... opp Kd8 (+9) 2. you Kd2 (+9)',
+    '1. you Rb1 [x] (+9) 1... opp Kd8 (+9) 2. you Kd2 (+9)\nWhy 2.Kf2 fails: 2. you Kf2 (+9)',
+  ])), ['1.Ra7: Ra7', 'Kd8: Ra7 Kd8', '2.Kd2+: Ra7 Kd8 Kd2', '1.Rb1: Rb1', 'Kd8: Rb1 Kd8', '2.Kf2: Rb1 Kd8 Kf2']);
+// lichess's engine line writes castling as the king's two-square move
+assert.deepEqual(sanToUci('r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1', ['O-O', 'O-O-O']), ['e1g1', 'e8c8']);
 
 // white bishop on a7: attacked by the rook, b6 is covered by the c7 pawn, b8 by the rook
 assert.deepEqual(trapped(pos('r3k3/B1p5/1p6/8/8/8/8/4K3 w - - 0 1')), [parseSquare('a7')]);
@@ -83,6 +93,7 @@ try {
   r = await ask('r2qr1k1/ppp2ppp/2bb1pn1/8/2PP4/4BN1P/PP1QNPP1/2R2RK1 w - - 0 1', 'b4', 'd4d5');
   assert.match(r.compared.line, /opp Bxf3 \[takes knight, material -3, your recapture 2\.gxf3 fails \(line below\)\]/);
   assert.match(r.compared.line, /\nWhy 2\.gxf3 fails: 2\. you gxf3 \[takes bishop/);
+  assert.match(linkMoves('2.gxf3', [r.compared.line]), /data-line="b4 Bxf3 gxf3"/);
   console.log('ok');
 } finally {
   engines.quit();
