@@ -71,7 +71,7 @@ Open a game or position on lichess's analysis board, turn on lichess's engine, s
 where you want an explanation, and click **Explain**. By default it compares lichess's top move with the
 move played next in the game; type a move in the box to compare with that instead.
 
-Each explanation takes about 15–25 seconds. That is two engines running dozens of searches in a
+Each explanation takes about 45 seconds. That is two engines running dozens of searches in a
 browser tab, so make a cup of tea, or use the time to guess the answer yourself. The position, the
 engine lines and their evaluations are sent to Anthropic; your lichess username is sent only to
 lichess, for the fair-play check. See [PRIVACY.md](PRIVACY.md).
