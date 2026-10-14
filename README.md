@@ -108,6 +108,17 @@ This runs the real engines (single-threaded, so results are repeatable) on a set
 positions, with the LLM stubbed out. It calls lichess for
 the fair-play check and takes about three minutes.
 
+### Eval set
+
+```sh
+ANTHROPIC_API_KEY=... node eval.js [out-dir] [--no-llm]
+```
+
+This explains 30 quiet positions from lichess games, where the better move wins on position rather than
+with a tactic, and writes one fact sheet and answer per position to `out-dir` (default `eval-out/`).
+The engines give the same lines on every run, so run it before and after a change and diff the two
+folders. `--no-llm` writes the fact sheets only.
+
 ### Updating the bundled libraries
 
 `extension/vendor/` is committed, so the extension works straight from a clone. To rebuild it after
