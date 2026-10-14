@@ -42,7 +42,7 @@ const POSITIONS = [
 
 const args = process.argv.slice(2);
 const out = args.find(a => !a.startsWith('--')) ?? 'eval-out';
-const flags = args.includes('--no-llm') ? ['--no-llm'] : ['--effort', 'high']; // high: what the panel uses
+const flags = args.includes('--no-llm') ? ['--no-llm'] : [];
 const cli = fileURLToPath(new URL('extension/explain.js', import.meta.url));
 const run = promisify(execFile);
 mkdirSync(out, { recursive: true });

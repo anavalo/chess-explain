@@ -5,7 +5,7 @@
 // An LLM turns those numbers into plain language.
 //
 // Runs in the side panel (engines in Web Workers) and in node (engines as child processes):
-//   node extension/explain.js FEN MOVE [--vs MOVE] [--nodes N] [--effort low|medium|high] [--no-llm]
+//   node extension/explain.js FEN MOVE [--vs MOVE] [--nodes N] [--no-llm]
 
 import {
   Chess, SquareSet, attacks, castlingSide, kingCastlesTo, makeFen, makeSan, makeSquare, makeUci, opposite, parseFen,
@@ -571,7 +571,7 @@ Rules:
    "notes_at_that_position", and name that move. Pins, attacks and threats do not count: they may be gone by then.
    With no such fact, give the term and its size only: no "because", and do not remark that the cause is not shown.`;
 
-export async function explain(facts, apiKey, effort = 'high') {
+export async function explain(facts, apiKey) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -584,7 +584,7 @@ export async function explain(facts, apiKey, effort = 'high') {
     body: JSON.stringify({
       model: 'claude-haiku-5-5',
       max_tokens: 16000,
-      output_config: { effort },
+      output_config: { effort: 'high' },
       system: SYSTEM,
       messages: [{ role: 'user', content: JSON.stringify(facts, null, 1) }],
     }),
@@ -664,14 +664,14 @@ if (import.meta.main) { // node 24.2+; undefined in the browser
   const { values: o, positionals: [fen, move] } = parseArgs({
     allowPositionals: true,
     options: { vs: { type: 'string' }, nodes: { type: 'string', default: String(NODES) },
-      effort: { type: 'string', default: 'medium' }, 'no-llm': { type: 'boolean' } },
+      'no-llm': { type: 'boolean' } },
   });
   const engines = await nodeEngines();
   try {
     const pos = position(fen);
     const facts = await buildFacts(engines, fen, parseMove(pos, move), o.vs ? parseMove(pos, o.vs) : null, Number(o.nodes));
     console.log(JSON.stringify(facts, null, 1));
-    if (!o['no-llm']) console.log('\n' + await explain(facts, process.env.ANTHROPIC_API_KEY, o.effort));
+    if (!o['no-llm']) console.log('\n' + await explain(facts, process.env.ANTHROPIC_API_KEY));
   } finally {
     engines.quit();
   }

@@ -93,7 +93,7 @@ the extension itself.
 The same code runs in [Node.js](https://nodejs.org/) (Node 24.2 or newer), without the extension:
 
 ```sh
-ANTHROPIC_API_KEY=... node extension/explain.js "<FEN>" <move> [--vs <move>] [--effort low|medium|high] [--no-llm]
+ANTHROPIC_API_KEY=... node extension/explain.js "<FEN>" <move> [--vs <move>] [--no-llm]
 ```
 
 `--no-llm` prints the fact sheet the model would see, and needs no API key. It is the best way to see
@@ -152,7 +152,6 @@ Some things that would make it better:
 
 ## Limitations
 
-- Engine lines are not deterministic, so the same position can get a slightly different explanation.
 - The lite Stockfish build uses a small network: far stronger than any human, weaker than full
   Stockfish.
 - Standard chess only. Your Crazyhouse blunders remain a mystery.
