@@ -16,6 +16,9 @@ const NODES = 2_000_000;
 const THREADS = 1; // one search thread: a node-limited search then gives the same lines every run
 const EQUAL_GAP = 0.3; // pawns; below this both moves are called equal and the LLM is skipped
 const LEAF_PLIES = 6; // SF 15 terms are measured within this many plies of each line
+// centipawns the opponent must gain with a free move before the position's threat is reported. A free move is worth
+// a tempo (up to ~0.5) anyway; above that it is a plan, such as a g4-g5 pawn storm.
+const QUIET_THREAT = 50;
 
 // SF 15 game phase (src/material.cpp): non-pawn material between these limits maps to 0..128
 const MIDGAME_LIMIT = 15258, ENDGAME_LIMIT = 3915;
@@ -430,19 +433,24 @@ function positionBefore(pos) {
   };
 }
 
-/** The opponent's best move if you could pass (null move), when it would gain at least a pawn.
-    `scoreNow` is the current eval from the side to move. Returns [threat UCI, facts] or [null, null]. */
-async function opponentThreat(sf, pos, nodes, scoreNow) {
-  if (pos.isCheck()) return [null, null];
+/** `pos` after the side to move passes (a null move); null when that is not a legal position. */
+function passed(pos) {
   const setup = pos.toSetup();
   setup.turn = opposite(setup.turn);
   setup.epSquare = undefined;
-  const passed = Chess.fromSetup(setup);
-  if (passed.isErr) return [null, null];
-  const { score, pv } = (await search(sf, passed.value, nodes))[0];
+  const p = Chess.fromSetup(setup);
+  return p.isErr ? null : p.value;
+}
+
+/** The opponent's best move if you could pass (null move), when it would gain at least `min` centipawns.
+    `scoreNow` is the current eval from the side to move. Returns [threat UCI, facts] or [null, null]. */
+async function opponentThreat(sf, pos, nodes, scoreNow, min = 100) {
+  const p = !pos.isCheck() && passed(pos);
+  if (!p) return [null, null];
+  const { score, pv } = (await search(sf, p, nodes))[0];
   const threatScore = flip(score); // back to your side
-  if (!pv.length || cpOf(scoreNow) - cpOf(threatScore) < 100) return [null, null];
-  return [pv[0], { move: san(passed.value, pv[0]), eval_if_you_could_pass_and_opp_played_it: scoreStr(threatScore) }];
+  if (!pv.length || cpOf(scoreNow) - cpOf(threatScore) < min) return [null, null];
+  return [pv[0], { move: san(p, pv[0]), eval_if_you_could_pass_and_opp_played_it: scoreStr(threatScore) }];
 }
 
 /** Your move, then the opponent plays the threat at once, then the engine's best play: does your move stop it? */
@@ -451,6 +459,42 @@ async function answerToThreat(sf, pos, move, threat, nodes) {
   if (!b.isLegal(parseUci(threat))) return 'the threat move is no longer legal after your move';
   const { pv } = (await search(sf, play(b, threat), nodes))[0];
   return lineWithEvals(sf, pos, [move, threat, ...pv], nodes, 6);
+}
+
+/** The capture or check that your move `mv` sets up (what you would play next if the opponent passed), when playing
+    it right away instead is at least a pawn worse than `mv`'s eval `cp`. Returns it with that line, or null.
+    That line is the engine's best play, so it may avoid the move the idea is for (Nxg6 Nxg6 h3, not Qxh6) and hide
+    the problem: when your next capture or check after `mv` loses a pawn more played at once, its refutation is added. */
+async function prepares(sf, pos, mv, played, cp, nodes) {
+  const b = play(pos, mv);
+  const [tactic, facts] = await opponentThreat(sf, b, nodes, { cp: -cp });
+  if (!tactic || tactic === played || !/[x+#]/.test(facts.move) || !pos.isLegal(parseUci(tactic))) return null;
+  const { score, pv } = (await search(sf, pos, nodes, { moves: [tactic] }))[0];
+  if (cpOf(score) > cp - 100) return null;
+  const out = {
+    move: san(pos, tactic), eval_if_played_at_once: scoreStr(score),
+    line_if_played_at_once: await lineWithEvals(sf, pos, pv, nodes, 7, pos.turn, true),
+    follow_up_fails: null, better_move_guards: null,
+  };
+  let problem = pv[1];
+  const now = pv[1] && play(play(pos, tactic), pv[1]); // the at-once line after the opponent's reply
+  const ready = play(passed(b), tactic); // the same, but with `mv` played first
+  if (now && !now.isEnd() && ready.isLegal(parseUci(pv[1]))) {
+    const next = (await search(sf, play(ready, pv[1]), nodes))[0].pv[0];
+    if (next && next !== pv[2] && now.isLegal(parseUci(next)) && /[x+#]/.test(san(now, next))) {
+      const r = (await search(sf, play(now, next), nodes))[0];
+      if (r.pv.length && cpOf(flip(r.score)) <= cpOf(score) - 100) {
+        out.follow_up_fails = `Why ${moveNo(now)}${san(now, next)} fails: `
+          + await lineWithEvals(sf, now, [next, ...r.pv], nodes, 5, pos.turn, true);
+        problem = r.pv[0];
+      }
+    }
+  }
+  // the piece `mv` moved covers the square the problem move lands on (Rf1 guards f2 against Qxf2+)
+  const to = parseUci(mv).to;
+  if (problem && attacks(b.board.get(to), to, b.board.occupied).has(parseUci(problem).to))
+    out.better_move_guards = makeSquare(parseUci(problem).to);
+  return out;
 }
 
 /** The engine's best move other than `not` (UCI); undefined if there is none. */
@@ -463,7 +507,7 @@ async function otherBest(sf, pos, not, nodes) {
 async function buildFacts({ sf, sf15 }, fen, played, vs, nodes = NODES) {
   const pos = position(fen);
   const before = (await search(sf, pos, nodes))[0].score;
-  const [threat, threatFacts] = await opponentThreat(sf, pos, nodes, before);
+  const [threat, threatFacts] = await opponentThreat(sf, pos, nodes, before, QUIET_THREAT);
   const other = vs ?? await otherBest(sf, pos, played, nodes);
   if (!played || !other) throw new Error('There is only one legal move here: nothing to compare.');
   const lineNodes = Math.max(Math.floor(nodes / 10), 100_000);
@@ -481,6 +525,7 @@ async function buildFacts({ sf, sf15 }, fen, played, vs, nodes = NODES) {
     };
     if (threat) lines[label].if_opp_plays_the_threat_at_once = await answerToThreat(sf, pos, mv, threat, lineNodes);
   }
+  lines.alternative.prepares = await prepares(sf, pos, other, played, lines.alternative.cp, lineNodes);
   const a = lines.alternative.sf15_terms, p = lines.played.sf15_terms;
   const diff = Object.keys(a).filter(k => k in p && k !== 'Total').map(k => [k, round2(a[k] - p[k])]);
   const hasTerms = Object.keys(a).length && Object.keys(p).length;
@@ -536,7 +581,18 @@ You get facts from two engines about one position and two candidate moves:
   For each move, "if_opp_plays_the_threat_at_once" plays your move, then the threat, then best play. If the eval stays good
   there, your move stops the threat: explain how, from the labels (for example the reply that punishes the threat). If the eval
   collapses, your move ignored the threat. When the threat decides the gap, lead with it: "the opponent threatened X; the
-  better move answers it with Y; your move did not."
+  better move answers it with Y; your move did not." The threat can be a quiet move, such as a pawn push that starts an attack.
+- "prepares" (when not null) is a capture or check that the better move sets up: what you would play next if the opponent
+  passed. "line_if_played_at_once" plays it right away instead, and there it fails. "follow_up_fails" (when not null) plays on
+  in that line with the capture or check the idea is aiming for, and shows the opponent's answer that refutes it.
+  Explain it as an idea, a problem and a solution: the capture or check is the idea; the problem is the opponent's answer in
+  "follow_up_fails" when set, else the opponent's reply in "line_if_played_at_once" (say what it does, from its labels); the
+  better move comes first so the idea works later. "better_move_guards" (when not null) is the square of that problem move
+  that the better move covers: say so, for example "Rf1 guards f2". Otherwise say how it stops the problem only if the labels
+  show it. Show the first moves of the line that fails.
+  When "prepares" is set, always explain it: it is the main reason the better move works, so lead with it. One exception:
+  when the eval collapses in your move's "if_opp_plays_the_threat_at_once" (your move ignored the threat), explain the
+  threat first and "prepares" right after it.
 - "sf15_terms" are Stockfish 15.1's hand-crafted evaluation terms, measured at the quiet position reached a few moves into each line ("explained_at_position_after"). Their difference says WHY one move is better.
   "notes_at_that_position" describes that same position: "opposite-coloured bishops" makes an endgame drawish even a pawn or two
   down (SF 15 counts it in Winnable), and a bad bishop is one hemmed in by its own fixed centre pawns.

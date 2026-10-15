@@ -23,7 +23,9 @@ Free, open source, and no server of ours anywhere: the engines run on your machi
    lichess analysis board you have open.
 2. Stockfish 19 (the WebAssembly "lite" build, running in the panel) analyses both moves: evaluation
    after every move of each line, captures, checks, new attacks, trapped pieces, and what the opponent
-   threatens (a null-move search: "what would you do if I passed?").
+   threatens (a null-move search: "what would you do if I passed?"). When the better move is a quiet one
+   that sets up a capture, it also plays that capture right away, and the follow-up the capture is for, to show why it
+   has to wait.
 3. Stockfish 15's classical evaluation terms (mobility, king safety, pawn structure, ...) are compared
    a few moves into each line, for the positional part of the answer. Modern Stockfish evaluates with a
    neural network, which is brilliant and completely unable to explain itself, so the old hand-written
