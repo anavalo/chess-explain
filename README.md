@@ -158,6 +158,11 @@ Some things that would make it better:
   Stockfish.
 - Standard chess only. Your Crazyhouse blunders remain a mystery.
 
+## Support
+
+chess-explain is free and stays free. If it explained one of your blunders well enough that you made
+a different one next time, you can [buy me a coffee on Ko-fi](https://ko-fi.com/anavalo).
+
 ## License and thanks
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).

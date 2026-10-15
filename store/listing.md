@@ -38,6 +38,8 @@ explanation it asks lichess whether you are playing a game. If you are, it refus
 
 Free and open source (GPL-3.0): https://github.com/anavalo/chess-explain
 
+If it helps you, you can support it on Ko-fi: https://ko-fi.com/anavalo
+
 **Screenshots:** at least one, 1280×800 or 640×400: the side panel next to a lichess analysis board,
 showing an explanation.
 
