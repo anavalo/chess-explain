@@ -57,6 +57,11 @@ assert.deepEqual(endNotes(pos('2b1k3/8/8/8/8/8/8/2B1K3 w - - 0 1'), 'white'), ['
 assert.deepEqual(endNotes(pos('4k3/8/4p3/3pP3/3P4/8/8/2B1K3 w - - 0 1'), 'white'),
   ['your bishop on c1 is bad: your pawns on d4, e5 are fixed on its colour']);
 
+// lichess status stub: the real user may be in a game when CI runs
+globalThis.fetch = async url => {
+  const id = new URL(url).searchParams.get('ids');
+  return Response.json(id === 'zz_no_such_user_zz' ? [] : [{ id, playing: id === 'in_a_game' }]);
+};
 const engines = await nodeEngines();
 let facts;
 const stub = f => ((facts = f), '(stub)');
@@ -69,7 +74,7 @@ try {
   r = await ask(fen, 'c4', 'c3c4');
   assert.equal(r.best.move, 'c4');
   assert.notEqual(r.compared.move, 'c4');
-  for (const user of [undefined, 'zz_no_such_user_zz'])
+  for (const user of [undefined, 'zz_no_such_user_zz', 'in_a_game'])
     await assert.rejects(handle(engines, { fen, move: 'dxc5', user }, null, stub), Refused);
 
   // regression positions: the facts must carry the point a good answer makes
