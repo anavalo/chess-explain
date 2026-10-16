@@ -1,4 +1,4 @@
 node_modules/
 chess-explain.zip
 .DS_Store
-eval-out/
+eval-out*/
