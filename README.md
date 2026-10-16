@@ -55,7 +55,7 @@ browser for Anthropic (the explanation) and lichess (the fair-play check).
    evaluates with a neural network, which is brilliant and completely unable to explain itself, so the
    old hand-written terms are brought back to do the explaining. They are rescaled to match Stockfish
    15.1's values.
-4. **Claude Haiku 5.5** turns that fact sheet into a short explanation. The prompt forbids it from
+4. **Claude** (Haiku 5.5 by default) turns that fact sheet into a short explanation. The prompt forbids it from
    inventing moves or squares that are not in the facts. Chess commentary is a field with a long
    tradition of confident nonsense; we try not to add to it.
 
@@ -108,6 +108,9 @@ At Anthropic's prices as of October 2026 ($0.10 per million input tokens, $0.50 
 tokens), an explanation sends about 3,000 tokens and gets back a short answer plus the model's thinking,
 which comes to a fraction of a cent. Even if the model used its whole 16,000-token output limit, one
 explanation would cost less than one cent.
+
+Settings also offer Claude Opus 5.5, at about 7 cents an explanation. On the 132-position eval set below it
+made about half as many false or unsupported claims as Haiku and found the decisive point more often.
 
 ## Development
 

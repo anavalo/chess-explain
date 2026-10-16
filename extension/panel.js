@@ -79,12 +79,20 @@ const engines = crossOriginIsolated && startEngines(path => {
   return e;
 });
 const keyInput = document.getElementById('key');
+const settings = document.getElementById('settings'), gear = document.getElementById('gear');
+const showSettings = open => {
+  settings.hidden = !open;
+  gear.setAttribute('aria-expanded', open);
+};
+gear.onclick = () => showSettings(settings.hidden);
 
 // The key lives in chrome.storage.local (this profile only, never synced) and goes only to api.anthropic.com.
 async function showKeyStatus() {
   const { apiKey } = await chrome.storage.local.get('apiKey');
-  document.getElementById('key-status').textContent = apiKey ? `set (…${apiKey.slice(-4)})` : 'not set';
-  document.getElementById('settings').open = !apiKey;
+  const status = document.getElementById('key-status');
+  status.textContent = apiKey ? `saved …${apiKey.slice(-4)}` : 'not set';
+  status.classList.toggle('ok', !!apiKey);
+  showSettings(!apiKey);
   return apiKey;
 }
 
@@ -96,6 +104,14 @@ document.getElementById('key-form').onsubmit = async e => {
   showKeyStatus();
 };
 showKeyStatus();
+
+// the model is a setting too; Haiku unless the user picked another
+const model = () => document.querySelector('input[name="model"]:checked').value;
+chrome.storage.local.get('model').then(({ model: m }) => {
+  const radio = m && document.querySelector(`input[name="model"][value="${CSS.escape(m)}"]`);
+  if (radio) radio.checked = true;
+});
+settings.onchange = e => e.target.name === 'model' && chrome.storage.local.set({ model: e.target.value });
 const button = document.getElementById('go');
 
 // Builds an element; `html` is only ever our own markup or md() output, which escapes the model's text.
@@ -160,7 +176,7 @@ async function explain() {
     const ready = await Promise.race([engines, crashed, new Promise((_, fail) =>
       setTimeout(() => fail(new Error('Stockfish did not start within 30 s.')), 30_000))]);
     stage = `Analysing ${move}`;
-    const llm = (...args) => ((stage = 'Asking Claude'), askClaude(...args));
+    const llm = (facts, key) => ((stage = 'Asking Claude'), askClaude(facts, key, model()));
     const data = await Promise.race([handle(ready, { fen: b.fen, move, best: b.best, user: b.user }, apiKey, llm), crashed]);
     out.replaceChildren();
     render(data, b);

@@ -5,7 +5,7 @@
 // An LLM turns those numbers into plain language.
 //
 // Runs in the side panel (engines in Web Workers) and in node (engines as child processes):
-//   node extension/explain.js FEN MOVE [--vs MOVE] [--nodes N] [--no-llm]
+//   node extension/explain.js FEN MOVE [--vs MOVE] [--nodes N] [--no-llm] [--model ID]
 
 import {
   Chess, SquareSet, attacks, castlingSide, kingCastlesTo, makeFen, makeSan, makeSquare, makeUci, opposite, parseFen,
@@ -547,7 +547,7 @@ async function buildFacts({ sf, sf15 }, fen, played, vs, nodes = NODES) {
 
 // ---- the LLM ----
 
-const SYSTEM = `You are a chess coach for club players (around 1200-1800 rating).
+export const SYSTEM = `You are a chess coach for club players (around 1200-1800 rating).
 You get facts from two engines about one position and two candidate moves:
 - "latest_sf_eval" and "line_with_evals" come from the latest Stockfish. They are the truth about which move is better.
   The player who asks is the side to move: call them "you". In "line_with_evals" every move has its move number ("12." for White,
@@ -627,7 +627,9 @@ Rules:
    "notes_at_that_position", and name that move. Pins, attacks and threats do not count: they may be gone by then.
    With no such fact, give the term and its size only: no "because", and do not remark that the cause is not shown.`;
 
-export async function explain(facts, apiKey) {
+export async function explain(facts, apiKey, model = 'claude-haiku-5-5') {
+  // Haiku has no server-side fallback; on the others a safety decline is retried on a fallback model
+  const fallback = !model.startsWith('claude-haiku');
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -636,11 +638,13 @@ export async function explain(facts, apiKey) {
       'anthropic-version': '2023-06-01',
       // the key is the user's own, stored in their browser profile
       'anthropic-dangerous-direct-browser-access': 'true',
+      ...fallback && { 'anthropic-beta': 'server-side-fallback-2026-07-01' },
     },
     body: JSON.stringify({
-      model: 'claude-haiku-5-5',
+      model,
       max_tokens: 16000,
       output_config: { effort: 'high' },
+      ...fallback && { fallbacks: 'default' },
       system: SYSTEM,
       messages: [{ role: 'user', content: JSON.stringify(facts, null, 1) }],
     }),
@@ -720,14 +724,14 @@ if (import.meta.main) { // node 24.2+; undefined in the browser
   const { values: o, positionals: [fen, move] } = parseArgs({
     allowPositionals: true,
     options: { vs: { type: 'string' }, nodes: { type: 'string', default: String(NODES) },
-      'no-llm': { type: 'boolean' } },
+      'no-llm': { type: 'boolean' }, model: { type: 'string' } },
   });
   const engines = await nodeEngines();
   try {
     const pos = position(fen);
     const facts = await buildFacts(engines, fen, parseMove(pos, move), o.vs ? parseMove(pos, o.vs) : null, Number(o.nodes));
     console.log(JSON.stringify(facts, null, 1));
-    if (!o['no-llm']) console.log('\n' + await explain(facts, process.env.ANTHROPIC_API_KEY));
+    if (!o['no-llm']) console.log('\n' + await explain(facts, process.env.ANTHROPIC_API_KEY, o.model));
   } finally {
     engines.quit();
   }
