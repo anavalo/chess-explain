@@ -185,8 +185,9 @@ can become a regression test.
 
 Some things that would make it better:
 
-- **Speed.** Analysis in Chrome is about 3x slower than the same analysis in Node. Nobody has profiled
-  why yet.
+- **Speed.** An explanation takes about 45 seconds, almost all of it Stockfish searching on one thread
+  (one thread keeps the lines identical between runs). Running the two moves' lines on two
+  single-threaded engines at once would keep that and roughly halve the wait.
 - **Smarter labels.** Attacks are labelled only when they are direct. Pins are labelled, skewers are
   not, and batteries and discovered attacks show up only through the "threatens" labels.
 - **Other browsers.** Firefox has no side panel API, so it needs a port to its sidebar.
