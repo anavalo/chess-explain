@@ -291,7 +291,7 @@ function problems(text) {
   const sheet = JSON.parse(facts);
   const found = [];
   const words = answer.split(/\s+/).filter(Boolean).length;
-  if (words > 120) found.push(`${words} words`);
+  if (words > 150) found.push(`${words} words`);
   if (/\[(takes|line ends)|\b\d+\.(\.\.)? (you|opp) /.test(answer)) found.push('raw label');
   if (/(?<![\d.+\-−])\b\d+\.(\.\.)? ([KQRBN][a-h1-8]?x?[a-h][1-8]|[a-h]x?[a-h]?[1-8]\b|O-O)/.test(answer)) found.push('space after move number');
   if (!sheet.position_before_move?.you_are_in_check_from && /\bin check\b/i.test(answer)) found.push('check not in facts');

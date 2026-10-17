@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  Refused, endNotes, handle, isOutpost, moveLabels, nodeEngines, pawnWeaknesses, pins, sanToUci, trapped,
+  Refused, endNotes, handle, imbalances, isOutpost, moveLabels, nodeEngines, pawnWeaknesses, pins, sanToUci, trapped,
 } from './extension/explain.js';
 import { linkMoves, md } from './extension/md.js';
 
@@ -52,10 +52,19 @@ assert.deepEqual(labels('4k3/8/8/3p4/2P5/8/8/4K3 w - - 0 1', 'c4d5'), ['your d-p
 assert.deepEqual(labels('6k1/8/8/8/8/8/5PPP/6K1 w - - 0 1', 'g2g4'), ['pawn gains space', 'your king shield lost its g-pawn']);
 assert.deepEqual(labels('6k1/8/8/8/8/8/5PPP/6K1 w - - 0 1', 'h2h3'), []); // luft keeps the shield
 assert.deepEqual(labels('4k3/1p6/8/8/8/8/8/R3K3 w - - 0 1', 'a1a7'), ['rook on 7th rank']);
+// c4 can no longer reach d4, and nothing on the e-file can take d5 again: both squares become outposts
+assert.deepEqual(labels('4k3/8/8/4p3/8/8/2P5/4K3 w - - 0 1', 'c2c4'), ['pawn gains space', 'your outpost square d5', "opp's outpost square d4"]);
 assert.deepEqual(labels('8/8/4k3/8/8/8/8/R3K3 w - - 0 1', 'a1a7'), []); // nothing to attack there
 assert.deepEqual(endNotes(pos('2b1k3/8/8/8/8/8/8/2B1K3 w - - 0 1'), 'white'), ['opposite-coloured bishops']);
 assert.deepEqual(endNotes(pos('4k3/8/4p3/3pP3/3P4/8/8/2B1K3 w - - 0 1'), 'white'),
   ['your bishop on c1 is bad: your pawns on d4, e5 are fixed on its colour']);
+// imbalances before any move: doubled rooks on the a-file are one label; both bishop pairs cancel out
+assert.deepEqual(imbalances(pos('4r3/R4pk1/2pq1rpp/1p1pn3/1P1Q4/2P1P1P1/4BP1P/R5K1 b - - 2 30')), {
+  yours: ['rook on semi-open e-file', 'pawn on c6 backward', 'outpost square c4'],
+  opponents: ['rook on open a-file', 'pawn on c3 backward', 'outpost square c5'],
+  both: ["piece imbalance: your knight for opp's bishop"],
+});
+assert.deepEqual(imbalances(pos('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1')), { yours: null, opponents: null, both: null });
 
 // lichess status stub: the real user may be in a game when CI runs
 globalThis.fetch = async url => {

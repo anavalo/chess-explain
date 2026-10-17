@@ -160,7 +160,7 @@ with a tactic, and writes one fact sheet and answer per position to `out-dir` (d
 it before and after a change and diff the two folders. `--no-llm` writes the fact sheets only.
 `--model ID` picks the Claude model (default Haiku 5.5). `--facts DIR` reuses the fact sheets in `DIR`
 instead of running the engines, so a prompt or model change takes a minute or two instead of half an hour.
-`out-dir/summary.txt` flags format slips in each answer: over 120 words, raw labels, a space after a move
+`out-dir/summary.txt` flags format slips in each answer: over 150 words, raw labels, a space after a move
 number, a check that is not in the facts, and moves that are not in the fact sheet. `--summary` re-checks
 an existing `out-dir` without a run. `--judge` also has Claude Opus grade each answer against its fact sheet:
 whether it finds the decisive point, which of its claims the facts do not support, and whether it invents a

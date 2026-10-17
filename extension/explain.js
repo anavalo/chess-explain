@@ -225,6 +225,18 @@ export function isOutpost(board, sq, color) {
   return true;
 }
 
+/** Empty outposts for `color`: holes in the enemy pawns that a `color` knight or bishop could take. Only next to an
+    enemy pawn that has gone past it; with no enemy pawn near, every pawn-protected square would count.
+    ponytail: c-f files only, where a piece there matters most; add the wings if answers miss a g5/b5 hole. */
+function outpostSquares(board, color) {
+  const out = new Set(), theirs = board.pawn.intersect(board[opposite(color)]);
+  for (const sq of CENTRE_FILES.diff(board[color]).diff(board.pawn)) {
+    const f = squareFile(sq), sides = SquareSet.fromFile(f - 1).union(SquareSet.fromFile(f + 1));
+    if (theirs.intersects(sides) && isOutpost(board, sq, color)) out.add(`outpost square ${makeSquare(sq)}`);
+  }
+  return out;
+}
+
 /** `color`'s isolated, doubled and backward pawns, as SF 15 defines them (src/pawns.cpp). */
 export function pawnWeaknesses(board, color) {
   const own = board.pawn.intersect(board[color]), theirs = board.pawn.diff(own), out = new Set();
@@ -263,6 +275,37 @@ function shieldHoles(board, color) {
   return out;
 }
 
+/** 'open' or 'semi-open' (no `color` pawn) for a rook on `sq`'s file, else null. */
+function rookFile(board, sq, color) {
+  const pawns = board.pawn.intersect(SquareSet.fromFile(squareFile(sq)));
+  return pawns.isEmpty() ? 'open' : pawns.intersects(board[color]) ? null : 'semi-open';
+}
+
+/** Silman's imbalances: what already differs on the board before any move, for the side to move ("yours"), the
+    opponent, and both. ponytail: structure only; space, development and initiative are left to the SF 15 terms. */
+export function imbalances(pos) {
+  const b = pos.board, them = opposite(pos.turn);
+  const side = color => {
+    const out = new Set(); // a Set: two rooks on one open file are one label
+    if (hasBishopPair(b, color) && !hasBishopPair(b, opposite(color))) out.add('bishop pair');
+    for (const sq of b[color].intersect(b.knight.union(b.bishop)))
+      if (isOutpost(b, sq, color)) out.add(`${b.getRole(sq)} on outpost ${makeSquare(sq)}`);
+    for (const sq of b[color].intersect(b.rook)) {
+      const file = rookFile(b, sq, color);
+      if (file) out.add(`rook on ${file} ${'abcdefgh'[squareFile(sq)]}-file`);
+    }
+    for (const features of [passedPawns, pawnWeaknesses, shieldHoles, outpostSquares]) features(b, color).forEach(f => out.add(f));
+    return out.size ? [...out] : null;
+  };
+  // pieces one side has more of than the other: "your bishop for opp's knight", "opp's extra rook"
+  const extra = (c, d) => ['queen', 'rook', 'bishop', 'knight'].flatMap(r =>
+    Array(Math.max(0, b[r].intersect(b[c]).size() - b[r].intersect(b[d]).size())).fill(r)).join(' and ');
+  const mine = extra(pos.turn, them), theirs = extra(them, pos.turn);
+  const pieces = mine && theirs ? `your ${mine} for opp's ${theirs}` : mine ? `your extra ${mine}` : theirs && `opp's extra ${theirs}`;
+  const both = [...pieces ? [`piece imbalance: ${pieces}`] : [], ...endNotes(pos, pos.turn) ?? []];
+  return { yours: side(pos.turn), opponents: side(them), both: both.length ? both : null };
+}
+
 /** Positional labels for move `uci` from `b` to `next`; `you` is the side the explanation is for. */
 export function moveLabels(b, next, uci, you) {
   const mv = parseUci(uci), role = b.board.getRole(mv.from), victim = b.board.getRole(mv.to);
@@ -273,9 +316,8 @@ export function moveLabels(b, next, uci, you) {
   if ((role === 'knight' || role === 'bishop') && isOutpost(next.board, mv.to, b.turn)) labels.push(`${role} on outpost ${makeSquare(mv.to)}`);
   const them = opposite(b.turn);
   if (role === 'rook' && squareFile(mv.from) !== squareFile(mv.to)) {
-    const pawns = next.board.pawn.intersect(SquareSet.fromFile(squareFile(mv.to)));
-    if (pawns.isEmpty()) labels.push('rook on open file');
-    else if (!pawns.intersects(next.board[b.turn])) labels.push('rook on semi-open file');
+    const file = rookFile(next.board, mv.to, b.turn);
+    if (file) labels.push(`rook on ${file} file`);
   }
   // the 7th only counts with enemy pawns to attack there or the enemy king held on its back rank
   const seventh = b.turn === 'white' ? 6 : 1;
@@ -286,7 +328,7 @@ export function moveLabels(b, next, uci, you) {
   if (hasBishopPair(b.board, them) && !hasBishopPair(next.board, them)) labels.push(`${owner(them)} bishop pair gone`);
   if (role === 'pawn' || victim === 'pawn' || isEnPassant(b, mv))
     for (const color of [b.turn, them])
-      for (const features of [pawnWeaknesses, passedPawns, shieldHoles]) {
+      for (const features of [pawnWeaknesses, passedPawns, shieldHoles, outpostSquares]) {
         const before = features(b.board, color);
         for (const w of features(next.board, color)) if (!before.has(w)) labels.push(`${owner(color)} ${w}`);
       }
@@ -534,6 +576,7 @@ async function buildFacts({ sf, sf15 }, fen, played, vs, nodes = NODES) {
     side_to_move: pos.turn === 'white' ? 'White' : 'Black',
     eval_before_any_move: scoreStr(before),
     position_before_move: positionBefore(pos),
+    imbalances: imbalances(pos),
     opponent_threat: threatFacts,
     material_before_any_move: material(pos, pos.turn),
     values_are_from: "side to move's point of view, in pawns",
@@ -567,7 +610,9 @@ You get facts from two engines about one position and two candidate moves:
   "rook on open|semi-open file", "<side> bishop pair gone", "<side> <file>-pawn isolated", "<side> <file>-pawns doubled",
   "<side> pawn on <square> backward" (behind its neighbours, cannot safely advance), "<side> passed <file>-pawn" (no enemy pawn
   can stop it, SF 15 counts it in Passed), "<side> king shield lost its <file>-pawn" (a pawn in front of the castled king moved
-  away or was taken, SF 15 counts it in King safety), "rook on 7th rank" (attacks pawns there or holds the king on its back rank).
+  away or was taken, SF 15 counts it in King safety), "rook on 7th rank" (attacks pawns there or holds the king on its back rank),
+  "<side> outpost square <square>" (a pawn move just made that empty square an outpost for that side: no enemy pawn can
+  ever attack it again, so a knight or bishop can settle there; the pawn move weakened it for the other side).
   They often explain a terms difference.
   "<piece> is trapped" means that piece is attacked and every
   square it can go to is unsafe: if a trapped piece is later captured, explain the trap (which moves attacked it and took
@@ -577,6 +622,13 @@ You get facts from two engines about one position and two candidate moves:
   opponent pieces you could win, and pinned pieces on both sides. A blunder often ignores one of these: say so first when it applies.
   If "you_are_in_check_from" is set, your first sentence must say you were in check and from which piece,
   and that every legal move had to answer that check. If it is null, do not mention check at all.
+- "imbalances" lists what already differs on the board before any move: "yours", "opponents" and "both" (bishop pair,
+  outposts, empty "outpost square"s (holes in the enemy pawns that side's pieces can use), rooks on open files, passed
+  and weak pawns, holes in the king shield, bad or opposite-coloured bishops, different pieces). Unless you were in
+  check, your first sentence (at most 20 words) sums up the position from the one or two imbalances that matter most
+  and what each side wants from them (a weak pawn is a target, a passed pawn wants to advance, the bishop pair wants
+  open lines). Use only these labels; if all three are null, skip that sentence. The rules below that
+  say what to lead with apply to the explanation that follows it.
 - "opponent_threat" (when not null) is what the opponent would play if you could pass a move, and the eval it would reach.
   For each move, "if_opp_plays_the_threat_at_once" plays your move, then the threat, then best play. If the eval stays good
   there, your move stops the threat: explain how, from the labels (for example the reply that punishes the threat). If the eval
@@ -609,7 +661,7 @@ Rules:
 4. Otherwise the main reason is in the line (a tactic, a trap, or a plan the classical rules cannot see): point to the moves in the line that decide it. Never invent a reason.
    You may still name up to two terms that favour the better move by at least 0.25 pawns each and match something in the line
    (for example a bishop given up for a knight, or broken king pawns), as part of the reason, with their size. Never present them as the main reason.
-5. Never mention moves, squares or pieces that are not supported by the facts. Under 120 words. No headings.
+5. Never mention moves, squares or pieces that are not supported by the facts. Under 150 words. No headings.
    Stop once the decisive point is made: do not narrate the rest of a line, and do not judge trades you were not told about.
 6. The board the player sees is the position before any move. When you describe something that happens later in a line,
    name the moves that lead there first, so a piece that moves during the line is never described as if it already stood there.
