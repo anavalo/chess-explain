@@ -161,7 +161,9 @@ async function explain() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.url?.startsWith('https://lichess.org/')) return error('Open a lichess analysis board.');
   const [{ result: b }] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: readBoard });
-  if (!b.fen) return error("No engine panel found. Open the analysis board and turn on lichess's engine.");
+  if (!b.fen) return error(tab.url.startsWith('https://lichess.org/study/')
+    ? "No engine panel found. Turn on lichess's engine, or, if this study has computer analysis disabled, copy the FEN from its share tab to lichess.org/analysis."
+    : "No engine panel found. Open the analysis board and turn on lichess's engine.");
   const move = document.getElementById('move').value.trim() || b.next;
   if (!move) return error('No next game move here. Type a move to compare with.');
 
