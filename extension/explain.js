@@ -275,6 +275,16 @@ function shieldHoles(board, color) {
   return out;
 }
 
+/** `color`'s king is still on the d-f files while the enemy has its queen and two more pieces, and the enemy king has
+    left the centre, or `color` can no longer castle and the d- or e-file has at most one pawn (the centre is open). */
+function kingInCentre(pos, color) {
+  const b = pos.board, them = b[opposite(color)], central = sq => sq !== undefined && squareFile(sq) >= 3 && squareFile(sq) <= 5;
+  if (!central(b.kingOf(color)) || !them.intersects(b.queen) || them.diff(b.pawn).diff(b.king).size() < 3) return false;
+  if (!central(b.kingOf(opposite(color)))) return true;
+  const canCastle = pos.castles.castlingRights.intersects(SquareSet.fromRank(color === 'white' ? 0 : 7));
+  return !canCastle && [3, 4].some(f => b.pawn.intersect(SquareSet.fromFile(f)).size() <= 1);
+}
+
 /** 'open' or 'semi-open' (no `color` pawn) for a rook on `sq`'s file, else null. */
 function rookFile(board, sq, color) {
   const pawns = board.pawn.intersect(SquareSet.fromFile(squareFile(sq)));
@@ -295,6 +305,7 @@ export function imbalances(pos) {
       if (file) out.add(`rook on ${file} ${'abcdefgh'[squareFile(sq)]}-file`);
     }
     for (const features of [passedPawns, pawnWeaknesses, shieldHoles, outpostSquares]) features(b, color).forEach(f => out.add(f));
+    if (kingInCentre(pos, color)) out.add('king still in the centre');
     return out.size ? [...out] : null;
   };
   // pieces one side has more of than the other: "your bishop for opp's knight", "opp's extra rook"
@@ -326,12 +337,21 @@ export function moveLabels(b, next, uci, you) {
       || squareRank(next.board.kingOf(them)) === (b.turn === 'white' ? 7 : 0)))
     labels.push('rook on 7th rank');
   if (hasBishopPair(b.board, them) && !hasBishopPair(next.board, them)) labels.push(`${owner(them)} bishop pair gone`);
-  if (role === 'pawn' || victim === 'pawn' || isEnPassant(b, mv))
+  if (role === 'pawn' || victim === 'pawn' || isEnPassant(b, mv)) {
+    // a pawn that moves or is taken opens or closes diagonals: name bishops (other than the mover) that gain or lose 3+ squares
+    const reach = (pos, sq) => attacks(pos.board.get(sq), sq, pos.board.occupied).diff(pos.board[pos.board.getColor(sq)]).size();
+    for (const sq of b.board.bishop.intersect(next.board.bishop).without(mv.from)) {
+      if (b.board.getColor(sq) !== next.board.getColor(sq)) continue;
+      const d = reach(next, sq) - reach(b, sq), whose = owner(b.board.getColor(sq));
+      if (d >= 3) labels.push(`frees ${whose} bishop on ${makeSquare(sq)} (+${d} squares)`);
+      if (d <= -3) labels.push(`shuts in ${whose} bishop on ${makeSquare(sq)} (${d} squares)`);
+    }
     for (const color of [b.turn, them])
       for (const features of [pawnWeaknesses, passedPawns, shieldHoles, outpostSquares]) {
         const before = features(b.board, color);
         for (const w of features(next.board, color)) if (!before.has(w)) labels.push(`${owner(color)} ${w}`);
       }
+  }
   return labels;
 }
 
@@ -612,7 +632,9 @@ You get facts from two engines about one position and two candidate moves:
   can stop it, SF 15 counts it in Passed), "<side> king shield lost its <file>-pawn" (a pawn in front of the castled king moved
   away or was taken, SF 15 counts it in King safety), "rook on 7th rank" (attacks pawns there or holds the king on its back rank),
   "<side> outpost square <square>" (a pawn move just made that empty square an outpost for that side: no enemy pawn can
-  ever attack it again, so a knight or bishop can settle there; the pawn move weakened it for the other side).
+  ever attack it again, so a knight or bishop can settle there; the pawn move weakened it for the other side),
+  "frees|shuts in <side> bishop on <square> (+|-N squares)" (that move opened or closed the bishop's diagonals; freeing
+  your own bad bishop or shutting in the enemy's good one is often the point of a pawn break or a pawn capture).
   They often explain a terms difference.
   "<piece> is trapped" means that piece is attacked and every
   square it can go to is unsafe: if a trapped piece is later captured, explain the trap (which moves attacked it and took
@@ -624,11 +646,14 @@ You get facts from two engines about one position and two candidate moves:
   and that every legal move had to answer that check. If it is null, do not mention check at all.
 - "imbalances" lists what already differs on the board before any move: "yours", "opponents" and "both" (bishop pair,
   outposts, empty "outpost square"s (holes in the enemy pawns that side's pieces can use), rooks on open files, passed
-  and weak pawns, holes in the king shield, bad or opposite-coloured bishops, different pieces). Unless you were in
-  check, your first sentence (at most 20 words) sums up the position from the one or two imbalances that matter most
-  and what each side wants from them (a weak pawn is a target, a passed pawn wants to advance, the bishop pair wants
-  open lines). Use only these labels; if all three are null, skip that sentence. The rules below that
-  say what to lead with apply to the explanation that follows it.
+  and weak pawns, holes in the king shield, bad or opposite-coloured bishops, different pieces, a "king still in the
+  centre" (not castled, with the enemy queen and pieces on, and the centre open or the enemy king safe)). Unless you
+  were in check, your first sentence (at most 20 words) sums up the position from the one or two imbalances that matter
+  most and what each side wants from them (a weak pawn is a target, a passed pawn wants to advance, the bishop pair
+  wants open lines, a bad bishop wants to be traded or to get outside its pawns while the other side keeps it shut in,
+  a king in the centre wants to castle while the other side opens the centre with pawn breaks and exchanges first).
+  Use only these labels; if all three are null, skip that sentence. The rules below that say what to lead with apply
+  to the explanation that follows it.
 - "opponent_threat" (when not null) is what the opponent would play if you could pass a move, and the eval it would reach.
   For each move, "if_opp_plays_the_threat_at_once" plays your move, then the threat, then best play. If the eval stays good
   there, your move stops the threat: explain how, from the labels (for example the reply that punishes the threat). If the eval
@@ -647,7 +672,8 @@ You get facts from two engines about one position and two candidate moves:
   threat first and "prepares" right after it.
 - "sf15_terms" are Stockfish 15.1's hand-crafted evaluation terms, measured at the quiet position reached a few moves into each line ("explained_at_position_after"). Their difference says WHY one move is better.
   "notes_at_that_position" describes that same position: "opposite-coloured bishops" makes an endgame drawish even a pawn or two
-  down (SF 15 counts it in Winnable), and a bad bishop is one hemmed in by its own fixed centre pawns.
+  down (SF 15 counts it in Winnable), and a bad bishop is one hemmed in by its own fixed centre pawns. When a line
+  creates a bad bishop (often by forcing a pawn onto its colour) or trades one off, that is a reason for the move.
 
 Term meanings: Material = piece count. Imbalance = piece combinations (bishop pair, knights love pawns, two rooks overlap).
 Pawns = pawn structure (isolated, doubled, backward, connected). Knights/Bishops = outposts, bad bishop (own pawns on its colour, blocked centre), long diagonal, distance to king.
@@ -661,7 +687,7 @@ Rules:
 4. Otherwise the main reason is in the line (a tactic, a trap, or a plan the classical rules cannot see): point to the moves in the line that decide it. Never invent a reason.
    You may still name up to two terms that favour the better move by at least 0.25 pawns each and match something in the line
    (for example a bishop given up for a knight, or broken king pawns), as part of the reason, with their size. Never present them as the main reason.
-5. Never mention moves, squares or pieces that are not supported by the facts. Under 150 words. No headings.
+5. Never mention moves, squares or pieces that are not supported by the facts. At most 120 words. No headings.
    Stop once the decisive point is made: do not narrate the rest of a line, and do not judge trades you were not told about.
 6. The board the player sees is the position before any move. When you describe something that happens later in a line,
    name the moves that lead there first, so a piece that moves during the line is never described as if it already stood there.
@@ -677,7 +703,14 @@ Rules:
 9. A term difference is a number, not a reason. Give a cause for a term only from what still stands at
    "explained_at_position_after": a structure label or a capture label on a move up to that point, or
    "notes_at_that_position", and name that move. Pins, attacks and threats do not count: they may be gone by then.
-   With no such fact, give the term and its size only: no "because", and do not remark that the cause is not shown.`;
+   With no such fact, give the term and its size only: no "because", and do not remark that the cause is not shown.
+10. After the imbalance sentence, say in plain chess words what the played move allows and what the better move does
+   instead, from the labels: a piece left attacked or pinned, a line opened against a king, a piece traded off, a weakness
+   created or fixed. Then show the line. Terms and evals come after that.
+11. When a deciding line trades material, say what changed hands in pieces, from its capture labels ("two minor pieces
+   for a rook", "your knight for their bishop"), not only the material balance.
+12. If a line shows mate ("checkmate", "mates in", "gets mated", "threatens ...#") or checks that strip a king's shield
+   ("king shield lost its ..."), the reason is the attack on that king: say so before any material count.`;
 
 export async function explain(facts, apiKey, model = 'claude-haiku-5-5') {
   // Haiku has no server-side fallback; on the others a safety decline is retried on a fallback model
