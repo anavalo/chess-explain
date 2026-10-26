@@ -152,7 +152,7 @@ and take about three minutes. CI runs them on every push to `main` and every pul
 ### Eval set
 
 ```sh
-ANTHROPIC_API_KEY=... node eval.js [out-dir] [--no-llm] [--model ID] [--facts DIR] [--summary] [--judge]
+ANTHROPIC_API_KEY=... node eval.js [out-dir] [--no-llm] [--model ID] [--facts DIR] [--set FILE] [--summary] [--judge]
 ```
 
 This explains 132 quiet positions from lichess games, where the better move wins on position rather than
@@ -165,7 +165,10 @@ number, a check that is not in the facts, and moves that are not in the fact she
 an existing `out-dir` without a run. `--judge` also has Claude Opus grade each answer against its fact sheet:
 whether it finds the decisive point, which of its claims the facts do not support, and whether it invents a
 cause for a term difference. A verdict costs about 4 cents and is kept in `out-dir/<name>.judge.json`, so a
-second `--judge` only grades new answers.
+second `--judge` only grades new answers. `--set FILE` runs a JSON list of `{id, fen, played, better}` instead
+of the built-in positions; an entry with a `reference_reason` (a strong player's reason) also has the judge
+say whether the answer gives that reason. Each run prints the judge totals, the median answer length and how
+many answers go over 120 words.
 
 ### Updating the bundled libraries
 

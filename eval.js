@@ -1,9 +1,11 @@
 // Explains 132 quiet positions from lichess games, where the better move wins on position, not with a tactic.
 // The engines give the same lines on every run, so run this before and after a change and diff the two folders.
-// usage: ANTHROPIC_API_KEY=... node eval.js [out-dir] [--no-llm] [--model ID] [--facts DIR] [--summary] [--judge]   (out-dir defaults to eval-out)
+// usage: ANTHROPIC_API_KEY=... node eval.js [out-dir] [--no-llm] [--model ID] [--facts DIR] [--set FILE] [--summary] [--judge]   (out-dir defaults to eval-out)
 // out-dir/summary.txt flags format slips in each answer; node eval.js out-dir --summary re-checks without a run.
 // --facts DIR reuses DIR's fact sheets (no engines), so only the LLM runs, 16 at a time.
 // --judge has Claude Opus grade each answer against its fact sheet (a few cents per answer, kept in <name>.judge.json).
+// --set FILE runs a JSON list of {id, fen, played, better, reference_reason?} instead of POSITIONS; with a reference_reason the
+// judge also says whether the answer gives that reference reason.
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -164,6 +166,9 @@ The fact sheet is the ground truth: judge the answer only against it, and do not
 - invented_term_cause: true if the answer gives a cause for an SF 15 term difference that no structure label, capture
   label or end note up to "explained_at_position_after" supports (the explainer's rule 9).
 - note: one sentence on the answer's main weakness, or "" if it has none.
+- reference_reason (only when the message gives a reference reason, a strong player's summary of why the better move is
+  better): "yes" if the answer gives that reason in any words, "partly" if it gives only part of it or only vaguely, "no"
+  otherwise. Grade this against the reference, not the fact sheet; false_claims are still graded against the fact sheet.
 
 The explainer's own instructions, which define the fact sheet's fields and labels:
 
@@ -186,9 +191,16 @@ const VERDICT = {
   required: ['decisive_point', 'false_claims', 'invented_term_cause', 'note'],
   additionalProperties: false,
 };
+const WITH_REFERENCE = {
+  ...VERDICT,
+  properties: { ...VERDICT.properties, reference_reason: { type: 'string', enum: ['yes', 'partly', 'no'] } },
+  required: [...VERDICT.required, 'reference_reason'],
+};
 
 const args = process.argv.slice(2);
-const out = args.find((a, i) => !a.startsWith('--') && !['--model', '--facts'].includes(args[i - 1])) ?? 'eval-out';
+const out = args.find((a, i) => !a.startsWith('--') && !['--model', '--facts', '--set'].includes(args[i - 1])) ?? 'eval-out';
+const set = args.includes('--set') ? JSON.parse(readFileSync(args[args.indexOf('--set') + 1], 'utf8')) : null;
+const reference = Object.fromEntries((set ?? []).map(p => [p.id, p.reference_reason]));
 const facts = args.includes('--facts') ? args[args.indexOf('--facts') + 1] : null;
 const mi = args.indexOf('--model');
 const flags = [...args.includes('--no-llm') ? ['--no-llm'] : [], ...mi >= 0 ? ['--model', args[mi + 1]] : []];
@@ -197,12 +209,12 @@ const run = promisify(execFile);
 mkdirSync(out, { recursive: true });
 
 // each position runs in its own process (fresh engines), four at a time; --summary only re-checks out-dir
-const queue = args.includes('--summary') ? [] : [...POSITIONS];
+const queue = args.includes('--summary') ? [] : set ? set.map(p => [p.id, p.fen, p.played, p.better]) : [...POSITIONS];
 await Promise.all(Array.from({ length: facts ? 16 : 4 }, async () => {
   for (let p; (p = queue.shift());) {
     const [game, fen, played, better] = p;
     const [, turn, , , , moveNo] = fen.split(' ');
-    const name = `${game}-${moveNo}${turn}`; // NRzf6Iy4-13b: Black's 13th move
+    const name = set ? game : `${game}-${moveNo}${turn}`; // NRzf6Iy4-13b: Black's 13th move
     let text;
     try {
       if (facts) {
@@ -228,16 +240,23 @@ const report = answers.map(n => {
     if (v.decisive_point !== 'yes') found.push(`judge: decisive point ${v.decisive_point}`);
     for (const c of v.false_claims) found.push(`judge: false claim "${c.claim}" (${c.facts})`);
     if (v.invented_term_cause) found.push('judge: invented term cause');
+    if (v.reference_reason && v.reference_reason !== 'yes') found.push(`judge: reference reason ${v.reference_reason}`);
   }
   return `${n} ${found.join(', ') || 'ok'}`;
 });
 writeFileSync(`${out}/summary.txt`, report.join('\n') + '\n');
 console.log(`\n${report.length} positions, ${report.filter(r => !r.endsWith(' ok')).length} flagged (see ${out}/summary.txt)`);
+const words = answers.map(n => readFileSync(`${out}/${n}.txt`, 'utf8').split('\n\n').slice(1).join(' ').split(/\s+/).filter(Boolean).length)
+  .filter(Boolean).sort((x, y) => x - y);
+if (words.length) console.log(`median ${words[words.length >> 1]} words, ${words.filter(w => w > 120).length} over 120`);
 if (verdicts.length) {
   const count = f => verdicts.filter(f).length;
   console.log(`judged ${verdicts.length}: decisive point yes ${count(v => v.decisive_point === 'yes')}, `
     + `partly ${count(v => v.decisive_point === 'partly')}, no ${count(v => v.decisive_point === 'no')}; `
-    + `false claims in ${count(v => v.false_claims.length)}; invented term causes in ${count(v => v.invented_term_cause)}`);
+    + `false claims in ${count(v => v.false_claims.length)} (${verdicts.reduce((n, v) => n + v.false_claims.length, 0)} total); `
+    + `invented term causes in ${count(v => v.invented_term_cause)}`
+    + (verdicts.some(v => v.reference_reason) ? `; reference reason yes ${count(v => v.reference_reason === 'yes')}, `
+      + `partly ${count(v => v.reference_reason === 'partly')}, no ${count(v => v.reference_reason === 'no')}` : ''));
 }
 
 /** Judges each named answer in out-dir, four at a time, and writes <name>.judge.json next to it. */
@@ -248,7 +267,8 @@ async function judgeAll(names) {
       const text = readFileSync(`${out}/${n}.txt`, 'utf8'), cut = text.indexOf('\n\n');
       if (text.startsWith('ERROR') || cut < 0) continue; // nothing to judge
       try {
-        writeFileSync(`${out}/${n}.judge.json`, JSON.stringify(await judge(text.slice(0, cut), text.slice(cut + 2)), null, 1) + '\n');
+        const v = await judge(text.slice(0, cut), text.slice(cut + 2), reference[n]);
+        writeFileSync(`${out}/${n}.judge.json`, JSON.stringify(v, null, 1) + '\n');
         console.log(n, 'judged');
       } catch (e) {
         console.log(n, `judge failed: ${e.message}`);
@@ -257,7 +277,7 @@ async function judgeAll(names) {
   }));
 }
 
-async function judge(facts, answer) {
+async function judge(facts, answer, ref) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -271,9 +291,9 @@ async function judge(facts, answer) {
       model: 'claude-opus-5-5',
       max_tokens: 16000,
       fallbacks: 'default',
-      output_config: { effort: 'high', format: { type: 'json_schema', schema: VERDICT } },
+      output_config: { effort: 'high', format: { type: 'json_schema', schema: ref ? WITH_REFERENCE : VERDICT } },
       system: [{ type: 'text', text: JUDGE, cache_control: { type: 'ephemeral' } }],
-      messages: [{ role: 'user', content: `Fact sheet:\n${facts}\n\nAnswer:\n${answer}` }],
+      messages: [{ role: 'user', content: `Fact sheet:\n${facts}\n\nAnswer:\n${answer}${ref ? `\n\nReference reason:\n${ref}` : ''}` }],
     }),
     signal: AbortSignal.timeout(300_000),
   });
