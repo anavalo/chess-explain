@@ -6,8 +6,11 @@
 // --judge has Claude Opus grade each answer against its fact sheet (a few cents per answer, kept in <name>.judge.json).
 // --set FILE runs a JSON list of {id, fen, played, better, reference_reason?} instead of POSITIONS; with a reference_reason the
 // judge also says whether the answer gives that reference reason.
+// --pair DIR has Opus compare each answer in out-dir (A) with the same position's answer in DIR (B) and say which is better;
+// a pairwise pick is steadier than two separate grades. Kept in <name>.pair-<DIR name>.json; picks are always in out-dir/DIR terms.
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { SYSTEM, explain } from './extension/explain.js';
@@ -197,11 +200,43 @@ const WITH_REFERENCE = {
   required: [...VERDICT.required, 'reference_reason'],
 };
 
+const PAIR = `You compare two answers from a chess explainer to the same question: why the better move beats the played one.
+You get the fact sheet each was given (JSON; often one sheet for both) and answers A and B. The fact sheet is the ground truth:
+judge only against it, and do not analyse the position yourself. The order of A and B means nothing.
+For each field, first quote the sentence from each answer that best carries it ("" if none), then pick "A", "B" or "tie".
+Say "tie" only when the two are about equally good on that field, not to avoid a choice.
+- decisive_point: which answer better gives the reason the fact sheet shows the better move is better (where the evals of the
+  two lines part and why, a threat one move meets and the other ignores, the idea in "prepares", or the term gaps when
+  "sf15_total_gap" is at least half of "latest_sf_gap"), clearly and up front rather than vaguely or behind a minor reason.
+- fewer_false_claims: which answer makes fewer statements the fact sheet contradicts or does not support (pieces called
+  defended, lost, trapped or pinned; captures, checks, threats; who plays a move; evals; moves out of order). Weigh how
+  serious they are, not only how many.
+- reference_reason (only when the message gives a reference reason, a strong player's summary of why the better move is
+  better): which answer comes closer to giving that reason in any words. Grade this against the reference, not the sheet.
+
+The explainer's own instructions, which define the fact sheet's fields and labels:
+
+${SYSTEM}`;
+
+const pick = { type: 'string', enum: ['A', 'B', 'tie'] }, quote = { type: 'string' };
+const PAIR_VERDICT = {
+  type: 'object',
+  properties: { decisive_quote_a: quote, decisive_quote_b: quote, decisive_point: pick, fewer_false_claims: pick, note: quote },
+  required: ['decisive_quote_a', 'decisive_quote_b', 'decisive_point', 'fewer_false_claims', 'note'],
+  additionalProperties: false,
+};
+const PAIR_WITH_REFERENCE = {
+  ...PAIR_VERDICT,
+  properties: { ...PAIR_VERDICT.properties, reference_quote_a: quote, reference_quote_b: quote, reference_reason: pick },
+  required: [...PAIR_VERDICT.required, 'reference_quote_a', 'reference_quote_b', 'reference_reason'],
+};
+
 const args = process.argv.slice(2);
-const out = args.find((a, i) => !a.startsWith('--') && !['--model', '--facts', '--set'].includes(args[i - 1])) ?? 'eval-out';
+const out = args.find((a, i) => !a.startsWith('--') && !['--model', '--facts', '--set', '--pair'].includes(args[i - 1])) ?? 'eval-out';
 const set = args.includes('--set') ? JSON.parse(readFileSync(args[args.indexOf('--set') + 1], 'utf8')) : null;
 const reference = Object.fromEntries((set ?? []).map(p => [p.id, p.reference_reason]));
 const facts = args.includes('--facts') ? args[args.indexOf('--facts') + 1] : null;
+const pair = args.includes('--pair') ? args[args.indexOf('--pair') + 1].replace(/\/$/, '') : null;
 const mi = args.indexOf('--model');
 const flags = [...args.includes('--no-llm') ? ['--no-llm'] : [], ...mi >= 0 ? ['--model', args[mi + 1]] : []];
 const cli = fileURLToPath(new URL('extension/explain.js', import.meta.url));
@@ -209,7 +244,7 @@ const run = promisify(execFile);
 mkdirSync(out, { recursive: true });
 
 // each position runs in its own process (fresh engines), four at a time; --summary only re-checks out-dir
-const queue = args.includes('--summary') ? [] : set ? set.map(p => [p.id, p.fen, p.played, p.better]) : [...POSITIONS];
+const queue = args.includes('--summary') || pair ? [] : set ? set.map(p => [p.id, p.fen, p.played, p.better]) : [...POSITIONS];
 await Promise.all(Array.from({ length: facts ? 16 : 4 }, async () => {
   for (let p; (p = queue.shift());) {
     const [game, fen, played, better] = p;
@@ -229,6 +264,7 @@ await Promise.all(Array.from({ length: facts ? 16 : 4 }, async () => {
   }
 }));
 const answers = readdirSync(out).filter(f => f.endsWith('.txt') && f !== 'summary.txt').sort().map(f => f.slice(0, -4));
+if (pair) await pairAll(answers.filter(n => existsSync(`${pair}/${n}.txt`)));
 if (args.includes('--judge')) await judgeAll(answers.filter(n => !existsSync(`${out}/${n}.judge.json`)));
 const verdicts = [];
 const report = answers.map(n => {
@@ -277,7 +313,12 @@ async function judgeAll(names) {
   }));
 }
 
-async function judge(facts, answer, ref) {
+function judge(facts, answer, ref) {
+  return claude(JUDGE, `Fact sheet:\n${facts}\n\nAnswer:\n${answer}${ref ? `\n\nReference reason:\n${ref}` : ''}`, ref ? WITH_REFERENCE : VERDICT);
+}
+
+/** One Opus call with a cached system prompt and a JSON schema; returns the parsed JSON plus usage. */
+async function claude(system, content, schema) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -291,9 +332,9 @@ async function judge(facts, answer, ref) {
       model: 'claude-opus-5-5',
       max_tokens: 16000,
       fallbacks: 'default',
-      output_config: { effort: 'high', format: { type: 'json_schema', schema: ref ? WITH_REFERENCE : VERDICT } },
-      system: [{ type: 'text', text: JUDGE, cache_control: { type: 'ephemeral' } }],
-      messages: [{ role: 'user', content: `Fact sheet:\n${facts}\n\nAnswer:\n${answer}${ref ? `\n\nReference reason:\n${ref}` : ''}` }],
+      output_config: { effort: 'high', format: { type: 'json_schema', schema } },
+      system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
+      messages: [{ role: 'user', content }],
     }),
     signal: AbortSignal.timeout(300_000),
   });
@@ -301,6 +342,38 @@ async function judge(facts, answer, ref) {
   if (!r.ok) throw new Error(`Anthropic API error ${r.status}: ${body.error?.message ?? r.statusText}`);
   if (body.stop_reason !== 'end_turn') throw new Error(`stopped: ${body.stop_reason}`);
   return { ...JSON.parse(body.content.find(b => b.type === 'text').text), usage: body.usage };
+}
+
+/** Compares each named answer in out-dir with the one in the --pair folder, prints the tally and the judge's cost. */
+async function pairAll(names) {
+  const file = n => `${out}/${n}.pair-${basename(pair)}.json`;
+  const todo = names.filter(n => !existsSync(file(n)));
+  await Promise.all(Array.from({ length: 16 }, async () => {
+    for (let n; (n = todo.shift());) {
+      const [a, b] = [out, pair].map(d => readFileSync(`${d}/${n}.txt`, 'utf8'));
+      if ([a, b].some(t => t.startsWith('ERROR') || !t.includes('\n\n'))) continue;
+      // half the positions show B first, so the judge's lean toward the second answer cancels out in the totals
+      const swap = [...n].reduce((h, c) => h + c.charCodeAt(0), 0) % 2 === 1;
+      const [[sheetA, answerA], [sheetB, answerB]] = (swap ? [b, a] : [a, b]).map(t => [t.slice(0, t.indexOf('\n\n')), t.slice(t.indexOf('\n\n') + 2)]);
+      const sheets = sheetA === sheetB ? `Fact sheet (both answers):\n${sheetA}` : `Fact sheet A:\n${sheetA}\n\nFact sheet B:\n${sheetB}`;
+      const ref = reference[n] ? `\n\nReference reason:\n${reference[n]}` : '';
+      try {
+        const v = await claude(PAIR, `${sheets}\n\nAnswer A:\n${answerA}\n\nAnswer B:\n${answerB}${ref}`, ref ? PAIR_WITH_REFERENCE : PAIR_VERDICT);
+        if (swap) for (const k of ['decisive_point', 'fewer_false_claims', 'reference_reason']) v[k] = { A: 'B', B: 'A' }[v[k]] ?? v[k];
+        writeFileSync(file(n), JSON.stringify({ ...v, swap }, null, 1) + '\n');
+        console.log(n, 'compared');
+      } catch (e) {
+        console.log(n, `compare failed: ${e.message}`);
+      }
+    }
+  }));
+  const vs = names.filter(n => existsSync(file(n))).map(n => JSON.parse(readFileSync(file(n), 'utf8')));
+  const tally = k => ['A', 'B', 'tie'].map(w => `${w} ${vs.filter(v => v[k] === w).length}`).join(' / ');
+  const usd = vs.reduce((s, { usage: u }) => s + (u.input_tokens * 4 + u.output_tokens * 20
+    + (u.cache_read_input_tokens ?? 0) * 0.2 + (u.cache_creation_input_tokens ?? 0) * 5) / 1e6, 0);
+  console.log(`\n${vs.length} pairs, A = ${out}, B = ${pair}: decisive point ${tally('decisive_point')}`
+    + (vs.some(v => v.reference_reason) ? `; reference reason ${tally('reference_reason')}` : '')
+    + `; false claims ${tally('fewer_false_claims')} (fewer); about $${usd.toFixed(2)}`);
 }
 
 /** Mechanical checks on one CLI output (fact sheet JSON, blank line, answer). They catch format slips, not wrong chess. */
