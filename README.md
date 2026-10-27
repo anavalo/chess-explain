@@ -45,9 +45,10 @@ browser for Anthropic (the explanation) and lichess (the fair-play check).
 
 1. The side panel reads the position, lichess's top engine move, and the next game move from the
    lichess analysis board you have open.
-2. **Stockfish 19** (the WebAssembly "lite" build) analyses both moves: the evaluation after every move
-   of each line, captures, checks, new attacks, pins, trapped pieces, and what the opponent threatens (a
-   null-move search: "what would you do if I passed?"). When the better move is a quiet one that sets up
+2. **Stockfish 19** (the WebAssembly "lite" build, one copy per move, so both lines are searched at
+   once) analyses both moves: the evaluation after every move of each line, captures, checks, new
+   attacks, pins, trapped pieces, and what the opponent threatens (a null-move search: "what would you
+   do if I passed?"). When the better move is a quiet one that sets up
    a capture, it also plays that capture right away, and the follow-up the capture is for, to show why
    it has to wait.
 3. **Stockfish 15's classical evaluation terms** (mobility, king safety, pawn structure, ...) are
@@ -91,8 +92,8 @@ where you want an explanation, and click **Explain**. By default it compares lic
 move played next in the game; type a move in the box to compare with that instead. Click a move in the
 answer to play its line on the board, up to that move.
 
-Each explanation takes about 45 seconds. That is two engines running dozens of searches in a browser
-tab, so make a cup of tea, or use the time to guess the answer yourself.
+Each explanation takes about half a minute. That is three engines running dozens of searches in a
+browser tab, so make a cup of tea, or use the time to guess the answer yourself.
 
 The position, the two moves and the engine analysis are sent to Anthropic; your lichess username is
 sent only to lichess, for the fair-play check. See [PRIVACY.md][privacy-link].
@@ -199,9 +200,6 @@ can become a regression test.
 
 Some things that would make it better:
 
-- **Speed.** An explanation takes about 45 seconds, almost all of it Stockfish searching on one thread
-  (one thread keeps the lines identical between runs). Running the two moves' lines on two
-  single-threaded engines at once would keep that and roughly halve the wait.
 - **Smarter labels.** Attacks are labelled only when they are direct. Pins are labelled, skewers are
   not, and batteries and discovered attacks show up only through the "threatens" labels.
 - **Other browsers.** Firefox has no side panel API, so it needs a port to its sidebar.

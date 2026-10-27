@@ -46,7 +46,8 @@ export function uciEngine(send) {
   return { onLine: l => waiting?.(l), until };
 }
 
-/** Starts both engines with `start(path)` (path relative to this file), which returns a uciEngine.
+/** Starts the engines with `start(path)` (path relative to this file), which returns a uciEngine: two copies of the
+    latest Stockfish (one per candidate line, so the two lines are searched at the same time) and SF 15 for its terms.
     The WASM builds drop input that arrives before they have loaded, so nothing else is sent until uciok. */
 export async function startEngines(start) {
   const setup = async (e, options) => {
@@ -54,10 +55,9 @@ export async function startEngines(start) {
     await e.until([...options.map(([k, v]) => `setoption name ${k} value ${v}`), 'isready'], l => l === 'readyok');
     return e;
   };
-  return {
-    sf: await setup(start('vendor/stockfish/stockfish-19-lite.js'), [['Threads', THREADS], ['Hash', 256]]),
-    sf15: await setup(start('vendor/stockfish/sf15/stockfish.js'), [['Use NNUE', false]]),
-  };
+  const latest = () => setup(start('vendor/stockfish/stockfish-19-lite.js'), [['Threads', THREADS], ['Hash', 256]]);
+  const [sf, sf2, sf15] = await Promise.all([latest(), latest(), setup(start('vendor/stockfish/sf15/stockfish.js'), [['Use NNUE', false]])]);
+  return { sf, sf2, sf15 };
 }
 
 /** Searches `pos` for `nodes`; returns [{score, pv}] per MultiPV line. `score` is {cp} or {mate}, from the
@@ -565,29 +565,40 @@ async function otherBest(sf, pos, not, nodes) {
   return infos.map(i => i.pv[0]).find(m => m !== not);
 }
 
-/** `played` and `vs` are UCI moves; `vs` null means the engine's best other move. */
-async function buildFacts({ sf, sf15 }, fen, played, vs, nodes = NODES) {
+/** `played` and `vs` are UCI moves; `vs` null means the engine's best other move.
+    The played move's line runs on `sf` and the alternative's on `sf2` at the same time. Each engine always gets the
+    same searches in the same order, so its hash table carries the same history and the lines stay the same every run. */
+async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
   const pos = position(fen);
-  const before = (await search(sf, pos, nodes))[0].score;
+  const [before, other] = await Promise.all([
+    search(sf, pos, nodes).then(r => r[0].score),
+    vs ?? otherBest(sf2, pos, played, nodes),
+  ]);
   const [threat, threatFacts] = await opponentThreat(sf, pos, nodes, before, QUIET_THREAT);
-  const other = vs ?? await otherBest(sf, pos, played, nodes);
   if (!played || !other) throw new Error('There is only one legal move here: nothing to compare.');
   const lineNodes = Math.max(Math.floor(nodes / 10), 100_000);
-  const lines = {};
-  for (const [label, mv] of [['played', played], ['alternative', other]]) {
-    const { score, pv } = (await search(sf, pos, nodes, { moves: [mv] }))[0];
+  const line = async (engine, mv) => {
+    const { score, pv } = (await search(engine, pos, nodes, { moves: [mv] }))[0];
     const { leaf, leafSans } = lineToLeaf(pos, pv);
-    lines[label] = {
+    const out = {
       move: san(pos, mv), latest_sf_eval: scoreStr(score), cp: cpOf(score),
-      line_with_evals: await lineWithEvals(sf, pos, pv, lineNodes),
+      line_with_evals: await lineWithEvals(engine, pos, pv, lineNodes),
       explained_at_position_after: leafSans.join(' '),
       explained_fen: leaf ? fenOf(leaf) : null,
       notes_at_that_position: leaf ? endNotes(leaf, pos.turn) : null,
       sf15_terms: leaf ? await sf15Terms(sf15, leaf, pos.turn) : {},
     };
-    if (threat) lines[label].if_opp_plays_the_threat_at_once = await answerToThreat(sf, pos, mv, threat, lineNodes);
-  }
-  lines.alternative.prepares = await prepares(sf, pos, other, played, lines.alternative.cp, lineNodes);
+    if (threat) out.if_opp_plays_the_threat_at_once = await answerToThreat(engine, pos, mv, threat, lineNodes);
+    return out;
+  };
+  const lines = {};
+  await Promise.all([
+    line(sf, played).then(l => (lines.played = l)),
+    line(sf2, other).then(async l => {
+      l.prepares = await prepares(sf2, pos, other, played, l.cp, lineNodes);
+      lines.alternative = l;
+    }),
+  ]);
   const a = lines.alternative.sf15_terms, p = lines.played.sf15_terms;
   const diff = Object.keys(a).filter(k => k in p && k !== 'Total').map(k => [k, round2(a[k] - p[k])]);
   const hasTerms = Object.keys(a).length && Object.keys(p).length;
@@ -775,7 +786,7 @@ export async function handle(engines, req, apiKey, llm = explain) {
   try { pos = position(req.fen); } catch { throw new Error('invalid position'); }
   let move = parseMove(pos, req.move);
   // the hash and history tables carry over from earlier requests: clear them, so the same request gives the same lines
-  await engines.sf.until(['ucinewgame', 'isready'], l => l === 'readyok');
+  await Promise.all([engines.sf, engines.sf2].map(e => e.until(['ucinewgame', 'isready'], l => l === 'readyok')));
   const best = req.best ? parseMove(pos, req.best) : null;
   // you played lichess's move: still explain that move, against the best other move
   if (best === move) move = await otherBest(engines.sf, pos, move, NODES);
@@ -795,7 +806,7 @@ export async function handle(engines, req, apiKey, llm = explain) {
 
 // ---- node ----
 
-/** Node only: the two WASM engines as child processes. Returns {sf, sf15, quit}. */
+/** Node only: the WASM engines as child processes. Returns {sf, sf15, quit}. */
 export async function nodeEngines() {
   const { spawn } = await import('node:child_process');
   const { createInterface } = await import('node:readline');
