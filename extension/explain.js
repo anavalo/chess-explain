@@ -62,7 +62,7 @@ export async function startEngines(start) {
 
 /** Searches `pos` for `nodes`; returns [{score, pv}] per MultiPV line. `score` is {cp} or {mate}, from the
     side to move; `pv` is a list of UCI moves. */
-async function search(sf, pos, nodes, { moves, multipv = 1 } = {}) {
+export async function search(sf, pos, nodes, { moves, multipv = 1 } = {}) {
   const lines = await sf.until([
     `setoption name MultiPV value ${multipv}`,
     `position fen ${fenOf(pos)}`,
@@ -81,10 +81,10 @@ async function search(sf, pos, nodes, { moves, multipv = 1 } = {}) {
 
 // ---- board helpers ----
 
-const position = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
-const fenOf = pos => makeFen(pos.toSetup());
-const play = (pos, uci) => { const p = pos.clone(); p.play(parseUci(uci)); return p; };
-const san = (pos, uci) => makeSan(pos, parseUci(uci));
+export const position = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
+export const fenOf = pos => makeFen(pos.toSetup());
+export const play = (pos, uci) => { const p = pos.clone(); p.play(parseUci(uci)); return p; };
+export const san = (pos, uci) => makeSan(pos, parseUci(uci));
 const moveNo = pos => `${pos.fullmoves}${pos.turn === 'white' ? '.' : '...'}`; // '12.' for White, '12...' for Black
 
 /** SAN or UCI -> UCI as engines write it: castling is the king's two-square move (chessops plays it as king takes rook). */
@@ -111,12 +111,12 @@ const attackers = (pos, color, sq) => pos.kingAttackers(sq, color, pos.board.occ
 const signed = n => (n >= 0 ? `+${n}` : `${n}`);
 const round2 = x => Math.round(x * 100) / 100;
 
-function scoreStr(s) {
+export function scoreStr(s) {
   if ('mate' in s) return s.mate > 0 ? `mates in ${s.mate}` : `gets mated in ${-s.mate}`;
   return `${s.cp >= 0 ? '+' : ''}${(s.cp / 100).toFixed(2)}`;
 }
 const flip = s => ('mate' in s ? { mate: -s.mate } : { cp: -s.cp });
-const pov = (s, pos, color) => (pos.turn === color ? s : flip(s)); // `s` is from pos's side to move
+export const pov = (s, pos, color) => (pos.turn === color ? s : flip(s)); // `s` is from pos's side to move
 const cpOf = s => ('mate' in s ? (s.mate > 0 ? 10000 - s.mate : -10000 - s.mate) : s.cp);
 
 /** Play the first LEAF_PLIES of the engine line and stop at the last quiet position (no check, last move not
@@ -399,7 +399,7 @@ export function endNotes(pos, you) {
 /** '12. you Bc3 (-7.52) 12... opp Bb4 (-7.50) 13. you Bd2 (-7.68) 13... opp Qxa1 [takes rook, material -5] (-7.38) ...':
     Stockfish 19's eval after every move, from `you`'s view, for `maxPlies` plies and then on until an exchange is over.
     A skipped recapture that loses is played out on its own line below. `nested` is set for those lines, so they do not branch again. */
-async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20, you = pos.turn, nested = false) {
+export async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20, you = pos.turn, nested = false) {
   let b = pos, captured = false;
   const out = [], why = [], seenTrapped = new Set();
   for (const [i, uci] of pv.entries()) {
@@ -507,7 +507,7 @@ export function trapped(pos) {
 }
 
 /** What is already on the board before you move: check, loose pieces, pins. */
-function positionBefore(pos) {
+export function positionBefore(pos) {
   const checkers = [...pos.ctx().checkers].map(s => `${pos.board.getRole(s)} on ${makeSquare(s)}`);
   const or = list => (list.length ? list : null);
   const pinned = color => or(pins(pos, color).map(p => `${pinText(pos, p)}, by ${pos.board.getRole(p.pinner)} on ${makeSquare(p.pinner)}`));
@@ -531,7 +531,7 @@ function passed(pos) {
 
 /** The opponent's best move if you could pass (null move), when it would gain at least `min` centipawns.
     `scoreNow` is the current eval from the side to move. Returns [threat UCI, facts] or [null, null]. */
-async function opponentThreat(sf, pos, nodes, scoreNow, min = 100) {
+export async function opponentThreat(sf, pos, nodes, scoreNow, min = 100) {
   const p = !pos.isCheck() && passed(pos);
   if (!p) return [null, null];
   const { score, pv } = (await search(sf, p, nodes))[0];
