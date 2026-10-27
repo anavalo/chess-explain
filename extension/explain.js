@@ -293,8 +293,8 @@ function rookFile(board, sq, color) {
 
 /** Silman's imbalances: what already differs on the board before any move, for the side to move ("yours"), the
     opponent, and both. ponytail: structure only; space, development and initiative are left to the SF 15 terms. */
-export function imbalances(pos) {
-  const b = pos.board, them = opposite(pos.turn);
+export function imbalances(pos, you = pos.turn) {
+  const b = pos.board, them = opposite(you);
   const side = color => {
     const out = new Set(); // a Set: two rooks on one open file are one label
     if (hasBishopPair(b, color) && !hasBishopPair(b, opposite(color))) out.add('bishop pair');
@@ -311,10 +311,35 @@ export function imbalances(pos) {
   // pieces one side has more of than the other: "your bishop for opp's knight", "opp's extra rook"
   const extra = (c, d) => ['queen', 'rook', 'bishop', 'knight'].flatMap(r =>
     Array(Math.max(0, b[r].intersect(b[c]).size() - b[r].intersect(b[d]).size())).fill(r)).join(' and ');
-  const mine = extra(pos.turn, them), theirs = extra(them, pos.turn);
+  const mine = extra(you, them), theirs = extra(them, you);
   const pieces = mine && theirs ? `your ${mine} for opp's ${theirs}` : mine ? `your extra ${mine}` : theirs && `opp's extra ${theirs}`;
-  const both = [...pieces ? [`piece imbalance: ${pieces}`] : [], ...endNotes(pos, pos.turn) ?? []];
-  return { yours: side(pos.turn), opponents: side(them), both: both.length ? both : null };
+  const both = [...pieces ? [`piece imbalance: ${pieces}`] : [], ...endNotes(pos, you) ?? []];
+  return { yours: side(you), opponents: side(them), both: both.length ? both : null };
+}
+
+/** The pieces `you` and the opponent still have, as 'you: Q R R B N, opp: Q R B B N'. */
+function piecesLeft(board, you) {
+  const letters = { queen: 'Q', rook: 'R', bishop: 'B', knight: 'N' };
+  const of = color => ['queen', 'rook', 'bishop', 'knight'].flatMap(r => Array(board[r].intersect(board[color]).size()).fill(letters[r])).join(' ') || 'no pieces';
+  return `you: ${of(you)}, opp: ${of(opposite(you))}`;
+}
+
+/** What stands at the end of one line but not the other: the imbalance labels at each leaf (from `you`'s view),
+    the pieces left, and the labels only one leaf has. A trade, an outpost taken or a pawn made weak inside a
+    line shows up here, where the root "imbalances" cannot see it. */
+export function leafDiff(leafA, leafP, you) {
+  if (!leafA || !leafP) return null;
+  const flat = pos => {
+    const i = imbalances(pos, you);
+    return [...(i.yours ?? []).map(l => `your ${l}`), ...(i.opponents ?? []).map(l => `opp's ${l}`), ...i.both ?? []];
+  };
+  const a = flat(leafA), p = flat(leafP);
+  const only = (x, y) => { const d = x.filter(l => !y.includes(l)); return d.length ? d : null; };
+  return {
+    pieces_left: { alternative: piecesLeft(leafA.board, you), played: piecesLeft(leafP.board, you) },
+    only_after_alternative: only(a, p),
+    only_after_played: only(p, a),
+  };
 }
 
 /** Positional labels for move `uci` from `b` to `next`; `you` is the side the explanation is for. */
@@ -602,6 +627,7 @@ async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
   const a = lines.alternative.sf15_terms, p = lines.played.sf15_terms;
   const diff = Object.keys(a).filter(k => k in p && k !== 'Total').map(k => [k, round2(a[k] - p[k])]);
   const hasTerms = Object.keys(a).length && Object.keys(p).length;
+  const leafOf = l => l.explained_fen && position(l.explained_fen);
   return {
     fen,
     side_to_move: pos.turn === 'white' ? 'White' : 'Black',
@@ -614,6 +640,7 @@ async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
     played: lines.played,
     alternative: lines.alternative,
     latest_sf_gap: round2((lines.alternative.cp - lines.played.cp) / 100),
+    after_each_line: leafDiff(leafOf(lines.alternative), leafOf(lines.played), pos.turn),
     sf15_term_diff_alternative_minus_played: Object.fromEntries(diff.sort((x, y) => Math.abs(y[1]) - Math.abs(x[1]))),
     sf15_total_gap: hasTerms ? round2((a.Total ?? 0) - (p.Total ?? 0)) : null,
   };
@@ -681,6 +708,12 @@ You get facts from two engines about one position and two candidate moves:
   When "prepares" is set, always explain it: it is the main reason the better move works, so lead with it. One exception:
   when the eval collapses in your move's "if_opp_plays_the_threat_at_once" (your move ignored the threat), explain the
   threat first and "prepares" right after it.
+- "after_each_line" compares the two positions reached at "explained_at_position_after": "pieces_left" for each line,
+  and the imbalance labels (same labels as "imbalances", from your view) that stand after one line but not after the
+  other. When the gap is not decided by a capture, a check or a threat, this is where the two lines part: lead with the
+  biggest difference (a piece traded off, an outpost taken, a pawn made weak or passed, a bishop freed or shut in, a king
+  shield broken) and name the moves in the line that bring it about. It is a fact at "explained_at_position_after", so
+  rule 9 lets you give it as the cause of a term. Say "after <move>" so the player knows it is not on the board yet.
 - "sf15_terms" are Stockfish 15.1's hand-crafted evaluation terms, measured at the quiet position reached a few moves into each line ("explained_at_position_after"). Their difference says WHY one move is better.
   "notes_at_that_position" describes that same position: "opposite-coloured bishops" makes an endgame drawish even a pawn or two
   down (SF 15 counts it in Winnable), and a bad bishop is one hemmed in by its own fixed centre pawns. When a line

@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  Refused, endNotes, handle, imbalances, isOutpost, moveLabels, nodeEngines, pawnWeaknesses, pins, sanToUci, trapped,
+  Refused, endNotes, handle, imbalances, isOutpost, leafDiff, moveLabels, nodeEngines, pawnWeaknesses, pins, sanToUci, trapped,
 } from './extension/explain.js';
 import { linkMoves, md } from './extension/md.js';
 
@@ -61,6 +61,16 @@ assert.deepEqual(labels('4k3/8/8/8/8/8/3P3P/2B1K3 w - - 0 1', 'h2h3'), []);
 assert.deepEqual(endNotes(pos('2b1k3/8/8/8/8/8/8/2B1K3 w - - 0 1'), 'white'), ['opposite-coloured bishops']);
 assert.deepEqual(endNotes(pos('4k3/8/4p3/3pP3/3P4/8/8/2B1K3 w - - 0 1'), 'white'),
   ['your bishop on c1 is bad: your pawns on d4, e5 are fixed on its colour']);
+// what one line's end has that the other's does not, from White's view, whoever is to move there:
+// line A traded the bishops off and put a knight on d5; line P kept them
+assert.deepEqual(leafDiff(pos('r4rk1/pp3ppp/8/3Np3/4P3/8/PPP2PPP/R4RK1 b - - 0 15'),
+  pos('r1b2rk1/pp3ppp/2p5/4p3/2B1P3/2N5/PPP2PPP/R4RK1 b - - 0 15'), 'white'), {
+  pieces_left: { alternative: 'you: R R N, opp: R R', played: 'you: R R B N, opp: R R B' },
+  only_after_alternative: ['your knight on outpost d5'],
+  only_after_played: null,
+});
+assert.equal(leafDiff(null, pos('8/8/8/8/4k3/4P3/5K2/8 b - - 1 1'), 'white'), null);
+
 // imbalances before any move: doubled rooks on the a-file are one label; both bishop pairs cancel out
 assert.deepEqual(imbalances(pos('4r3/R4pk1/2pq1rpp/1p1pn3/1P1Q4/2P1P1P1/4BP1P/R5K1 b - - 2 30')), {
   yours: ['rook on semi-open e-file', 'pawn on c6 backward', 'outpost square c4'],
