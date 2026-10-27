@@ -209,6 +209,9 @@ Some things that would make it better:
 - The lite Stockfish build uses a small network: far stronger than any human, weaker than full
   Stockfish.
 - Standard chess only. Your Crazyhouse blunders remain a mystery.
+- The answer explains the engine line and the structure it leaves; the deeper positional reason a strong
+  player would give (what a move keeps guarded, what a manoeuvre aims at) is often not in the engine
+  facts at all. Letting the model query the engine itself was tested and did not change that.
 
 ## Support
 
