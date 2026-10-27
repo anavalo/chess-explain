@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "chess-explain",
-  "version": "0.40",
+  "version": "0.41",
   "description": "Explains why lichess's engine move is better. Stockfish runs in the browser.",
   "minimum_chrome_version": "116",
   "icons": { "16": "icons/16.png", "48": "icons/48.png", "128": "icons/128.png" },
