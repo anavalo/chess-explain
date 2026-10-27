@@ -392,5 +392,10 @@ function problems(text) {
   const sans = answer.match(/(?<!(your|the|opp's|Black's|White's|attacks|hits) )\b(\d+\.(\.\.)?)?([KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h]x[a-h][1-8])|\b\d+\.(\.\.)?[a-h][1-8]\b/g) ?? [];
   const unknown = [...new Set(sans.map(s => s.replace(/^\d+\.(\.\.)?/, '')))].filter(s => !facts.includes(s));
   if (unknown.length) found.push(`moves not in facts: ${unknown.join(' ')}`);
+  // story words the prompt bans unless a label backs them, and evals that appear in no line
+  const banned = answer.match(/\b(active|passive|cramped|boxed in|loose|tied down|pushed back|tempo|counterplay|initiative|must|has to|forced)\b/gi) ?? [];
+  if (banned.length) found.push(`story words: ${[...new Set(banned.map(w => w.toLowerCase()))].join(' ')}`);
+  const evals = [...new Set(answer.match(/[+\-−]\d+\.\d\d\b/g) ?? [])].filter(e => !facts.includes(e.replace('−', '-').replace(/^\+/, '')));
+  if (evals.length) found.push(`evals not in facts: ${evals.join(' ')}`);
   return found;
 }

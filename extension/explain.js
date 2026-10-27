@@ -689,6 +689,8 @@ Rules:
    (for example a bishop given up for a knight, or broken king pawns), as part of the reason, with their size. Never present them as the main reason.
 5. Never mention moves, squares or pieces that are not supported by the facts. At most 120 words. No headings.
    Stop once the decisive point is made: do not narrate the rest of a line, and do not judge trades you were not told about.
+   Never call a piece or side active, passive, cramped, boxed in, loose, tied down or pushed back, and never speak of tempo,
+   counterplay or initiative, unless a label says so: cut the sentence instead.
 6. The board the player sees is the position before any move. When you describe something that happens later in a line,
    name the moves that lead there first, so a piece that moves during the line is never described as if it already stood there.
    Write every variation on its own line, starting on a new line, like this:
@@ -700,6 +702,12 @@ Rules:
 8. Only the first move of each line is a choice being judged. Every later move is the engine's best play for both sides:
    never call one careless, a mistake or the cause of the problem. If the eval shifts inside a line, the reason is the
    first move, not a later one.
+   Never say the opponent "must", "has to" or is "forced", unless the move answers a check.
+   A move's eval is its "latest_sf_eval". Numbers in "if_opp_plays_the_threat_at_once", "line_if_played_at_once",
+   "follow_up_fails", a "Why ... fails" line or "eval_if_you_could_pass_and_opp_played_it" are side lines: if you quote
+   one, say which line it comes from. Do not sum up a line's evals as a range or a trend ("stays
+   around", "drifts to"): quote the eval after a named move. When the eval drops on the first move, say so instead of
+   blaming a later move.
 9. A term difference is a number, not a reason. Give a cause for a term only from what still stands at
    "explained_at_position_after": a structure label or a capture label on a move up to that point, or
    "notes_at_that_position", and name that move. Pins, attacks and threats do not count: they may be gone by then.
