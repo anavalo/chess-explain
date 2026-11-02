@@ -253,6 +253,15 @@ export function pawnWeaknesses(board, color) {
   return out;
 }
 
+/** `color`'s pawn islands (groups of pawns on adjacent files) on boards `x` and `y` as [n, m], or null when the counts
+    are equal or `color` has a different number of pawns on each: fewer islands from losing a pawn is no better structure. */
+function islandChange(x, y, color) {
+  const pawns = board => board.pawn.intersect(board[color]);
+  const count = board => { const f = new Set([...pawns(board)].map(squareFile)); return [...f].filter(i => !f.has(i - 1)).length; };
+  const n = count(x), m = count(y);
+  return n !== m && pawns(x).size() === pawns(y).size() ? [n, m] : null;
+}
+
 /** `color`'s passed pawns: no enemy pawn ahead of it on its own or a neighbouring file. */
 function passedPawns(board, color) {
   const own = board.pawn.intersect(board[color]), theirs = board.pawn.diff(own), out = new Set();
@@ -334,6 +343,10 @@ export function leafDiff(leafA, leafP, you) {
     return [...(i.yours ?? []).map(l => `your ${l}`), ...(i.opponents ?? []).map(l => `opp's ${l}`), ...i.both ?? []];
   };
   const a = flat(leafA), p = flat(leafP);
+  for (const [color, who] of [[you, 'your'], [opposite(you), "opp's"]]) {
+    const islands = islandChange(leafA.board, leafP.board, color);
+    if (islands) { a.push(`${who} pawns in ${islands[0]} islands`); p.push(`${who} pawns in ${islands[1]} islands`); }
+  }
   const only = (x, y) => { const d = x.filter(l => !y.includes(l)); return d.length ? d : null; };
   return {
     pieces_left: { alternative: piecesLeft(leafA.board, you), played: piecesLeft(leafP.board, you) },
@@ -371,11 +384,14 @@ export function moveLabels(b, next, uci, you) {
       if (d >= 3) labels.push(`frees ${whose} bishop on ${makeSquare(sq)} (+${d} squares)`);
       if (d <= -3) labels.push(`shuts in ${whose} bishop on ${makeSquare(sq)} (${d} squares)`);
     }
-    for (const color of [b.turn, them])
+    for (const color of [b.turn, them]) {
       for (const features of [pawnWeaknesses, passedPawns, shieldHoles, outpostSquares]) {
         const before = features(b.board, color);
         for (const w of features(next.board, color)) if (!before.has(w)) labels.push(`${owner(color)} ${w}`);
       }
+      const islands = islandChange(b.board, next.board, color);
+      if (islands) labels.push(`${owner(color)} pawn islands ${islands[0]} to ${islands[1]}`);
+    }
   }
   return labels;
 }
@@ -672,7 +688,9 @@ You get facts from two engines about one position and two candidate moves:
   "<side> outpost square <square>" (a pawn move just made that empty square an outpost for that side: no enemy pawn can
   ever attack it again, so a knight or bishop can settle there; the pawn move weakened it for the other side),
   "frees|shuts in <side> bishop on <square> (+|-N squares)" (that move opened or closed the bishop's diagonals; freeing
-  your own bad bishop or shutting in the enemy's good one is often the point of a pawn break or a pawn capture).
+  your own bad bishop or shutting in the enemy's good one is often the point of a pawn break or a pawn capture),
+  "<side> pawn islands N to M" (groups of pawns on adjacent files, with no pawn lost: fewer islands is a sounder structure,
+  as each island must be defended on its own; a recapture that joins an isolated pawn to the others is often the point of a trade).
   They often explain a terms difference.
   "<piece> is trapped" means that piece is attacked and every
   square it can go to is unsafe: if a trapped piece is later captured, explain the trap (which moves attacked it and took
@@ -709,10 +727,11 @@ You get facts from two engines about one position and two candidate moves:
   when the eval collapses in your move's "if_opp_plays_the_threat_at_once" (your move ignored the threat), explain the
   threat first and "prepares" right after it.
 - "after_each_line" compares the two positions reached at "explained_at_position_after": "pieces_left" for each line,
-  and the imbalance labels (same labels as "imbalances", from your view) that stand after one line but not after the
+  and the imbalance labels (same labels as "imbalances", from your view, plus "<side> pawns in N islands" when the two
+  lines leave that side the same pawns in a different number of islands) that stand after one line but not after the
   other. When the gap is not decided by a capture, a check or a threat, this is where the two lines part: lead with the
-  biggest difference (a piece traded off, an outpost taken, a pawn made weak or passed, a bishop freed or shut in, a king
-  shield broken) and name the moves in the line that bring it about. It is a fact at "explained_at_position_after", so
+  biggest difference (a piece traded off, an outpost taken, a pawn made weak or passed, pawn islands joined, a bishop
+  freed or shut in, a king shield broken) and name the moves in the line that bring it about. It is a fact at "explained_at_position_after", so
   rule 9 lets you give it as the cause of a term. Say "after <move>" so the player knows it is not on the board yet.
 - "sf15_terms" are Stockfish 15.1's hand-crafted evaluation terms, measured at the quiet position reached a few moves into each line ("explained_at_position_after"). Their difference says WHY one move is better.
   "notes_at_that_position" describes that same position: "opposite-coloured bishops" makes an endgame drawish even a pawn or two

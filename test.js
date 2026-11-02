@@ -58,6 +58,9 @@ assert.deepEqual(labels('8/8/4k3/8/8/8/8/R3K3 w - - 0 1', 'a1a7'), []); // nothi
 // d2-d4 opens the c1 bishop's diagonal; a pawn move on the other wing does not
 assert.deepEqual(labels('4k3/8/8/8/8/8/3P3P/2B1K3 w - - 0 1', 'd2d4'), ['pawn gains space', 'frees your bishop on c1 (+5 squares)']);
 assert.deepEqual(labels('4k3/8/8/8/8/8/3P3P/2B1K3 w - - 0 1', 'h2h3'), []);
+// bxc3 joins the b- and d-pawns into one island; taking an isolated pawn is no island change for its owner
+assert.deepEqual(labels('4k3/2p5/8/8/8/2n5/1P1P4/4K3 w - - 0 1', 'b2c3'), ['your pawn islands 2 to 1']);
+assert.deepEqual(labels('4k3/p1p5/8/8/8/8/8/R3K3 w - - 0 1', 'a1a7'), ['rook on 7th rank']);
 assert.deepEqual(endNotes(pos('2b1k3/8/8/8/8/8/8/2B1K3 w - - 0 1'), 'white'), ['opposite-coloured bishops']);
 assert.deepEqual(endNotes(pos('4k3/8/4p3/3pP3/3P4/8/8/2B1K3 w - - 0 1'), 'white'),
   ['your bishop on c1 is bad: your pawns on d4, e5 are fixed on its colour']);
