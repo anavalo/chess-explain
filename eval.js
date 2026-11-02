@@ -8,12 +8,20 @@
 // judge also says whether the answer gives that reference reason.
 // --pair DIR has Opus compare each answer in out-dir (A) with the same position's answer in DIR (B) and say which is better;
 // a pairwise pick is steadier than two separate grades. Kept in <name>.pair-<DIR name>.json; picks are always in out-dir/DIR terms.
-import { execFile } from 'node:child_process';
+// --sample N --month YYYY-MM draws N fresh positions from that month's lichess database into eval-sets/holdout-YYYY-MM.json
+// (gitignored, run it with --set). Never tune on them: a new month per release.
+// --masked writes <name>.masked.txt per answer, with the two candidate moves hidden, for a reader (a Haiku subagent) to say
+// which move the text argues for in <name>.masked.json ({"better": "<SAN>"}); the summary counts how many it recovers.
+import { PgnParser, parseComment, startingPosition } from 'chessops/pgn';
+import { makeFen } from 'chessops/fen';
+import { parseSan } from 'chessops/san';
+import { execFile, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename } from 'node:path';
+import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { SYSTEM, explain } from './extension/explain.js';
+import { NODES, SYSTEM, explain, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
 
 // [lichess game, FEN, move played, better move]
 const POSITIONS = [
@@ -232,7 +240,11 @@ const PAIR_WITH_REFERENCE = {
 };
 
 const args = process.argv.slice(2);
-const out = args.find((a, i) => !a.startsWith('--') && !['--model', '--facts', '--set', '--pair'].includes(args[i - 1])) ?? 'eval-out';
+const out = args.find((a, i) => !a.startsWith('--') && !['--model', '--facts', '--set', '--pair', '--sample', '--month'].includes(args[i - 1])) ?? 'eval-out';
+if (args.includes('--sample')) {
+  await sample(Number(args[args.indexOf('--sample') + 1]), args[args.indexOf('--month') + 1]);
+  process.exit(0);
+}
 const set = args.includes('--set') ? JSON.parse(readFileSync(args[args.indexOf('--set') + 1], 'utf8')) : null;
 const reference = Object.fromEntries((set ?? []).map(p => [p.id, p.reference_reason]));
 const facts = args.includes('--facts') ? args[args.indexOf('--facts') + 1] : null;
@@ -263,10 +275,11 @@ await Promise.all(Array.from({ length: facts ? 16 : 4 }, async () => {
     console.log(name, text.startsWith('ERROR') ? 'failed' : 'ok');
   }
 }));
-const answers = readdirSync(out).filter(f => f.endsWith('.txt') && f !== 'summary.txt').sort().map(f => f.slice(0, -4));
+const answers = readdirSync(out).filter(f => f.endsWith('.txt') && f !== 'summary.txt' && !f.endsWith('.masked.txt')).sort().map(f => f.slice(0, -4));
 if (pair) await pairAll(answers.filter(n => existsSync(`${pair}/${n}.txt`)));
 if (args.includes('--judge')) await judgeAll(answers.filter(n => !existsSync(`${out}/${n}.judge.json`)));
-const verdicts = [];
+if (args.includes('--masked')) for (const n of answers) mask(n);
+const verdicts = [], recovered = [];
 const report = answers.map(n => {
   const text = readFileSync(`${out}/${n}.txt`, 'utf8');
   const found = text.startsWith('ERROR') ? ['failed'] : problems(text);
@@ -277,6 +290,11 @@ const report = answers.map(n => {
     for (const c of v.false_claims) found.push(`judge: false claim "${c.claim}" (${c.facts})`);
     if (v.invented_term_cause) found.push('judge: invented term cause');
     if (v.reference_reason && v.reference_reason !== 'yes') found.push(`judge: reference reason ${v.reference_reason}`);
+  }
+  if (existsSync(`${out}/${n}.masked.json`)) {
+    const ok = JSON.parse(readFileSync(`${out}/${n}.masked.json`, 'utf8')).better === JSON.parse(text.split('\n\n')[0]).alternative.move;
+    recovered.push(ok);
+    if (!ok) found.push('masked: better move not recovered');
   }
   return `${n} ${found.join(', ') || 'ok'}`;
 });
@@ -294,6 +312,7 @@ if (verdicts.length) {
     + (verdicts.some(v => v.reference_reason) ? `; reference reason yes ${count(v => v.reference_reason === 'yes')}, `
       + `partly ${count(v => v.reference_reason === 'partly')}, no ${count(v => v.reference_reason === 'no')}` : ''));
 }
+if (recovered.length) console.log(`masked: better move recovered from the text in ${recovered.filter(Boolean).length} of ${recovered.length}`);
 
 /** Judges each named answer in out-dir, four at a time, and writes <name>.judge.json next to it. */
 async function judgeAll(names) {
@@ -398,4 +417,80 @@ function problems(text) {
   const evals = [...new Set(answer.match(/[+\-−]\d+\.\d\d\b/g) ?? [])].filter(e => !facts.includes(e.replace('−', '-').replace(/^\+/, '')));
   if (evals.length) found.push(`evals not in facts: ${evals.join(' ')}`);
   return found;
+}
+
+/** Writes <name>.masked.txt: the answer with the better move written "[better move]" and the played one "[played move]",
+    so a reader who names the better move from the position got it from what the text says about each (Parfenova 2026). */
+function mask(n) {
+  const text = readFileSync(`${out}/${n}.txt`, 'utf8'), cut = text.indexOf('\n\n');
+  if (text.startsWith('ERROR') || cut < 0) return;
+  const sheet = JSON.parse(text.slice(0, cut));
+  let answer = text.slice(cut + 2);
+  for (const [move, tag] of [[sheet.alternative.move, '[better move]'], [sheet.played.move, '[played move]']]) {
+    const esc = move.replace(/[+#]$/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    answer = answer.replace(new RegExp(`(?<![A-Za-z0-9])${esc}[+#]?(?![A-Za-z0-9])`, 'g'), tag);
+  }
+  writeFileSync(`${out}/${n}.masked.txt`, `Position (FEN): ${sheet.fen}, ${sheet.side_to_move} to move.
+Candidate moves: ${[sheet.alternative.move, sheet.played.move].sort().join(', ')}
+The explanation below argues that one candidate is better than the other. Both are hidden: the one it calls better is
+written "[better move]", the other "[played move]".
+
+${answer}`);
+}
+
+/** Draws `n` positions from the lichess database for `month` (https://database.lichess.org, streamed: only the start of the
+    file is read). Games: rapid or classical, both players 1600-2200, with lichess's evals; one random position per game,
+    from move 10 on (as in the 132 set), where the move played lost 0.5-1.6 pawns by those evals with |eval| <= 2.5 before
+    it. Kept when Stockfish 19 at the panel's node count rates its best move 0.3-2 pawns better and the first 3 plies of
+    both lines are quiet (no capture, check or promotion). The screen of the 132 set, on games nobody picked. */
+async function sample(n, month) {
+  if (!(n > 0) || !/^\d{4}-\d\d$/.test(month ?? '')) throw new Error('usage: --sample N --month YYYY-MM');
+  const res = await fetch(`https://database.lichess.org/standard/lichess_db_standard_rated_${month}.pgn.zst`);
+  if (!res.ok) throw new Error(`lichess database ${month}: HTTP ${res.status}`);
+  const candidates = [], kept = [];
+  const parser = new PgnParser(game => {
+    const h = game.headers, elo = ['WhiteElo', 'BlackElo'].map(k => Number(h.get(k)));
+    if (!/Rated (Rapid|Classical) game/.test(h.get('Event')) || elo.some(e => !(e >= 1600 && e <= 2200))) return;
+    const pos = startingPosition(h).unwrap(), id = h.get('Site')?.split('/').pop(), here = [];
+    let before = null; // lichess's eval before the move, White's view
+    for (const node of game.moves.mainlineNodes()) {
+      const mv = parseSan(pos, node.data.san);
+      if (!mv) break;
+      const ev = (node.data.comments ?? []).map(c => parseComment(c).evaluation).find(Boolean);
+      const after = ev && 'pawns' in ev ? ev.pawns : null;
+      const drop = (before - after) * (pos.turn === 'white' ? 1 : -1);
+      if (pos.fullmoves >= 10 && before !== null && after !== null && Math.abs(before) <= 2.5 && drop >= 0.5 && drop <= 1.6)
+        here.push({ id: `${id}-${pos.fullmoves}${pos.turn[0]}`, fen: makeFen(pos.toSetup()), played: node.data.san });
+      pos.play(mv);
+      before = after;
+    }
+    if (here.length) candidates.push(here[Math.floor(Math.random() * here.length)]);
+  });
+  const engines = await nodeEngines();
+  let screened = 0;
+  try {
+    // the zstd CLI: node's zlib rejects the skippable frames pzstd writes before every frame
+    const zstd = spawn('zstd', ['-dcq']).on('error', e => { throw new Error(`zstd CLI needed for --sample (${e.message})`); });
+    Readable.fromWeb(res.body).pipe(zstd.stdin).on('error', () => {}); // EPIPE once we stop reading
+    for await (const chunk of zstd.stdout.setEncoding('utf8')) {
+      parser.parse(chunk, { stream: true });
+      for (let c; kept.length < n && (c = candidates.shift());) {
+        const pos = position(c.fen), uci = sanToUci(c.fen, [c.played])[0];
+        const [[best], [mine]] = await Promise.all([search(engines.sf, pos, NODES), search(engines.sf2, pos, NODES, { moves: [uci] })]);
+        screened++;
+        if (!best.pv.length || best.pv[0] === uci || 'mate' in best.score || 'mate' in mine.score) continue;
+        const gap = (best.score.cp - mine.score.cp) / 100;
+        const quiet = pv => { let b = pos; return pv.slice(0, 3).every(m => { const ok = !/[x+#=]/.test(san(b, m)); b = play(b, m); return ok; }); };
+        if (gap < 0.3 || gap > 2 || !quiet(best.pv) || !quiet(mine.pv)) continue;
+        kept.push({ ...c, better: san(pos, best.pv[0]), gap });
+        console.log(`${kept.length}/${n} ${c.id} ${c.played} vs ${kept.at(-1).better} (${gap.toFixed(2)}), ${screened} screened`);
+      }
+      if (kept.length >= n) { zstd.kill(); break; }
+    }
+  } finally {
+    engines.quit();
+  }
+  mkdirSync('eval-sets', { recursive: true });
+  writeFileSync(`eval-sets/holdout-${month}.json`, JSON.stringify(kept, null, 1) + '\n');
+  console.log(`eval-sets/holdout-${month}.json: ${kept.length} positions from ${screened} screened`);
 }

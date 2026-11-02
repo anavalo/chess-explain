@@ -171,6 +171,18 @@ of the built-in positions; an entry with a `reference_reason` (a strong player's
 say whether the answer gives that reason. Each run prints the judge totals, the median answer length and how
 many answers go over 120 words.
 
+```sh
+node eval.js --sample N --month YYYY-MM
+```
+
+draws N fresh positions from that month's [lichess database](https://database.lichess.org) (rapid and
+classical games, both players 1600-2200, the same quiet screen as the eval set) into
+`eval-sets/holdout-YYYY-MM.json`, for `--set`. It needs the `zstd` command and reads only the start of the
+file. Use these positions to measure a change, never to design one. `--masked` writes
+`out-dir/<name>.masked.txt` per answer with both candidate moves hidden; a reader saves which move the text
+argues for in `<name>.masked.json` (`{"better": "<SAN>"}`), and the summary counts how often that is the
+better move.
+
 ### Updating the bundled libraries
 
 `extension/vendor/` is committed, so the extension works straight from a clone. To rebuild it after

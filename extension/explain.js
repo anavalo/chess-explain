@@ -12,7 +12,7 @@ import {
   parseSan, parseUci, pawnAttacks, squareFile, squareRank,
 } from './vendor/chessops.js';
 
-const NODES = 2_000_000;
+export const NODES = 2_000_000;
 const THREADS = 1; // one search thread: a node-limited search then gives the same lines every run
 const EQUAL_GAP = 0.3; // pawns; below this both moves are called equal and the LLM is skipped
 const LEAF_PLIES = 6; // SF 15 terms are measured within this many plies of each line
