@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  Refused, endNotes, handle, imbalances, isOutpost, leafDiff, moveLabels, nodeEngines, pawnWeaknesses, pins, sanToUci, trapped,
+  Refused, endNotes, handle, imbalances, isOutpost, leafDiff, moveLabels, nodeEngines, pawnPushes, pawnWeaknesses, pins, sanToUci, trapped,
 } from './extension/explain.js';
 import { linkMoves, md } from './extension/md.js';
 
@@ -27,6 +27,11 @@ assert.deepEqual(links(linkMoves(md('1.Ra7 Kd8 2.Kd2+ wins.\n\n1...Kd8 and Kd2. 
   ])), ['1.Ra7: Ra7', 'Kd8: Ra7 Kd8', '2.Kd2+: Ra7 Kd8 Kd2', '1.Rb1: Rb1', 'Kd8: Rb1 Kd8', '2.Kf2: Rb1 Kd8 Kf2']);
 // lichess's engine line writes castling as the king's two-square move
 assert.deepEqual(sanToUci('r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1', ['O-O', 'O-O-O']), ['e1g1', 'e8c8']);
+
+// later pawn pushes: Nd2 leaves f3 for the f-pawn, e4 attacks the queen; h3 and the knight's own move have no point
+const e4fen = 'r2qk2r/1p1n1ppp/4pn2/p4b2/PpBP4/1Q2PN2/1P3PPP/R1B2RK1 w - - 0 1';
+assert.deepEqual(pawnPushes(pos(e4fen), sanToUci(e4fen, ['Nd2', 'Nb6', 'Bb5+', 'Ke7', 'Re1', 'Qd5', 'f3', 'Rac8', 'e4', 'Qxd4+', 'Kh1', 'g6', 'h3']), 'white')
+  .map(p => [p.text, p.point]), [['4.f3 (to the square 1.Nd2 left)', true], ['5.e4', true], ['7.h3', false]]);
 
 // white bishop on a7: attacked by the rook, b6 is covered by the c7 pawn, b8 by the rook
 assert.deepEqual(trapped(pos('r3k3/B1p5/1p6/8/8/8/8/4K3 w - - 0 1')), [parseSquare('a7')]);

@@ -355,6 +355,32 @@ export function leafDiff(leafA, leafP, you) {
   };
 }
 
+/** Your quiet pawn moves later in the line (after its first move): [{ move: 'f3', text: '4.f3 (to the square 1.Nd2 left)',
+    point }]. `point` marks a push within the first `maxPlies` that does something: it goes to the square the first move
+    left, attacks a piece (as the line labels count it) or frees or shuts in a bishop. Flank pushes that only gain space do not. */
+export function pawnPushes(pos, pv, you, maxPlies = 10) {
+  const first = pv[0] && parseUci(pv[0]), firstSan = pv[0] && `${moveNo(pos)}${san(pos, pv[0])}`, out = [];
+  let b = pos;
+  for (const [i, uci] of pv.entries()) {
+    const mv = parseUci(uci), next = play(b, uci);
+    if (i > 0 && b.turn === you && b.board.getRole(mv.from) === 'pawn' && !isCapture(b, mv) && !mv.promotion) {
+      const step = b.turn === 'white' ? 8 : -8;
+      const room = first.from !== mv.from && [mv.from + step, mv.to].includes(first.from) && b.board.getRole(first.from) === undefined;
+      const point = i < maxPlies && (room || threats(next, mv.to, new Set(), "opp's").length > 0
+        || moveLabels(b, next, uci, you).some(l => /^(frees|shuts in)/.test(l)));
+      out.push({ move: san(b, uci), text: `${moveNo(b)}${san(b, uci)}${room ? ` (to the square ${firstSan} left)` : ''}`, point });
+    }
+    b = next;
+  }
+  return out;
+}
+
+/** The pushes with a point in line `a` that line `b` never plays, as text, or null. */
+function onlyIn(a, b) {
+  const d = a.filter(p => p.point && !b.some(q => q.move === p.move)).map(p => p.text);
+  return d.length ? d : null;
+}
+
 /** Positional labels for move `uci` from `b` to `next`; `you` is the side the explanation is for. */
 export function moveLabels(b, next, uci, you) {
   const mv = parseUci(uci), role = b.board.getRole(mv.from), victim = b.board.getRole(mv.to);
@@ -617,10 +643,12 @@ async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
   ]);
   const [threat, threatFacts] = await opponentThreat(sf, pos, nodes, before, QUIET_THREAT);
   if (!played || !other) throw new Error('There is only one legal move here: nothing to compare.');
+  const pushes = {};
   const lineNodes = Math.max(Math.floor(nodes / 10), 100_000);
   const line = async (engine, mv) => {
     const { score, pv } = (await search(engine, pos, nodes, { moves: [mv] }))[0];
     const { leaf, leafSans } = lineToLeaf(pos, pv);
+    pushes[mv] = pawnPushes(pos, pv, pos.turn);
     const out = {
       move: san(pos, mv), latest_sf_eval: scoreStr(score), cp: cpOf(score),
       line_with_evals: await lineWithEvals(engine, pos, pv, lineNodes),
@@ -656,6 +684,7 @@ async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
     played: lines.played,
     alternative: lines.alternative,
     latest_sf_gap: round2((lines.alternative.cp - lines.played.cp) / 100),
+    pawn_plan_only_in_better_line: onlyIn(pushes[other], pushes[played]),
     after_each_line: leafDiff(leafOf(lines.alternative), leafOf(lines.played), pos.turn),
     sf15_term_diff_alternative_minus_played: Object.fromEntries(diff.sort((x, y) => Math.abs(y[1]) - Math.abs(x[1]))),
     sf15_total_gap: hasTerms ? round2((a.Total ?? 0) - (p.Total ?? 0)) : null,
@@ -733,6 +762,9 @@ You get facts from two engines about one position and two candidate moves:
   biggest difference (a piece traded off, an outpost taken, a pawn made weak or passed, pawn islands joined, a bishop
   freed or shut in, a king shield broken) and name the moves in the line that bring it about. It is a fact at "explained_at_position_after", so
   rule 9 lets you give it as the cause of a term. Say "after <move>" so the player knows it is not on the board yet.
+- "pawn_plan_only_in_better_line" (when not null) lists your quiet pawn moves that the better move's line plays later
+  (past "explained_at_position_after" too) and the played move's line never does. "(to the square 1.Nd2 left)" means the
+  better move cleared that pawn's way. See rule 13.
 - "sf15_terms" are Stockfish 15.1's hand-crafted evaluation terms, measured at the quiet position reached a few moves into each line ("explained_at_position_after"). Their difference says WHY one move is better.
   "notes_at_that_position" describes that same position: "opposite-coloured bishops" makes an endgame drawish even a pawn or two
   down (SF 15 counts it in Winnable), and a bad bishop is one hemmed in by its own fixed centre pawns. When a line
@@ -781,7 +813,11 @@ Rules:
 11. When a deciding line trades material, say what changed hands in pieces, from its capture labels ("two minor pieces
    for a rook", "your knight for their bishop"), not only the material balance.
 12. If a line shows mate ("checkmate", "mates in", "gets mated", "threatens ...#") or checks that strip a king's shield
-   ("king shield lost its ..."), the reason is the attack on that king: say so before any material count.`;
+   ("king shield lost its ..."), the reason is the attack on that king: say so before any material count.
+13. If "pawn_plan_only_in_better_line" is set, your answer must include it, right after the main reason: say the better
+   move prepares those pawn moves (say it "makes room for" one only when its note says so), say what they do from their
+   labels in "line_with_evals" (attacks, space, a bishop shut in), and show the line up to the last of them. Say "later",
+   since it is a plan, not the next move.`;
 
 export async function explain(facts, apiKey, model = 'claude-haiku-5-5') {
   // Haiku has no server-side fallback; on the others a safety decline is retried on a fallback model
