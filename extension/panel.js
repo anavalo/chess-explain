@@ -144,18 +144,33 @@ function render(data, b) {
     const a = e.target.closest('a[data-line]');
     if (!a) return;
     e.preventDefault();
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.url?.startsWith('https://lichess.org/')) return error('Switch to the lichess tab to play the line.');
-    const ucis = sanToUci(b.fen, a.dataset.line.split(' '));
-    const [{ result }] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id }, world: 'MAIN', func: playLine, args: [b.fen, b.path, ucis],
-    });
-    if (result) error(result);
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.url?.startsWith('https://lichess.org/')) return error('Switch to the lichess tab to play the line.');
+      const ucis = sanToUci(b.fen, a.dataset.line.split(' '));
+      const [{ result }] = await chrome.scripting.executeScript({
+        target: { tabId: tab.id }, world: 'MAIN', func: playLine, args: [b.fen, b.path, ucis],
+      });
+      if (result) error(result);
+    } catch (e) {
+      console.error(e);
+      error(e.message);
+    }
   };
 }
 
 async function explain() {
   out.replaceChildren();
+  try {
+    await run();
+  } catch (e) {
+    console.error(e);
+    out.replaceChildren();
+    error(e.message);
+  }
+}
+
+async function run() {
   const apiKey = await showKeyStatus();
   if (!apiKey) return error('Set your Anthropic API key first (above).');
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -182,10 +197,6 @@ async function explain() {
     const data = await Promise.race([handle(ready, { fen: b.fen, move, best: b.best, user: b.user }, apiKey, llm), crashed]);
     out.replaceChildren();
     render(data, b);
-  } catch (e) {
-    console.error(e);
-    out.replaceChildren();
-    error(e.message);
   } finally {
     clearInterval(timer);
   }

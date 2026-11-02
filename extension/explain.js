@@ -786,8 +786,8 @@ export async function explain(facts, apiKey, model = 'claude-haiku-5-5') {
       messages: [{ role: 'user', content: JSON.stringify(facts, null, 1) }],
     }),
     signal: AbortSignal.timeout(120_000),
-  });
-  const body = await r.json();
+  }).catch(e => { throw new Error(`Could not reach the Anthropic API (${e.message}).`); });
+  const body = await r.json().catch(() => ({}));
   if (r.status === 401) throw new Error('Anthropic rejected the API key. Check it in the panel settings.');
   if (!r.ok) throw new Error(`Anthropic API error ${r.status}: ${body.error?.message ?? r.statusText}`);
   if (body.stop_reason === 'refusal') return '(the model declined to answer)';
