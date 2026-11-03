@@ -112,6 +112,8 @@ const isCapture = (pos, mv) => pos.board.getColor(mv.to) === opposite(pos.turn) 
 const attackers = (pos, color, sq) => pos.kingAttackers(sq, color, pos.board.occupied);
 const signed = n => (n >= 0 ? `+${n}` : `${n}`);
 const round2 = x => Math.round(x * 100) / 100;
+/** Whose pieces a label is about, on a sheet written for `you`: 'your' or "opp's". */
+const owner = (color, you) => (color === you ? 'your' : "opp's");
 
 export function scoreStr(s) {
   if ('mate' in s) return s.mate > 0 ? `mates in ${s.mate}` : `gets mated in ${-s.mate}`;
@@ -167,9 +169,9 @@ function material(pos, color) {
 }
 
 /** Enemy pieces newly attacked by the piece that just moved to `sq`, if worth more than it
-    or attacked more times than defended. `owner` ("your"/"opp's") names whose pieces they are.
+    or attacked more times than defended. `whose` ("your"/"opp's") names whose pieces they are.
     ponytail: direct attacks only; discovered attacks are not labelled. */
-function threats(pos, sq, attackedBefore, owner) {
+function threats(pos, sq, attackedBefore, whose) {
   const mover = pos.board.get(sq), out = [];
   for (const t of attacks(mover, sq, pos.board.occupied).intersect(pos.board[opposite(mover.color)])) {
     const victim = pos.board.get(t);
@@ -177,7 +179,7 @@ function threats(pos, sq, attackedBefore, owner) {
     const a = attackers(pos, mover.color, t).size(), d = attackers(pos, victim.color, t).size();
     if (VALUE[victim.role] > VALUE[mover.role] || a > d) {
       const note = a > 1 ? `, attacked ${a}x defended ${d}x` : '';
-      out.push(`attacks ${owner} ${victim.role} on ${makeSquare(t)}${note}`);
+      out.push(`attacks ${whose} ${victim.role} on ${makeSquare(t)}${note}`);
     }
   }
   return out;
@@ -327,6 +329,9 @@ function rookFile(board, sq, color) {
   return open && { kind: 'rookFile', open, file: 'abcdefgh'[squareFile(sq)] };
 }
 
+/** The pawn and square features of one side, `(board, color) -> [feature]`, for a position and for the change a move makes. */
+const STRUCTURE = [passedPawns, pawnWeaknesses, shieldHoles, outpostSquares];
+
 /** Silman's imbalances: what already differs on the board before any move, for the side to move ("yours"), the
     opponent, and both. ponytail: structure only; space, development and initiative are left to the SF 15 terms. */
 export function imbalances(pos, you = pos.turn) {
@@ -340,7 +345,7 @@ export function imbalances(pos, you = pos.turn) {
       const file = rookFile(b, sq, color);
       if (file) out.push(file);
     }
-    for (const features of [passedPawns, pawnWeaknesses, shieldHoles, outpostSquares]) out.push(...features(b, color));
+    for (const features of STRUCTURE) out.push(...features(b, color));
     if (kingInCentre(pos, color)) out.push({ kind: 'kingInCentre' });
     const labels = uniq(out).map(f => word(f));
     return labels.length ? labels : null;
@@ -371,11 +376,11 @@ export function leafDiff(leafA, leafP, you) {
     return [...(i.yours ?? []).map(l => `your ${l}`), ...(i.opponents ?? []).map(l => `opp's ${l}`), ...i.both ?? []];
   };
   const a = flat(leafA), p = flat(leafP);
-  for (const [color, who] of [[you, 'your'], [opposite(you), "opp's"]]) {
+  for (const color of [you, opposite(you)]) {
     const islands = islandChange(leafA.board, leafP.board, color);
     if (islands) {
-      a.push(`${who} ${word({ kind: 'islandCount', count: islands.from })}`);
-      p.push(`${who} ${word({ kind: 'islandCount', count: islands.to })}`);
+      a.push(`${owner(color, you)} ${word({ kind: 'islandCount', count: islands.from })}`);
+      p.push(`${owner(color, you)} ${word({ kind: 'islandCount', count: islands.to })}`);
     }
   }
   const only = (x, y) => { const d = x.filter(l => !y.includes(l)); return d.length ? d : null; };
@@ -429,7 +434,7 @@ function bishopReach(b, next, uci) {
 /** Positional labels for move `uci` from `b` to `next`; `you` is the side the explanation is for. */
 export function moveLabels(b, next, uci, you) {
   const mv = parseUci(uci), role = b.board.getRole(mv.from), victim = b.board.getRole(mv.to);
-  const owner = color => (color === you ? 'your' : "opp's"), labels = [];
+  const labels = [];
   // SF 15's Space term only counts squares behind your own pawns, so it hardly sees a pawn pushed forward
   const rank = squareRank(mv.to) + 1;
   if (role === 'pawn' && !isCapture(b, mv) && (b.turn === 'white' ? rank >= 4 : rank <= 5)) labels.push('pawn gains space');
@@ -446,18 +451,19 @@ export function moveLabels(b, next, uci, you) {
     && (next.board.pawn.intersect(next.board[them]).intersects(SquareSet.fromRank(seventh))
       || squareRank(next.board.kingOf(them)) === (b.turn === 'white' ? 7 : 0)))
     labels.push('rook on 7th rank');
-  if (hasBishopPair(b.board, them) && !hasBishopPair(next.board, them)) labels.push(`${owner(them)} ${word({ kind: 'bishopPair' }, 'move')}`);
+  if (hasBishopPair(b.board, them) && !hasBishopPair(next.board, them)) labels.push(`${owner(them, you)} ${word({ kind: 'bishopPair' }, 'move')}`);
   if (role === 'pawn' || victim === 'pawn' || isEnPassant(b, mv)) {
     for (const { square, color, change } of bishopReach(b, next, uci))
-      labels.push(change > 0 ? `frees ${owner(color)} bishop on ${makeSquare(square)} (+${change} squares)`
-        : `shuts in ${owner(color)} bishop on ${makeSquare(square)} (${change} squares)`);
+      labels.push(change > 0 ? `frees ${owner(color, you)} bishop on ${makeSquare(square)} (+${change} squares)`
+        : `shuts in ${owner(color, you)} bishop on ${makeSquare(square)} (${change} squares)`);
     for (const color of [b.turn, them]) {
+      // STRUCTURE's detectors, weaknesses first: the order the labels have always had on a move
       for (const features of [pawnWeaknesses, passedPawns, shieldHoles, outpostSquares]) {
         const before = new Set(features(b.board, color).map(key));
-        for (const f of features(next.board, color)) if (!before.has(key(f))) labels.push(`${owner(color)} ${word(f)}`);
+        for (const f of features(next.board, color)) if (!before.has(key(f))) labels.push(`${owner(color, you)} ${word(f)}`);
       }
       const islands = islandChange(b.board, next.board, color);
-      if (islands) labels.push(`${owner(color)} ${word(islands)}`);
+      if (islands) labels.push(`${owner(color, you)} ${word(islands)}`);
     }
   }
   return labels;
@@ -470,11 +476,11 @@ export function endNotes(pos, you) {
   const w = b.bishop.intersect(b.white), k = b.bishop.intersect(b.black);
   if (w.size() === 1 && k.size() === 1 && w.intersects(LIGHT) !== k.intersects(LIGHT)) notes.push('opposite-coloured bishops');
   for (const sq of b.bishop) {
-    const color = b.getColor(sq), owner = color === you ? 'your' : "opp's";
+    const color = b.getColor(sq), whose = owner(color, you);
     const fixed = [...b.pawn.intersect(b[color]).intersect(sameColour(sq)).intersect(CENTRE_FILES)]
       .filter(p => b.pawn.intersect(b[opposite(color)]).has(ahead(color, p)));
     if (fixed.length >= 2)
-      notes.push(`${owner} bishop on ${makeSquare(sq)} is bad: ${owner} pawns on ${fixed.map(makeSquare).join(', ')} are fixed on its colour`);
+      notes.push(`${whose} bishop on ${makeSquare(sq)} is bad: ${whose} pawns on ${fixed.map(makeSquare).join(', ')} are fixed on its colour`);
   }
   return notes.length ? notes : null;
 }
@@ -498,15 +504,15 @@ export async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20, you = pos
     const prev = b;
     b = play(b, uci);
     if (b.isCheck()) labels.push('check');
-    const owner = who === 'you' ? "opp's" : 'your';
-    labels.push(...threats(b, mv.to, before, owner));
+    const theirs = owner(b.turn, you); // the side to move now: whose pieces the move hits
+    labels.push(...threats(b, mv.to, before, theirs));
     // new pins, by the moved piece or by a line it opened
-    for (const p of pins(b, b.turn)) if (!pinsBefore.has(`${p.pinner} ${p.pinned}`)) labels.push(`pins ${owner} ${pinText(b, p)}`);
+    for (const p of pins(b, b.turn)) if (!pinsBefore.has(`${p.pinner} ${p.pinned}`)) labels.push(`pins ${theirs} ${pinText(b, p)}`);
     if (captured) labels.push(`material ${signed(material(b, you))}`);
     labels.push(...moveLabels(prev, b, uci, you));
     for (const sq of trapped(b)) {
       if (seenTrapped.has(sq)) continue;
-      labels.push(`${owner} ${b.board.getRole(sq)} on ${makeSquare(sq)} is trapped`);
+      labels.push(`${theirs} ${b.board.getRole(sq)} on ${makeSquare(sq)} is trapped`);
       seenTrapped.add(sq);
     }
     let ev;
@@ -522,7 +528,7 @@ export async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20, you = pos
       const failed = captured && !nested && next && next.to !== mv.to && await failedRecapture(sf, b, mv.to, score, nodes);
       if (failed) {
         const rec = `${moveNo(b)}${san(b, failed[0])}`;
-        labels.push(`${b.turn === you ? 'your' : "opp's"} recapture ${rec} fails (line below)`);
+        labels.push(`${owner(b.turn, you)} recapture ${rec} fails (line below)`);
         why.push(`Why ${rec} fails: ${await lineWithEvals(sf, b, failed, nodes, 7, you, true)}`);
       }
     }
