@@ -10,6 +10,8 @@
 // a pairwise pick is steadier than two separate grades. Kept in <name>.pair-<DIR name>.json; picks are always in out-dir/DIR terms.
 // --sample N --month YYYY-MM draws N fresh positions from that month's lichess database into eval-sets/holdout-YYYY-MM.json
 // (gitignored, run it with --set). Never tune on them: a new month per release.
+// --print explainer|judge|pair prints that prompt and exits (explainer: for --model; judge and pair: with the verdict schema,
+// the reference variant with --set), for subagent runs that write <name>.txt and <name>.judge.json without the API.
 // --masked writes <name>.masked.txt per answer, with the two candidate moves hidden, for a reader (a Haiku subagent) to say
 // which move the text argues for in <name>.masked.json ({"better": "<SAN>"}); the summary counts how many it recovers.
 import { PgnParser, parseComment, startingPosition } from 'chessops/pgn';
@@ -21,7 +23,8 @@ import { basename } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { NODES, SYSTEM, explain, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
+import { NODES, explain, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
+import { LEGEND, checkAnswer, systemFor } from './extension/prompt.js';
 
 // [lichess game, FEN, move played, better move]
 const POSITIONS = [
@@ -175,15 +178,17 @@ The fact sheet is the ground truth: judge the answer only against it, and do not
   For each, quote the claim and say in a few words what the facts show. Plain chess descriptions that the labels support
   are fine; do not list style issues.
 - invented_term_cause: true if the answer gives a cause for an SF 15 term difference that no structure label, capture
-  label or end note up to "explained_at_position_after" supports (the explainer's rule 9).
+  label or end note up to "explained_at_position_after" supports.
 - note: one sentence on the answer's main weakness, or "" if it has none.
 - reference_reason (only when the message gives a reference reason, a strong player's summary of why the better move is
   better): "yes" if the answer gives that reason in any words, "partly" if it gives only part of it or only vaguely, "no"
   otherwise. Grade this against the reference, not the fact sheet; false_claims are still graded against the fact sheet.
 
-The explainer's own instructions, which define the fact sheet's fields and labels:
+A reason given in plain words counts fully: do not reward or penalise numbers in an answer.
 
-${SYSTEM}`;
+What the fact sheet's fields and labels mean, as the explainer is told:
+
+${LEGEND}`;
 
 const VERDICT = {
   type: 'object',
@@ -222,9 +227,11 @@ Say "tie" only when the two are about equally good on that field, not to avoid a
 - reference_reason (only when the message gives a reference reason, a strong player's summary of why the better move is
   better): which answer comes closer to giving that reason in any words. Grade this against the reference, not the sheet.
 
-The explainer's own instructions, which define the fact sheet's fields and labels:
+A reason given in plain words counts fully: do not reward or penalise numbers in an answer.
 
-${SYSTEM}`;
+What the fact sheet's fields and labels mean, as the explainer is told:
+
+${LEGEND}`;
 
 const pick = { type: 'string', enum: ['A', 'B', 'tie'] }, quote = { type: 'string' };
 const PAIR_VERDICT = {
@@ -240,13 +247,27 @@ const PAIR_WITH_REFERENCE = {
 };
 
 const args = process.argv.slice(2);
-const out = args.find((a, i) => !a.startsWith('--') && !['--model', '--facts', '--set', '--pair', '--sample', '--month'].includes(args[i - 1])) ?? 'eval-out';
+const out = args.find((a, i) => !a.startsWith('--') && !['--model', '--facts', '--set', '--pair', '--sample', '--month', '--print'].includes(args[i - 1])) ?? 'eval-out';
 if (args.includes('--sample')) {
   await sample(Number(args[args.indexOf('--sample') + 1]), args[args.indexOf('--month') + 1]);
   process.exit(0);
 }
 const set = args.includes('--set') ? JSON.parse(readFileSync(args[args.indexOf('--set') + 1], 'utf8')) : null;
 const reference = Object.fromEntries((set ?? []).map(p => [p.id, p.reference_reason]));
+if (args.includes('--print')) {
+  // the exact prompts, for subagent runs on the subscription: the explainer prompt for --model, or a judge prompt with
+  // the JSON its verdict must match (the reference variant when --set gives reference reasons)
+  const what = args[args.indexOf('--print') + 1], ref = Object.values(reference).some(Boolean);
+  const withSchema = (prompt, schema) => `${prompt}\n\nReply with only JSON matching this schema:\n${JSON.stringify(schema, null, 1)}`;
+  const prompts = {
+    explainer: () => systemFor(args.includes('--model') ? args[args.indexOf('--model') + 1] : 'claude-haiku-5-5'),
+    judge: () => withSchema(JUDGE, ref ? WITH_REFERENCE : VERDICT),
+    pair: () => withSchema(PAIR, ref ? PAIR_WITH_REFERENCE : PAIR_VERDICT),
+  };
+  if (!prompts[what]) throw new Error('--print takes explainer, judge or pair');
+  process.stdout.write(prompts[what]());
+  process.exit(0);
+}
 const facts = args.includes('--facts') ? args[args.indexOf('--facts') + 1] : null;
 const pair = args.includes('--pair') ? args[args.indexOf('--pair') + 1].replace(/\/$/, '') : null;
 const mi = args.indexOf('--model');
@@ -395,28 +416,11 @@ async function pairAll(names) {
     + `; false claims ${tally('fewer_false_claims')} (fewer); about $${usd.toFixed(2)}`);
 }
 
-/** Mechanical checks on one CLI output (fact sheet JSON, blank line, answer). They catch format slips, not wrong chess. */
+/** The rule checks on one CLI output (fact sheet JSON, blank line, answer). */
 function problems(text) {
   const cut = text.indexOf('\n\n');
   if (cut < 0) return []; // --no-llm: fact sheet only
-  const facts = text.slice(0, cut), answer = text.slice(cut + 2);
-  const sheet = JSON.parse(facts);
-  const found = [];
-  const words = answer.split(/\s+/).filter(Boolean).length;
-  if (words > 150) found.push(`${words} words`);
-  if (/\[(takes|line ends)|\b\d+\.(\.\.)? (you|opp) /.test(answer)) found.push('raw label');
-  if (/(?<![\d.+\-−])\b\d+\.(\.\.)? ([KQRBN][a-h1-8]?x?[a-h][1-8]|[a-h]x?[a-h]?[1-8]\b|O-O)/.test(answer)) found.push('space after move number');
-  if (!sheet.position_before_move?.you_are_in_check_from && /\bin check\b/i.test(answer)) found.push('check not in facts');
-  // piece moves, pawn captures and numbered pawn moves must come from the fact sheet ("attacks your Nf3" names a piece)
-  const sans = answer.match(/(?<!(your|the|opp's|Black's|White's|attacks|hits) )\b(\d+\.(\.\.)?)?([KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h]x[a-h][1-8])|\b\d+\.(\.\.)?[a-h][1-8]\b/g) ?? [];
-  const unknown = [...new Set(sans.map(s => s.replace(/^\d+\.(\.\.)?/, '')))].filter(s => !facts.includes(s));
-  if (unknown.length) found.push(`moves not in facts: ${unknown.join(' ')}`);
-  // story words the prompt bans unless a label backs them, and evals that appear in no line
-  const banned = answer.match(/\b(active|passive|cramped|boxed in|loose|tied down|pushed back|tempo|counterplay|initiative|must|has to|forced)\b/gi) ?? [];
-  if (banned.length) found.push(`story words: ${[...new Set(banned.map(w => w.toLowerCase()))].join(' ')}`);
-  const evals = [...new Set(answer.match(/[+\-−]\d+\.\d\d\b/g) ?? [])].filter(e => !facts.includes(e.replace('−', '-').replace(/^\+/, '')));
-  if (evals.length) found.push(`evals not in facts: ${evals.join(' ')}`);
-  return found;
+  return checkAnswer(text.slice(cut + 2), JSON.parse(text.slice(0, cut))).map(c => c.problem);
 }
 
 /** Writes <name>.masked.txt: the answer with the better move written "[better move]" and the played one "[played move]",

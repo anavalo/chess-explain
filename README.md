@@ -119,7 +119,8 @@ The extension is about 1,000 lines of plain JavaScript, with no framework and no
 
 | Path                       | What it is                                                                 |
 | -------------------------- | -------------------------------------------------------------------------- |
-| `extension/explain.js`     | The core: engine I/O, the fact builder, the prompt and the Claude call. Runs in the side panel and in Node. |
+| `extension/explain.js`     | The core: engine I/O, the fact builder and the Claude call. Runs in the side panel and in Node. |
+| `extension/prompt.js`      | The explainer prompt (sheet legend and rules) and the rule checks the eval runs on each answer. |
 | `extension/panel.js`       | The side panel UI: reads the lichess board and renders the answer.         |
 | `extension/md.js`          | The small Markdown renderer and the move links in the answer.              |
 | `extension/background.js`  | Shows the side panel on lichess tabs only.                                 |
@@ -161,15 +162,24 @@ with a tactic, and writes one fact sheet and answer per position to `out-dir` (d
 it before and after a change and diff the two folders. `--no-llm` writes the fact sheets only.
 `--model ID` picks the Claude model (default Haiku 5.5). `--facts DIR` reuses the fact sheets in `DIR`
 instead of running the engines, so a prompt or model change takes a minute or two instead of half an hour.
-`out-dir/summary.txt` flags format slips in each answer: over 150 words, raw labels, a space after a move
+`out-dir/summary.txt` lists the rule checks each answer fails: over 150 words, raw labels, a space after a move
 number, a check that is not in the facts, and moves that are not in the fact sheet. `--summary` re-checks
 an existing `out-dir` without a run. `--judge` also has Claude Opus grade each answer against its fact sheet:
 whether it finds the decisive point, which of its claims the facts do not support, and whether it invents a
-cause for a term difference. A verdict costs about 4 cents and is kept in `out-dir/<name>.judge.json`, so a
+cause for a term difference. The judge gets the sheet legend but not the rules, so a rule change under test does not
+bias it. A verdict costs about 4 cents and is kept in `out-dir/<name>.judge.json`, so a
 second `--judge` only grades new answers. `--set FILE` runs a JSON list of `{id, fen, played, better}` instead
 of the built-in positions; an entry with a `reference_reason` (a strong player's reason) also has the judge
 say whether the answer gives that reason. Each run prints the judge totals, the median answer length and how
 many answers go over 120 words.
+
+```sh
+node eval.js --print explainer|judge|pair [--model ID] [--set FILE]
+```
+
+prints that prompt exactly and exits: the explainer prompt for `--model` (default Haiku 5.5), or a judge prompt with the
+JSON schema its verdict must match. Use it to run the explainer and judge as Claude Code subagents instead of through
+the API.
 
 ```sh
 node eval.js --sample N --month YYYY-MM
