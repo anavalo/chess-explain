@@ -778,10 +778,10 @@ Threats = attacked or hanging pieces. Passed = passed pawns. Space = safe square
 Rules:
 1. Explain why the alternative is better than the played move (or why the played move is fine, if the gap is small).
 2. If the line wins or loses material or mates, lead with the concrete tactic, using only moves from the given lines.
-3. Only if the SF 15.1 total gap is at least half the latest Stockfish gap, name the 2-3 biggest term differences in plain chess language, with their size in pawns.
+3. Only if the SF 15.1 total gap is at least half the latest Stockfish gap, name the 2-3 biggest term differences as what they mean on the board ("your king is safer", "your pieces have more squares").
 4. Otherwise the main reason is in the line (a tactic, a trap, or a plan the classical rules cannot see): point to the moves in the line that decide it. Never invent a reason.
    You may still name up to two terms that favour the better move by at least 0.25 pawns each and match something in the line
-   (for example a bishop given up for a knight, or broken king pawns), as part of the reason, with their size. Never present them as the main reason.
+   (for example a bishop given up for a knight, or broken king pawns), as part of the reason. Never present them as the main reason.
 5. Never mention moves, squares or pieces that are not supported by the facts. At most 120 words. No headings.
    Stop once the decisive point is made: do not narrate the rest of a line, and do not judge trades you were not told about.
    Never call a piece or side active, passive, cramped, boxed in, loose, tied down or pushed back, and never speak of tempo,
@@ -801,15 +801,15 @@ Rules:
    A move's eval is its "latest_sf_eval". Numbers in "if_opp_plays_the_threat_at_once", "line_if_played_at_once",
    "follow_up_fails", a "Why ... fails" line or "eval_if_you_could_pass_and_opp_played_it" are side lines: if you quote
    one, say which line it comes from. Do not sum up a line's evals as a range or a trend ("stays
-   around", "drifts to"): quote the eval after a named move. When the eval drops on the first move, say so instead of
+   around", "drifts to"): name the move after which the position turns. When the eval drops on the first move, say so instead of
    blaming a later move.
 9. A term difference is a number, not a reason. Give a cause for a term only from what still stands at
    "explained_at_position_after": a structure label or a capture label on a move up to that point, or
    "notes_at_that_position", and name that move. Pins, attacks and threats do not count: they may be gone by then.
-   With no such fact, give the term and its size only: no "because", and do not remark that the cause is not shown.
+   With no such fact, say what the term means only: no "because", and do not remark that the cause is not shown.
 10. After the imbalance sentence, say in plain chess words what the played move allows and what the better move does
    instead, from the labels: a piece left attacked or pinned, a line opened against a king, a piece traded off, a weakness
-   created or fixed. Then show the line. Terms and evals come after that.
+   created or fixed. Then show the line. Terms come after that.
 11. When a deciding line trades material, say what changed hands in pieces, from its capture labels ("two minor pieces
    for a rook", "your knight for their bishop"), not only the material balance.
 12. If a line shows mate ("checkmate", "mates in", "gets mated", "threatens ...#") or checks that strip a king's shield
@@ -817,7 +817,11 @@ Rules:
 13. If "pawn_plan_only_in_better_line" is set, your answer must include it, right after the main reason: say the better
    move prepares those pawn moves (say it "makes room for" one only when its note says so), say what they do from their
    labels in "line_with_evals" (attacks, space, a bishop shut in), and show the line up to the last of them. Say "later",
-   since it is a plan, not the next move.`;
+   since it is a plan, not the next move.
+14. Write no numbers except move numbers: no evals, no gap, no material balance in pawns, no term sizes, and never
+   name Stockfish or SF 15; give a term as what it means ("your king is safer"), not as a score. The numbers on the sheet are
+   for you, to find the reason and to judge its size: a gap under half a pawn is "a small edge", up to a pawn and a half
+   "clearly better", more than that "winning". Say what changed hands in pieces ("you win a pawn"), not in pawns.`;
 
 export async function explain(facts, apiKey, model = 'claude-haiku-5-5') {
   // Haiku has no server-side fallback; on the others a safety decline is retried on a fallback model
@@ -886,8 +890,8 @@ export async function handle(engines, req, apiKey, llm = explain) {
   const gap = Math.abs(facts.latest_sf_gap);
   // the engines' lines differ for reasons too small to explain; a story would only invent one
   const text = gap < EQUAL_GAP
-    ? `**${facts.played.move}** is about as good as **${facts.alternative.move}**: the difference is ${gap.toFixed(2)} pawns, `
-      + 'which is within the engine\'s noise. Either move is fine.'
+    ? `**${facts.played.move}** is about as good as **${facts.alternative.move}**: the engine sees no real difference `
+      + 'between them. Either move is fine.'
     : await llm(facts, apiKey);
   return { text, best: line('alternative'), compared: line('played') };
 }
