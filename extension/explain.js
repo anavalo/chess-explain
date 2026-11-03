@@ -823,9 +823,20 @@ Rules:
    for you, to find the reason and to judge its size: a gap under half a pawn is "a small edge", up to a pawn and a half
    "clearly better", more than that "winning". Say what changed hands in pieces ("you win a pawn"), not in pawns.`;
 
+/** Rule 15, added for every model but Haiku: Haiku's advice was unsupported or generic in a third or more of answers (A/B 2026-11-03). */
+export const ADVICE = `
+15. End with one last line, on its own, starting "Next time:": the habit that would have found the better move here,
+   at most 15 words, naming this position's piece, square or move it applies to. Take it from the fact that decided
+   your reason: a threat the played move ignores ("opponent_threat", "position_before_move") -> ask what your opponent
+   threatens before you move; a "prepares" idea -> look for a quiet move that sets up your capture or check; a
+   "recapture ... fails" line -> check the recapture works before you trade; an outpost square or weak pawn that only one
+   line creates -> ask which squares or pawns a move gives up for good; the terms (rule 3) -> compare where your pieces
+   stand after each move. Never give general advice the facts do not tie to this position. The advice comes after
+   everything else and never replaces the opening sentence or the main reason; the 120-word limit includes it.`;
+
 export async function explain(facts, apiKey, model = 'claude-haiku-5-5') {
   // Haiku has no server-side fallback; on the others a safety decline is retried on a fallback model
-  const fallback = !model.startsWith('claude-haiku');
+  const haiku = model.startsWith('claude-haiku'), fallback = !haiku;
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -841,7 +852,7 @@ export async function explain(facts, apiKey, model = 'claude-haiku-5-5') {
       max_tokens: 16000,
       output_config: { effort: 'high' },
       ...fallback && { fallbacks: 'default' },
-      system: SYSTEM,
+      system: haiku ? SYSTEM : SYSTEM + ADVICE,
       messages: [{ role: 'user', content: JSON.stringify(facts, null, 1) }],
     }),
     signal: AbortSignal.timeout(120_000),
