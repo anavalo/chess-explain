@@ -12,6 +12,14 @@ _Avoid_: facts block, sheet JSON
 A short worded fact attached to a move or position on the fact sheet (a pin, an outpost, a pawn island change).
 _Avoid_: tag, annotation
 
+**Feature**:
+A structural fact about one side's pawns or pieces (a doubled pawn, a passed pawn, an outpost square, a shield hole), before it is worded as a label.
+_Avoid_: imbalance, weakness
+
+**Imbalance**:
+Silman's sense: a feature that already differs between the two sides in the position before any move.
+_Avoid_: feature (when only the root position is meant)
+
 **Explainer**:
 The LLM that writes the answer from a fact sheet.
 _Avoid_: coach, model (when the role is meant)

@@ -211,6 +211,30 @@ const CENTRE_FILES = [2, 3, 4, 5].map(f => SquareSet.fromFile(f)).reduce((a, b) 
 const ahead = (color, sq) => (color === 'white' ? sq + 8 : sq - 8);
 const sameColour = sq => (LIGHT.has(sq) ? LIGHT : DARK);
 
+// ---- features: structural facts about one side's pawns and pieces, and the one place they are worded ----
+
+/** A feature's identity: two features with the same key are the same fact (two rooks on one open file are one). */
+const key = f => `${f.kind} ${f.square ?? f.file ?? ''}`;
+const uniq = features => [...new Map(features.map(f => [key(f), f])).values()];
+
+/** How each feature kind reads on the fact sheet, without its owner. `ctx` is 'move' for a label on a move in a line,
+    where a rook file and the bishop pair read differently from the position labels. */
+const WORDS = {
+  bishopPair: (f, ctx) => (ctx === 'move' ? 'bishop pair gone' : 'bishop pair'),
+  outpost: f => `${f.role} on outpost ${f.square}`,
+  outpostSquare: f => `outpost square ${f.square}`,
+  rookFile: (f, ctx) => (ctx === 'move' ? `rook on ${f.open} file` : `rook on ${f.open} ${f.file}-file`),
+  passed: f => `passed ${f.file}-pawn`,
+  doubled: f => `${f.file}-pawns doubled`,
+  isolated: f => `${f.file}-pawn isolated`,
+  backward: f => `pawn on ${f.square} backward`,
+  shieldHole: f => `king shield lost its ${f.file}-pawn`,
+  kingInCentre: () => 'king still in the centre',
+  islands: f => `pawn islands ${f.from} to ${f.to}`, // the count changed on one move
+  islandCount: f => `pawns in ${f.count} islands`, // the count at the end of a line, when the two lines differ
+};
+const word = (f, ctx) => WORDS[f.kind](f, ctx);
+
 function hasBishopPair(board, color) {
   const bishops = board.bishop.intersect(board[color]);
   return bishops.intersects(LIGHT) && bishops.intersects(DARK);
@@ -230,58 +254,58 @@ export function isOutpost(board, sq, color) {
     enemy pawn that has gone past it; with no enemy pawn near, every pawn-protected square would count.
     ponytail: c-f files only, where a piece there matters most; add the wings if answers miss a g5/b5 hole. */
 function outpostSquares(board, color) {
-  const out = new Set(), theirs = board.pawn.intersect(board[opposite(color)]);
+  const out = [], theirs = board.pawn.intersect(board[opposite(color)]);
   for (const sq of CENTRE_FILES.diff(board[color]).diff(board.pawn)) {
     const f = squareFile(sq), sides = SquareSet.fromFile(f - 1).union(SquareSet.fromFile(f + 1));
-    if (theirs.intersects(sides) && isOutpost(board, sq, color)) out.add(`outpost square ${makeSquare(sq)}`);
+    if (theirs.intersects(sides) && isOutpost(board, sq, color)) out.push({ kind: 'outpostSquare', square: makeSquare(sq) });
   }
   return out;
 }
 
 /** `color`'s isolated, doubled and backward pawns, as SF 15 defines them (src/pawns.cpp). */
 export function pawnWeaknesses(board, color) {
-  const own = board.pawn.intersect(board[color]), theirs = board.pawn.diff(own), out = new Set();
+  const own = board.pawn.intersect(board[color]), theirs = board.pawn.diff(own), out = [];
   for (const p of own) {
     const f = squareFile(p), file = SquareSet.fromFile(f), name = 'abcdefgh'[f];
     const neighbours = own.intersect(SquareSet.fromFile(Math.max(f - 1, 0)).union(SquareSet.fromFile(Math.min(f + 1, 7)))).diff(file);
-    if (own.intersect(file).size() > 1) out.add(`${name}-pawns doubled`);
-    if (neighbours.isEmpty()) { out.add(`${name}-pawn isolated`); continue; }
+    if (own.intersect(file).size() > 1) out.push({ kind: 'doubled', file: name });
+    if (neighbours.isEmpty()) { out.push({ kind: 'isolated', file: name }); continue; }
     // behind all its neighbours, and the square in front is blocked or attacked by an enemy pawn
     const behind = [...neighbours].every(n => (color === 'white' ? squareRank(n) > squareRank(p) : squareRank(n) < squareRank(p)));
     const up = ahead(color, p);
-    if (behind && (theirs.has(up) || pawnAttacks(color, up).intersects(theirs))) out.add(`pawn on ${makeSquare(p)} backward`);
+    if (behind && (theirs.has(up) || pawnAttacks(color, up).intersects(theirs))) out.push({ kind: 'backward', square: makeSquare(p) });
   }
-  return out;
+  return uniq(out);
 }
 
-/** `color`'s pawn islands (groups of pawns on adjacent files) on boards `x` and `y` as [n, m], or null when the counts
-    are equal or `color` has a different number of pawns on each: fewer islands from losing a pawn is no better structure. */
+/** The change in `color`'s pawn islands (groups of pawns on adjacent files) from board `x` to board `y`, or null when the
+    counts are equal or `color` has a different number of pawns on each: fewer islands from losing a pawn is no better structure. */
 function islandChange(x, y, color) {
   const pawns = board => board.pawn.intersect(board[color]);
   const count = board => { const f = new Set([...pawns(board)].map(squareFile)); return [...f].filter(i => !f.has(i - 1)).length; };
   const n = count(x), m = count(y);
-  return n !== m && pawns(x).size() === pawns(y).size() ? [n, m] : null;
+  return n !== m && pawns(x).size() === pawns(y).size() ? { kind: 'islands', from: n, to: m } : null;
 }
 
 /** `color`'s passed pawns: no enemy pawn ahead of it on its own or a neighbouring file. */
 function passedPawns(board, color) {
-  const own = board.pawn.intersect(board[color]), theirs = board.pawn.diff(own), out = new Set();
+  const own = board.pawn.intersect(board[color]), theirs = board.pawn.diff(own), out = [];
   for (const p of own) {
     const f = squareFile(p), r = squareRank(p);
     if (![...theirs].some(t => Math.abs(squareFile(t) - f) <= 1 && (color === 'white' ? squareRank(t) > r : squareRank(t) < r)))
-      out.add(`passed ${'abcdefgh'[f]}-pawn`);
+      out.push({ kind: 'passed', file: 'abcdefgh'[f] });
   }
-  return out;
+  return uniq(out);
 }
 
 /** Holes in the pawn shield of `color`'s castled king (on its back rank, not on the d/e-file): files next to
     the king with no own pawn on the 2nd or 3rd rank. Files as in SF 15's shelter (king file kept within b-g). */
 function shieldHoles(board, color) {
-  const out = new Set(), k = board.kingOf(color), back = color === 'white' ? 0 : 7;
+  const out = [], k = board.kingOf(color), back = color === 'white' ? 0 : 7;
   if (k === undefined || squareRank(k) !== back || squareFile(k) === 3 || squareFile(k) === 4) return out;
   const own = [...board.pawn.intersect(board[color])], c = Math.min(Math.max(squareFile(k), 1), 6);
   for (let f = c - 1; f <= c + 1; f++)
-    if (!own.some(p => squareFile(p) === f && Math.abs(squareRank(p) - back) <= 2)) out.add(`king shield lost its ${'abcdefgh'[f]}-pawn`);
+    if (!own.some(p => squareFile(p) === f && Math.abs(squareRank(p) - back) <= 2)) out.push({ kind: 'shieldHole', file: 'abcdefgh'[f] });
   return out;
 }
 
@@ -295,10 +319,11 @@ function kingInCentre(pos, color) {
   return !canCastle && [3, 4].some(f => b.pawn.intersect(SquareSet.fromFile(f)).size() <= 1);
 }
 
-/** 'open' or 'semi-open' (no `color` pawn) for a rook on `sq`'s file, else null. */
+/** A rook on `sq` on an open or semi-open (no `color` pawn) file, else null. */
 function rookFile(board, sq, color) {
   const pawns = board.pawn.intersect(SquareSet.fromFile(squareFile(sq)));
-  return pawns.isEmpty() ? 'open' : pawns.intersects(board[color]) ? null : 'semi-open';
+  const open = pawns.isEmpty() ? 'open' : pawns.intersects(board[color]) ? null : 'semi-open';
+  return open && { kind: 'rookFile', open, file: 'abcdefgh'[squareFile(sq)] };
 }
 
 /** Silman's imbalances: what already differs on the board before any move, for the side to move ("yours"), the
@@ -306,17 +331,18 @@ function rookFile(board, sq, color) {
 export function imbalances(pos, you = pos.turn) {
   const b = pos.board, them = opposite(you);
   const side = color => {
-    const out = new Set(); // a Set: two rooks on one open file are one label
-    if (hasBishopPair(b, color) && !hasBishopPair(b, opposite(color))) out.add('bishop pair');
+    const out = [];
+    if (hasBishopPair(b, color) && !hasBishopPair(b, opposite(color))) out.push({ kind: 'bishopPair' });
     for (const sq of b[color].intersect(b.knight.union(b.bishop)))
-      if (isOutpost(b, sq, color)) out.add(`${b.getRole(sq)} on outpost ${makeSquare(sq)}`);
+      if (isOutpost(b, sq, color)) out.push({ kind: 'outpost', role: b.getRole(sq), square: makeSquare(sq) });
     for (const sq of b[color].intersect(b.rook)) {
       const file = rookFile(b, sq, color);
-      if (file) out.add(`rook on ${file} ${'abcdefgh'[squareFile(sq)]}-file`);
+      if (file) out.push(file);
     }
-    for (const features of [passedPawns, pawnWeaknesses, shieldHoles, outpostSquares]) features(b, color).forEach(f => out.add(f));
-    if (kingInCentre(pos, color)) out.add('king still in the centre');
-    return out.size ? [...out] : null;
+    for (const features of [passedPawns, pawnWeaknesses, shieldHoles, outpostSquares]) out.push(...features(b, color));
+    if (kingInCentre(pos, color)) out.push({ kind: 'kingInCentre' });
+    const labels = uniq(out).map(f => word(f));
+    return labels.length ? labels : null;
   };
   // pieces one side has more of than the other: "your bishop for opp's knight", "opp's extra rook"
   const extra = (c, d) => ['queen', 'rook', 'bishop', 'knight'].flatMap(r =>
@@ -346,7 +372,10 @@ export function leafDiff(leafA, leafP, you) {
   const a = flat(leafA), p = flat(leafP);
   for (const [color, who] of [[you, 'your'], [opposite(you), "opp's"]]) {
     const islands = islandChange(leafA.board, leafP.board, color);
-    if (islands) { a.push(`${who} pawns in ${islands[0]} islands`); p.push(`${who} pawns in ${islands[1]} islands`); }
+    if (islands) {
+      a.push(`${who} ${word({ kind: 'islandCount', count: islands.from })}`);
+      p.push(`${who} ${word({ kind: 'islandCount', count: islands.to })}`);
+    }
   }
   const only = (x, y) => { const d = x.filter(l => !y.includes(l)); return d.length ? d : null; };
   return {
@@ -389,11 +418,12 @@ export function moveLabels(b, next, uci, you) {
   // SF 15's Space term only counts squares behind your own pawns, so it hardly sees a pawn pushed forward
   const rank = squareRank(mv.to) + 1;
   if (role === 'pawn' && !isCapture(b, mv) && (b.turn === 'white' ? rank >= 4 : rank <= 5)) labels.push('pawn gains space');
-  if ((role === 'knight' || role === 'bishop') && isOutpost(next.board, mv.to, b.turn)) labels.push(`${role} on outpost ${makeSquare(mv.to)}`);
+  if ((role === 'knight' || role === 'bishop') && isOutpost(next.board, mv.to, b.turn))
+    labels.push(word({ kind: 'outpost', role, square: makeSquare(mv.to) }));
   const them = opposite(b.turn);
   if (role === 'rook' && squareFile(mv.from) !== squareFile(mv.to)) {
     const file = rookFile(next.board, mv.to, b.turn);
-    if (file) labels.push(`rook on ${file} file`);
+    if (file) labels.push(word(file, 'move'));
   }
   // the 7th only counts with enemy pawns to attack there or the enemy king held on its back rank
   const seventh = b.turn === 'white' ? 6 : 1;
@@ -401,7 +431,7 @@ export function moveLabels(b, next, uci, you) {
     && (next.board.pawn.intersect(next.board[them]).intersects(SquareSet.fromRank(seventh))
       || squareRank(next.board.kingOf(them)) === (b.turn === 'white' ? 7 : 0)))
     labels.push('rook on 7th rank');
-  if (hasBishopPair(b.board, them) && !hasBishopPair(next.board, them)) labels.push(`${owner(them)} bishop pair gone`);
+  if (hasBishopPair(b.board, them) && !hasBishopPair(next.board, them)) labels.push(`${owner(them)} ${word({ kind: 'bishopPair' }, 'move')}`);
   if (role === 'pawn' || victim === 'pawn' || isEnPassant(b, mv)) {
     // a pawn that moves or is taken opens or closes diagonals: name bishops (other than the mover) that gain or lose 3+ squares
     const reach = (pos, sq) => attacks(pos.board.get(sq), sq, pos.board.occupied).diff(pos.board[pos.board.getColor(sq)]).size();
@@ -413,11 +443,11 @@ export function moveLabels(b, next, uci, you) {
     }
     for (const color of [b.turn, them]) {
       for (const features of [pawnWeaknesses, passedPawns, shieldHoles, outpostSquares]) {
-        const before = features(b.board, color);
-        for (const w of features(next.board, color)) if (!before.has(w)) labels.push(`${owner(color)} ${w}`);
+        const before = new Set(features(b.board, color).map(key));
+        for (const f of features(next.board, color)) if (!before.has(key(f))) labels.push(`${owner(color)} ${word(f)}`);
       }
       const islands = islandChange(b.board, next.board, color);
-      if (islands) labels.push(`${owner(color)} pawn islands ${islands[0]} to ${islands[1]}`);
+      if (islands) labels.push(`${owner(color)} ${word(islands)}`);
     }
   }
   return labels;
