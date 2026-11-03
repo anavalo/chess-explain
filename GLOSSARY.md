@@ -13,8 +13,12 @@ A short worded fact attached to a move or position on the fact sheet (a pin, an 
 _Avoid_: tag, annotation
 
 **Feature**:
-A structural fact about one side's pawns or pieces (a doubled pawn, a passed pawn, an outpost square, a shield hole), before it is worded as a label.
+A structural fact about one side's pawns or pieces (a doubled pawn, a passed pawn, an outpost square, a shield hole), before it is worded as a label. Data: a `kind` naming its label kind, plus the fields that identify it (a square, a file). Two features are the same fact when every field is equal.
 _Avoid_: imbalance, weakness
+
+**Label kind**:
+One row of the kinds table in `features.js`: how a feature of that kind is worded on the fact sheet, and a sample feature whose wording must appear in the sheet legend. Every feature has exactly one label kind; a tactical label on a move (a capture, a check, an attack, a pin) has none.
+_Avoid_: label type, tag type
 
 **Imbalance**:
 Silman's sense: a feature that already differs between the two sides in the position before any move.

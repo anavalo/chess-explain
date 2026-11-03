@@ -17,27 +17,29 @@ const sameColour = sq => (LIGHT.has(sq) ? LIGHT : DARK);
 export const key = f => `${f.kind} ${f.square ?? f.file ?? ''}`;
 const uniq = features => [...new Map(features.map(f => [key(f), f])).values()];
 
-/** How each feature kind reads on the fact sheet, without its owner. `ctx` is 'move' for a label on a move in a line,
-    where a rook file and the bishop pair read differently from the position labels. */
-const WORDS = {
-  bishopPair: (f, ctx) => (ctx === 'move' ? 'bishop pair gone' : 'bishop pair'),
-  outpost: f => `${f.role} on outpost ${f.square}`,
-  outpostSquare: f => `outpost square ${f.square}`,
-  rookFile: (f, ctx) => (ctx === 'move' ? `rook on ${f.open} file` : `rook on ${f.open} ${f.file}-file`),
-  passed: f => `passed ${f.file}-pawn`,
-  doubled: f => `${f.file}-pawns doubled`,
-  isolated: f => `${f.file}-pawn isolated`,
-  backward: f => `pawn on ${f.square} backward`,
-  shieldHole: f => `king shield lost its ${f.file}-pawn`,
-  kingInCentre: () => 'king still in the centre',
-  islands: f => `pawn islands ${f.from} to ${f.to}`, // the count changed on one move
-  islandCount: f => `pawns in ${f.count} islands`, // the count at the end of a line, when the two lines differ
+/** The label kinds: how a feature of each kind reads on the fact sheet, without its owner, and a `sample` feature with
+    placeholder fields whose wording (in the 'move' form) the sheet legend quotes, so a test keeps the two in step. A kind
+    with no sample is one the legend describes in other words. `ctx` is 'move' for a label on a move in a line, where a rook
+    file and the bishop pair read differently from the position labels. */
+export const KINDS = {
+  bishopPair: { word: (f, ctx) => (ctx === 'move' ? 'bishop pair gone' : 'bishop pair'), sample: {} },
+  outpost: { word: f => `${f.role} on outpost ${f.square}`, sample: { role: '<knight|bishop>', square: '<square>' } },
+  outpostSquare: { word: f => `outpost square ${f.square}`, sample: { square: '<square>' } },
+  rookFile: { word: (f, ctx) => (ctx === 'move' ? `rook on ${f.open} file` : `rook on ${f.open} ${f.file}-file`), sample: { open: 'open|semi-open' } },
+  passed: { word: f => `passed ${f.file}-pawn`, sample: { file: '<file>' } },
+  doubled: { word: f => `${f.file}-pawns doubled`, sample: { file: '<file>' } },
+  isolated: { word: f => `${f.file}-pawn isolated`, sample: { file: '<file>' } },
+  backward: { word: f => `pawn on ${f.square} backward`, sample: { square: '<square>' } },
+  shieldHole: { word: f => `king shield lost its ${f.file}-pawn`, sample: { file: '<file>' } },
+  kingInCentre: { word: () => 'king still in the centre', sample: {} },
+  islands: { word: f => `pawn islands ${f.from} to ${f.to}`, sample: { from: 'N', to: 'M' } }, // the count changed on one move
+  islandCount: { word: f => `pawns in ${f.count} islands`, sample: { count: 'N' } }, // the count at the end of a line, when the two lines differ
   // shared by both sides, so worded with their owner, from `you`'s view
-  pieceImbalance: ({ mine, theirs }) => `piece imbalance: ${mine && theirs ? `your ${mine} for opp's ${theirs}` : mine ? `your extra ${mine}` : `opp's extra ${theirs}`}`,
-  oppositeBishops: () => 'opposite-coloured bishops',
-  badBishop: (f, ctx, you) => `${owner(f.color, you)} bishop on ${f.square} is bad: ${owner(f.color, you)} pawns on ${f.fixed.join(', ')} are fixed on its colour`,
+  pieceImbalance: { word: ({ mine, theirs }) => `piece imbalance: ${mine && theirs ? `your ${mine} for opp's ${theirs}` : mine ? `your extra ${mine}` : `opp's extra ${theirs}`}` },
+  oppositeBishops: { word: () => 'opposite-coloured bishops', sample: {} },
+  badBishop: { word: (f, ctx, you) => `${owner(f.color, you)} bishop on ${f.square} is bad: ${owner(f.color, you)} pawns on ${f.fixed.join(', ')} are fixed on its colour` },
 };
-export const word = (f, ctx, you) => WORDS[f.kind](f, ctx, you);
+export const word = (f, ctx, you) => KINDS[f.kind].word(f, ctx, you);
 
 export function hasBishopPair(board, color) {
   const bishops = board.bishop.intersect(board[color]);

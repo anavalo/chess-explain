@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import { Refused, handle, moveLabels, nodeEngines, pawnPushes, pins, sanToUci, trapped } from './extension/explain.js';
-import { endNotes, imbalances, isOutpost, leafDiff, pawnWeaknesses } from './extension/features.js';
+import { KINDS, endNotes, imbalances, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { linkMoves, md } from './extension/md.js';
 import { LEGEND, checkAnswer, systemFor } from './extension/prompt.js';
 
@@ -29,6 +29,11 @@ assert.deepEqual(links(linkMoves(md('1.Ra7 Kd8 2.Kd2+ wins.\n\n1...Kd8 and Kd2. 
 assert.ok(systemFor('claude-haiku-5-5').startsWith(LEGEND) && !systemFor('claude-haiku-5-5').includes('Next time:'));
 assert.ok(systemFor('claude-opus-5-5').startsWith(systemFor('claude-haiku-5-5')) && systemFor('claude-opus-5-5').includes('Next time:'));
 assert.ok(!LEGEND.includes('\nRules:'));
+// the legend quotes every label kind's wording (it wraps lines, so match across whitespace); a sample is the placeholders
+const legend = LEGEND.replace(/\s+/g, ' ');
+for (const [kind, { sample }] of Object.entries(KINDS))
+  if (sample) assert.ok(legend.includes(word({ kind, ...sample }, 'move')), `legend lacks ${kind}: ${word({ kind, ...sample }, 'move')}`);
+assert.equal(Object.values(KINDS).filter(k => !k.sample).length, 2); // pieceImbalance and badBishop: described, not quoted
 
 // rule checks: each answer fails exactly the rules listed; move numbers, squares and ranks are not numbers
 const sheet = { played: { line_with_evals: '12. you Nf3 [x] (+0.3) 12... opp Nc6 (+0.2)' } };
