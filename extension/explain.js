@@ -128,7 +128,7 @@ const cpOf = s => ('mate' in s ? (s.mate > 0 ? 10000 - s.mate : -10000 - s.mate)
 /** Play the first LEAF_PLIES of the engine line and stop at the last quiet position (no check, last move not
     a capture), so the static eval is not taken in the middle of an exchange. Kept short: the first moves of a
     line are the most reliable, and they are the ones the answer quotes. */
-function lineToLeaf(pos, pv) {
+export function lineToLeaf(pos, pv) {
   let b = pos, quiet = null, calm = null;
   const sans = [];
   for (const uci of pv.slice(0, LEAF_PLIES)) {
@@ -153,7 +153,7 @@ function phase(pos) {
 }
 
 /** Run SF 15 `eval` and return {term: value in pawns} from `color`'s side, MG/EG blended by phase. */
-async function sf15Terms(sf15, pos, color) {
+export async function sf15Terms(sf15, pos, color) {
   const lines = await sf15.until([`position fen ${fenOf(pos)}`, 'eval'], l => l.startsWith('Final evaluation'));
   const ph = phase(pos), sign = color === 'white' ? 1 : -1, terms = {};
   for (const l of lines) {

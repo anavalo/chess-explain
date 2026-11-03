@@ -3,7 +3,9 @@
 // usage: node test.js   (about 3 minutes)
 import assert from 'node:assert/strict';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
-import { Refused, handle, moveLabels, nodeEngines, pawnPushes, pins, sanToUci, trapped } from './extension/explain.js';
+import {
+  Refused, handle, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pins, sanToUci, sf15Terms, trapped,
+} from './extension/explain.js';
 import { KINDS, endNotes, imbalances, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { linkMoves, md } from './extension/md.js';
 import { JUDGE, LEGEND, PAIR, checkAnswer, systemFor } from './extension/prompt.js';
@@ -116,6 +118,21 @@ assert.ok(imbalances(pos('rnbq2n1/ppp3kr/3p3p/8/2BPPPpb/2N1B3/PPP1K3/R2Q3R b - -
 assert.ok(!JSON.stringify(imbalances(pos('r3k2r/1pqn1pb1/p2p1np1/N2Pp2p/8/4BP2/PPPQB1PP/R3K2R w KQkq - 6 14'))).includes('king still'));
 // without queens the king belongs in the centre
 assert.ok(!JSON.stringify(imbalances(pos('r1b2rk1/pp3ppp/2n5/8/8/2N5/PPP2PPP/R1B1KB1R w KQ - 0 12'))).includes('king still'));
+
+// SF 15 terms: middlegame column with all pieces on, endgame column with none, from the asking side's view, in pawns
+const evalTable = ['|      Term    |    White    |    Black    |    Total    |', '|              |   MG    EG  |   MG    EG  |   MG    EG  |',
+  '|     Mobility |  0.85  1.26 |  0.83  1.20 |  1.00  2.00 |', 'Final evaluation       +0.10 (white side)'];
+const fakeSf15 = { until: async () => evalTable };
+assert.deepEqual(await sf15Terms(fakeSf15, pos('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'), 'white'), { Mobility: 0.58 });
+assert.deepEqual(await sf15Terms(fakeSf15, pos('4k3/4p3/8/8/8/8/4P3/4K3 w - - 0 1'), 'black'), { Mobility: -1.15 });
+
+// the leaf: the last quiet position in the first plies, before an exchange; a line that is all captures falls back to its end
+const start = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+assert.deepEqual(lineToLeaf(pos(start), sanToUci(start, ['e4', 'd5', 'exd5', 'Qxd5'])).leafSans, ['1.e4', 'd5']);
+const afterD5 = 'rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2';
+assert.deepEqual(lineToLeaf(pos(afterD5), sanToUci(afterD5, ['exd5', 'Qxd5'])).leafSans, ['2.exd5', 'Qxd5']);
+const afterE4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
+assert.deepEqual(lineToLeaf(pos(afterE4), sanToUci(afterE4, ['e5', 'Nf3', 'Nc6'])).leafSans, ['1...e5', '2.Nf3', 'Nc6']);
 
 // lichess status stub: the real user may be in a game when CI runs
 globalThis.fetch = async url => {
