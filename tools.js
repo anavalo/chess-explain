@@ -9,9 +9,9 @@
 import { parseArgs } from 'node:util';
 import { makeSquare, parseSquare } from './extension/vendor/chessops.js';
 import {
-  endNotes, fenOf, imbalances, lineWithEvals, nodeEngines, opponentThreat, play, position, positionBefore, pov, san,
-  sanToUci, scoreStr, search, trapped,
+  fenOf, lineWithEvals, nodeEngines, opponentThreat, play, position, positionBefore, pov, san, sanToUci, scoreStr, search, trapped,
 } from './extension/explain.js';
+import { endNotes, imbalances } from './extension/features.js';
 
 const { values: o, positionals: [cmd, fen, ...rest] } = parseArgs({
   allowPositionals: true, options: { nodes: { type: 'string', default: '200000' } },

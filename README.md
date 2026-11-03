@@ -120,6 +120,7 @@ The extension is about 1,000 lines of plain JavaScript, with no framework and no
 | Path                       | What it is                                                                 |
 | -------------------------- | -------------------------------------------------------------------------- |
 | `extension/explain.js`     | The core: engine I/O, the fact builder and the Claude call. Runs in the side panel and in Node. |
+| `extension/features.js`    | The pawn and piece features, the one table that words them as labels, and the imbalances built from them. |
 | `extension/prompt.js`      | The explainer prompt (sheet legend and rules) and the rule checks the eval runs on each answer. |
 | `extension/panel.js`       | The side panel UI: reads the lichess board and renders the answer.         |
 | `extension/md.js`          | The small Markdown renderer and the move links in the answer.              |

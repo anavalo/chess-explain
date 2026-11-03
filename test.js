@@ -3,9 +3,8 @@
 // usage: node test.js   (about 3 minutes)
 import assert from 'node:assert/strict';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
-import {
-  Refused, endNotes, handle, imbalances, isOutpost, leafDiff, moveLabels, nodeEngines, pawnPushes, pawnWeaknesses, pins, sanToUci, trapped,
-} from './extension/explain.js';
+import { Refused, handle, moveLabels, nodeEngines, pawnPushes, pins, sanToUci, trapped } from './extension/explain.js';
+import { endNotes, imbalances, isOutpost, leafDiff, pawnWeaknesses } from './extension/features.js';
 import { linkMoves, md } from './extension/md.js';
 import { LEGEND, checkAnswer, systemFor } from './extension/prompt.js';
 
