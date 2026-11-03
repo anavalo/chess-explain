@@ -107,6 +107,7 @@ export function sanToUci(fen, sans) {
 }
 
 const isEnPassant = (pos, mv) => pos.board.getRole(mv.from) === 'pawn' && mv.to === pos.epSquare;
+const forcing = sanText => /[x+#]/.test(sanText); // a capture or a check, from the SAN
 const isCapture = (pos, mv) => pos.board.getColor(mv.to) === opposite(pos.turn) || isEnPassant(pos, mv);
 const attackers = (pos, color, sq) => pos.kingAttackers(sq, color, pos.board.occupied);
 const signed = n => (n >= 0 ? `+${n}` : `${n}`);
@@ -397,7 +398,7 @@ export function pawnPushes(pos, pv, you, maxPlies = 10) {
       const step = b.turn === 'white' ? 8 : -8;
       const room = first.from !== mv.from && [mv.from + step, mv.to].includes(first.from) && b.board.getRole(first.from) === undefined;
       const point = i < maxPlies && (room || threats(next, mv.to, new Set(), "opp's").length > 0
-        || moveLabels(b, next, uci, you).some(l => /^(frees|shuts in)/.test(l)));
+        || bishopReach(b, next, uci).length > 0);
       out.push({ move: san(b, uci), text: `${moveNo(b)}${san(b, uci)}${room ? ` (to the square ${firstSan} left)` : ''}`, point });
     }
     b = next;
@@ -409,6 +410,20 @@ export function pawnPushes(pos, pv, you, maxPlies = 10) {
 function onlyIn(a, b) {
   const d = a.filter(p => p.point && !b.some(q => q.move === p.move)).map(p => p.text);
   return d.length ? d : null;
+}
+
+/** Bishops (other than the mover) whose reach changes by 3+ squares when move `uci` from `b` to `next` moves or takes a
+    pawn and so opens or closes diagonals: [{square, color, change}]. */
+function bishopReach(b, next, uci) {
+  const mv = parseUci(uci), out = [];
+  if (b.board.getRole(mv.from) !== 'pawn' && b.board.getRole(mv.to) !== 'pawn' && !isEnPassant(b, mv)) return out;
+  const reach = (pos, sq) => attacks(pos.board.get(sq), sq, pos.board.occupied).diff(pos.board[pos.board.getColor(sq)]).size();
+  for (const sq of b.board.bishop.intersect(next.board.bishop).without(mv.from)) {
+    if (b.board.getColor(sq) !== next.board.getColor(sq)) continue;
+    const change = reach(next, sq) - reach(b, sq);
+    if (Math.abs(change) >= 3) out.push({ square: sq, color: b.board.getColor(sq), change });
+  }
+  return out;
 }
 
 /** Positional labels for move `uci` from `b` to `next`; `you` is the side the explanation is for. */
@@ -433,14 +448,9 @@ export function moveLabels(b, next, uci, you) {
     labels.push('rook on 7th rank');
   if (hasBishopPair(b.board, them) && !hasBishopPair(next.board, them)) labels.push(`${owner(them)} ${word({ kind: 'bishopPair' }, 'move')}`);
   if (role === 'pawn' || victim === 'pawn' || isEnPassant(b, mv)) {
-    // a pawn that moves or is taken opens or closes diagonals: name bishops (other than the mover) that gain or lose 3+ squares
-    const reach = (pos, sq) => attacks(pos.board.get(sq), sq, pos.board.occupied).diff(pos.board[pos.board.getColor(sq)]).size();
-    for (const sq of b.board.bishop.intersect(next.board.bishop).without(mv.from)) {
-      if (b.board.getColor(sq) !== next.board.getColor(sq)) continue;
-      const d = reach(next, sq) - reach(b, sq), whose = owner(b.board.getColor(sq));
-      if (d >= 3) labels.push(`frees ${whose} bishop on ${makeSquare(sq)} (+${d} squares)`);
-      if (d <= -3) labels.push(`shuts in ${whose} bishop on ${makeSquare(sq)} (${d} squares)`);
-    }
+    for (const { square, color, change } of bishopReach(b, next, uci))
+      labels.push(change > 0 ? `frees ${owner(color)} bishop on ${makeSquare(square)} (+${change} squares)`
+        : `shuts in ${owner(color)} bishop on ${makeSquare(square)} (${change} squares)`);
     for (const color of [b.turn, them]) {
       for (const features of [pawnWeaknesses, passedPawns, shieldHoles, outpostSquares]) {
         const before = new Set(features(b.board, color).map(key));
@@ -507,7 +517,7 @@ export async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20, you = pos
       ev = scoreStr(pov(score, b, you));
       // what the mover would play next if the other side passed: catches batteries, discovered attacks, mate threats
       const [, threat] = await opponentThreat(sf, b, nodes, score);
-      if (threat && /[x+#]/.test(threat.move)) labels.push(`threatens ${threat.move}`); // quiet threats are mostly noise mid-line
+      if (threat && forcing(threat.move)) labels.push(`threatens ${threat.move}`); // quiet threats are mostly noise mid-line
       const next = pv[i + 1] && parseUci(pv[i + 1]);
       const failed = captured && !nested && next && next.to !== mv.to && await failedRecapture(sf, b, mv.to, score, nodes);
       if (failed) {
@@ -628,7 +638,7 @@ async function answerToThreat(sf, pos, move, threat, nodes) {
 async function prepares(sf, pos, mv, played, cp, nodes) {
   const b = play(pos, mv);
   const [tactic, facts] = await opponentThreat(sf, b, nodes, { cp: -cp });
-  if (!tactic || tactic === played || !/[x+#]/.test(facts.move) || !pos.isLegal(parseUci(tactic))) return null;
+  if (!tactic || tactic === played || !forcing(facts.move) || !pos.isLegal(parseUci(tactic))) return null;
   const { score, pv } = (await search(sf, pos, nodes, { moves: [tactic] }))[0];
   if (cpOf(score) > cp - 100) return null;
   const out = {
@@ -641,7 +651,7 @@ async function prepares(sf, pos, mv, played, cp, nodes) {
   const ready = play(passed(b), tactic); // the same, but with `mv` played first
   if (now && !now.isEnd() && ready.isLegal(parseUci(pv[1]))) {
     const next = (await search(sf, play(ready, pv[1]), nodes))[0].pv[0];
-    if (next && next !== pv[2] && now.isLegal(parseUci(next)) && /[x+#]/.test(san(now, next))) {
+    if (next && next !== pv[2] && now.isLegal(parseUci(next)) && forcing(san(now, next))) {
       const r = (await search(sf, play(now, next), nodes))[0];
       if (r.pv.length && cpOf(flip(r.score)) <= cpOf(score) - 100) {
         out.follow_up_fails = `Why ${moveNo(now)}${san(now, next)} fails: `
