@@ -235,8 +235,12 @@ const WORDS = {
   kingInCentre: () => 'king still in the centre',
   islands: f => `pawn islands ${f.from} to ${f.to}`, // the count changed on one move
   islandCount: f => `pawns in ${f.count} islands`, // the count at the end of a line, when the two lines differ
+  // shared by both sides, so worded with their owner, from `you`'s view
+  pieceImbalance: ({ mine, theirs }) => `piece imbalance: ${mine && theirs ? `your ${mine} for opp's ${theirs}` : mine ? `your extra ${mine}` : `opp's extra ${theirs}`}`,
+  oppositeBishops: () => 'opposite-coloured bishops',
+  badBishop: (f, ctx, you) => `${owner(f.color, you)} bishop on ${f.square} is bad: ${owner(f.color, you)} pawns on ${f.fixed.join(', ')} are fixed on its colour`,
 };
-const word = (f, ctx) => WORDS[f.kind](f, ctx);
+const word = (f, ctx, you) => WORDS[f.kind](f, ctx, you);
 
 function hasBishopPair(board, color) {
   const bishops = board.bishop.intersect(board[color]);
@@ -332,9 +336,10 @@ function rookFile(board, sq, color) {
 /** The pawn and square features of one side, `(board, color) -> [feature]`, for a position and for the change a move makes. */
 const STRUCTURE = [passedPawns, pawnWeaknesses, shieldHoles, outpostSquares];
 
-/** Silman's imbalances: what already differs on the board before any move, for the side to move ("yours"), the
-    opponent, and both. ponytail: structure only; space, development and initiative are left to the SF 15 terms. */
-export function imbalances(pos, you = pos.turn) {
+/** Silman's imbalances as features: what already differs on the board before any move, for the side to move
+    ("yours"), the opponent, and both (the piece imbalance and the end notes). Each list may be empty.
+    ponytail: structure only; space, development and initiative are left to the SF 15 terms. */
+export function features(pos, you = pos.turn) {
   const b = pos.board, them = opposite(you);
   const side = color => {
     const out = [];
@@ -345,18 +350,22 @@ export function imbalances(pos, you = pos.turn) {
       const file = rookFile(b, sq, color);
       if (file) out.push(file);
     }
-    for (const features of STRUCTURE) out.push(...features(b, color));
+    for (const detect of STRUCTURE) out.push(...detect(b, color));
     if (kingInCentre(pos, color)) out.push({ kind: 'kingInCentre' });
-    const labels = uniq(out).map(f => word(f));
-    return labels.length ? labels : null;
+    return uniq(out);
   };
   // pieces one side has more of than the other: "your bishop for opp's knight", "opp's extra rook"
   const extra = (c, d) => ['queen', 'rook', 'bishop', 'knight'].flatMap(r =>
     Array(Math.max(0, b[r].intersect(b[c]).size() - b[r].intersect(b[d]).size())).fill(r)).join(' and ');
   const mine = extra(you, them), theirs = extra(them, you);
-  const pieces = mine && theirs ? `your ${mine} for opp's ${theirs}` : mine ? `your extra ${mine}` : theirs && `opp's extra ${theirs}`;
-  const both = [...pieces ? [`piece imbalance: ${pieces}`] : [], ...endNotes(pos, you) ?? []];
-  return { yours: side(you), opponents: side(them), both: both.length ? both : null };
+  const both = [...mine || theirs ? [{ kind: 'pieceImbalance', mine, theirs }] : [], ...endNoteFeatures(pos)];
+  return { yours: side(you), opponents: side(them), both };
+}
+
+/** The imbalances worded for the fact sheet; a side with none is null. */
+export function imbalances(pos, you = pos.turn) {
+  const f = features(pos, you), or = labels => (labels.length ? labels : null);
+  return { yours: or(f.yours.map(x => word(x))), opponents: or(f.opponents.map(x => word(x))), both: or(f.both.map(x => word(x, undefined, you))) };
 }
 
 /** The pieces `you` and the opponent still have, as 'you: Q R R B N, opp: Q R B B N'. */
@@ -371,19 +380,25 @@ function piecesLeft(board, you) {
     line shows up here, where the root "imbalances" cannot see it. */
 export function leafDiff(leafA, leafP, you) {
   if (!leafA || !leafP) return null;
+  // [whose, feature] pairs; `whose` is null for a feature both sides share, which is worded with its owner inside
   const flat = pos => {
-    const i = imbalances(pos, you);
-    return [...(i.yours ?? []).map(l => `your ${l}`), ...(i.opponents ?? []).map(l => `opp's ${l}`), ...i.both ?? []];
+    const f = features(pos, you);
+    return [...f.yours.map(x => ['your', x]), ...f.opponents.map(x => ["opp's", x]), ...f.both.map(x => [null, x])];
   };
   const a = flat(leafA), p = flat(leafP);
   for (const color of [you, opposite(you)]) {
     const islands = islandChange(leafA.board, leafP.board, color);
     if (islands) {
-      a.push(`${owner(color, you)} ${word({ kind: 'islandCount', count: islands.from })}`);
-      p.push(`${owner(color, you)} ${word({ kind: 'islandCount', count: islands.to })}`);
+      a.push([owner(color, you), { kind: 'islandCount', count: islands.from }]);
+      p.push([owner(color, you), { kind: 'islandCount', count: islands.to }]);
     }
   }
-  const only = (x, y) => { const d = x.filter(l => !y.includes(l)); return d.length ? d : null; };
+  // the same fact at both leaves is the same owner and every field equal; a wording change cannot alter that
+  const same = ([w, f], [v, g]) => w === v && JSON.stringify(f) === JSON.stringify(g);
+  const only = (x, y) => {
+    const d = x.filter(e => !y.some(o => same(e, o))).map(([whose, f]) => (whose ? `${whose} ${word(f)}` : word(f, undefined, you)));
+    return d.length ? d : null;
+  };
   return {
     pieces_left: { alternative: piecesLeft(leafA.board, you), played: piecesLeft(leafP.board, you) },
     only_after_alternative: only(a, p),
@@ -469,19 +484,24 @@ export function moveLabels(b, next, uci, you) {
   return labels;
 }
 
-/** Facts about the position at the end of a line: opposite-coloured bishops and bad bishops
+/** Features of the position at the end of a line, shared by both sides: opposite-coloured bishops and bad bishops
     (at least two own centre pawns on the bishop's colour, each blocked by an enemy pawn). */
-export function endNotes(pos, you) {
-  const b = pos.board, notes = [];
+function endNoteFeatures(pos) {
+  const b = pos.board, out = [];
   const w = b.bishop.intersect(b.white), k = b.bishop.intersect(b.black);
-  if (w.size() === 1 && k.size() === 1 && w.intersects(LIGHT) !== k.intersects(LIGHT)) notes.push('opposite-coloured bishops');
+  if (w.size() === 1 && k.size() === 1 && w.intersects(LIGHT) !== k.intersects(LIGHT)) out.push({ kind: 'oppositeBishops' });
   for (const sq of b.bishop) {
-    const color = b.getColor(sq), whose = owner(color, you);
+    const color = b.getColor(sq);
     const fixed = [...b.pawn.intersect(b[color]).intersect(sameColour(sq)).intersect(CENTRE_FILES)]
       .filter(p => b.pawn.intersect(b[opposite(color)]).has(ahead(color, p)));
-    if (fixed.length >= 2)
-      notes.push(`${whose} bishop on ${makeSquare(sq)} is bad: ${whose} pawns on ${fixed.map(makeSquare).join(', ')} are fixed on its colour`);
+    if (fixed.length >= 2) out.push({ kind: 'badBishop', square: makeSquare(sq), color, fixed: fixed.map(makeSquare) });
   }
+  return out;
+}
+
+/** The end-of-line features worded for the fact sheet, from `you`'s view; null when there are none. */
+export function endNotes(pos, you) {
+  const notes = endNoteFeatures(pos).map(f => word(f, undefined, you));
   return notes.length ? notes : null;
 }
 
