@@ -22,9 +22,9 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { basename } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { parseArgs, promisify } from 'node:util';
 import { NODES, explain, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
-import { LEGEND, checkAnswer, systemFor } from './extension/prompt.js';
+import { JUDGE, PAIR, checkAnswer, systemFor } from './extension/prompt.js';
 
 // [lichess game, FEN, move played, better move]
 const POSITIONS = [
@@ -164,31 +164,7 @@ const POSITIONS = [
   ['653CfukA', '1r2r1k1/Q3bp1p/p2p2p1/qp2p1Pn/4B3/4BP2/PPP4P/1K1R3R b - - 5 21', 'Ng7', 'b4'],
 ];
 
-// ---- the judge ----
-
-const JUDGE = `You grade answers from a chess explainer. You get the fact sheet the explainer was given (JSON) and its answer.
-The fact sheet is the ground truth: judge the answer only against it, and do not analyse the position yourself.
-- decisive_point: "yes" if the answer gives the reason the fact sheet shows the better move is better: where the evals of the
-  two lines part and why (the labels on those moves), a threat one move meets and the other ignores ("opponent_threat",
-  "if_opp_plays_the_threat_at_once"), the idea in "prepares", or the term gaps when "sf15_total_gap" is at least half of
-  "latest_sf_gap". "partly" if it gives that reason only vaguely, or leads with a minor or wrong reason. "no" otherwise.
-- false_claims: every statement in the answer that the fact sheet contradicts or does not support: a piece called defended,
-  undefended, lost, won, trapped or pinned; a capture, check, attack or threat; who plays a move; an eval or material count;
-  a move given in a line it is not in, in a different order, or a "Why ... fails" side line presented as the main line.
-  For each, quote the claim and say in a few words what the facts show. Plain chess descriptions that the labels support
-  are fine; do not list style issues.
-- invented_term_cause: true if the answer gives a cause for an SF 15 term difference that no structure label, capture
-  label or end note up to "explained_at_position_after" supports.
-- note: one sentence on the answer's main weakness, or "" if it has none.
-- reference_reason (only when the message gives a reference reason, a strong player's summary of why the better move is
-  better): "yes" if the answer gives that reason in any words, "partly" if it gives only part of it or only vaguely, "no"
-  otherwise. Grade this against the reference, not the fact sheet; false_claims are still graded against the fact sheet.
-
-A reason given in plain words counts fully: do not reward or penalise numbers in an answer.
-
-What the fact sheet's fields and labels mean, as the explainer is told:
-
-${LEGEND}`;
+// ---- the judge (its prompts are in extension/prompt.js) ----
 
 const VERDICT = {
   type: 'object',
@@ -213,25 +189,6 @@ const WITH_REFERENCE = {
   required: [...VERDICT.required, 'reference_reason'],
 };
 
-const PAIR = `You compare two answers from a chess explainer to the same question: why the better move beats the played one.
-You get the fact sheet each was given (JSON; often one sheet for both) and answers A and B. The fact sheet is the ground truth:
-judge only against it, and do not analyse the position yourself. The order of A and B means nothing.
-For each field, first quote the sentence from each answer that best carries it ("" if none), then pick "A", "B" or "tie".
-Say "tie" only when the two are about equally good on that field, not to avoid a choice.
-- decisive_point: which answer better gives the reason the fact sheet shows the better move is better (where the evals of the
-  two lines part and why, a threat one move meets and the other ignores, the idea in "prepares", or the term gaps when
-  "sf15_total_gap" is at least half of "latest_sf_gap"), clearly and up front rather than vaguely or behind a minor reason.
-- fewer_false_claims: which answer makes fewer statements the fact sheet contradicts or does not support (pieces called
-  defended, lost, trapped or pinned; captures, checks, threats; who plays a move; evals; moves out of order). Weigh how
-  serious they are, not only how many.
-- reference_reason (only when the message gives a reference reason, a strong player's summary of why the better move is
-  better): which answer comes closer to giving that reason in any words. Grade this against the reference, not the sheet.
-
-A reason given in plain words counts fully: do not reward or penalise numbers in an answer.
-
-What the fact sheet's fields and labels mean, as the explainer is told:
-
-${LEGEND}`;
 
 const pick = { type: 'string', enum: ['A', 'B', 'tie'] }, quote = { type: 'string' };
 const PAIR_VERDICT = {
@@ -246,38 +203,41 @@ const PAIR_WITH_REFERENCE = {
   required: [...PAIR_VERDICT.required, 'reference_quote_a', 'reference_quote_b', 'reference_reason'],
 };
 
-const args = process.argv.slice(2);
-const out = args.find((a, i) => !a.startsWith('--') && !['--model', '--facts', '--set', '--pair', '--sample', '--month', '--print'].includes(args[i - 1])) ?? 'eval-out';
-if (args.includes('--sample')) {
-  await sample(Number(args[args.indexOf('--sample') + 1]), args[args.indexOf('--month') + 1]);
+const str = { type: 'string' }, bool = { type: 'boolean' };
+const { values: o, positionals: [out = 'eval-out'] } = parseArgs({
+  allowPositionals: true,
+  options: { 'no-llm': bool, model: str, facts: str, set: str, summary: bool, judge: bool, pair: str, sample: str, month: str,
+    print: str, masked: bool },
+});
+if (o.sample) {
+  await sample(Number(o.sample), o.month);
   process.exit(0);
 }
-const set = args.includes('--set') ? JSON.parse(readFileSync(args[args.indexOf('--set') + 1], 'utf8')) : null;
+const set = o.set ? JSON.parse(readFileSync(o.set, 'utf8')) : null;
 const reference = Object.fromEntries((set ?? []).map(p => [p.id, p.reference_reason]));
-if (args.includes('--print')) {
+if (o.print) {
   // the exact prompts, for subagent runs on the subscription: the explainer prompt for --model, or a judge prompt with
   // the JSON its verdict must match (the reference variant when --set gives reference reasons)
-  const what = args[args.indexOf('--print') + 1], ref = Object.values(reference).some(Boolean);
+  const ref = Object.values(reference).some(Boolean);
   const withSchema = (prompt, schema) => `${prompt}\n\nReply with only JSON matching this schema:\n${JSON.stringify(schema, null, 1)}`;
   const prompts = {
-    explainer: () => systemFor(args.includes('--model') ? args[args.indexOf('--model') + 1] : 'claude-haiku-5-5'),
+    explainer: () => systemFor(o.model ?? 'claude-haiku-5-5'),
     judge: () => withSchema(JUDGE, ref ? WITH_REFERENCE : VERDICT),
     pair: () => withSchema(PAIR, ref ? PAIR_WITH_REFERENCE : PAIR_VERDICT),
   };
-  if (!prompts[what]) throw new Error('--print takes explainer, judge or pair');
-  process.stdout.write(prompts[what]());
+  if (!prompts[o.print]) throw new Error('--print takes explainer, judge or pair');
+  process.stdout.write(prompts[o.print]());
   process.exit(0);
 }
-const facts = args.includes('--facts') ? args[args.indexOf('--facts') + 1] : null;
-const pair = args.includes('--pair') ? args[args.indexOf('--pair') + 1].replace(/\/$/, '') : null;
-const mi = args.indexOf('--model');
-const flags = [...args.includes('--no-llm') ? ['--no-llm'] : [], ...mi >= 0 ? ['--model', args[mi + 1]] : []];
+const facts = o.facts ?? null;
+const pair = o.pair?.replace(/\/$/, '') ?? null;
+const flags = [...o['no-llm'] ? ['--no-llm'] : [], ...o.model ? ['--model', o.model] : []];
 const cli = fileURLToPath(new URL('extension/explain.js', import.meta.url));
 const run = promisify(execFile);
 mkdirSync(out, { recursive: true });
 
 // each position runs in its own process (fresh engines), four at a time; --summary only re-checks out-dir
-const queue = args.includes('--summary') || pair ? [] : set ? set.map(p => [p.id, p.fen, p.played, p.better]) : [...POSITIONS];
+const queue = o.summary || pair ? [] : set ? set.map(p => [p.id, p.fen, p.played, p.better]) : [...POSITIONS];
 await Promise.all(Array.from({ length: facts ? 16 : 4 }, async () => {
   for (let p; (p = queue.shift());) {
     const [game, fen, played, better] = p;
@@ -286,8 +246,8 @@ await Promise.all(Array.from({ length: facts ? 16 : 4 }, async () => {
     let text;
     try {
       if (facts) {
-        const sheet = readFileSync(`${facts}/${name}.txt`, 'utf8').split('\n\n')[0];
-        text = `${sheet}\n\n${await explain(JSON.parse(sheet), process.env.ANTHROPIC_API_KEY, mi >= 0 ? args[mi + 1] : undefined)}\n`;
+        const { sheet } = readRun(facts, name) ?? {};
+        text = `${sheet}\n\n${await explain(JSON.parse(sheet), process.env.ANTHROPIC_API_KEY, o.model)}\n`;
       } else text = (await run(process.execPath, [cli, fen, played, '--vs', better, ...flags], { maxBuffer: 1 << 24 })).stdout;
     } catch (e) {
       text = `ERROR: ${e.stderr || e.message}`;
@@ -298,12 +258,12 @@ await Promise.all(Array.from({ length: facts ? 16 : 4 }, async () => {
 }));
 const answers = readdirSync(out).filter(f => f.endsWith('.txt') && f !== 'summary.txt' && !f.endsWith('.masked.txt')).sort().map(f => f.slice(0, -4));
 if (pair) await pairAll(answers.filter(n => existsSync(`${pair}/${n}.txt`)));
-if (args.includes('--judge')) await judgeAll(answers.filter(n => !existsSync(`${out}/${n}.judge.json`)));
-if (args.includes('--masked')) for (const n of answers) mask(n);
+if (o.judge) await judgeAll(answers.filter(n => !existsSync(`${out}/${n}.judge.json`)));
+if (o.masked) for (const n of answers) mask(n);
 const verdicts = [], recovered = [];
 const report = answers.map(n => {
-  const text = readFileSync(`${out}/${n}.txt`, 'utf8');
-  const found = text.startsWith('ERROR') ? ['failed'] : problems(text);
+  const r = readRun(out, n);
+  const found = r ? problems(r) : ['failed'];
   if (existsSync(`${out}/${n}.judge.json`)) {
     const v = JSON.parse(readFileSync(`${out}/${n}.judge.json`, 'utf8'));
     verdicts.push(v);
@@ -313,7 +273,7 @@ const report = answers.map(n => {
     if (v.reference_reason && v.reference_reason !== 'yes') found.push(`judge: reference reason ${v.reference_reason}`);
   }
   if (existsSync(`${out}/${n}.masked.json`)) {
-    const ok = JSON.parse(readFileSync(`${out}/${n}.masked.json`, 'utf8')).better === JSON.parse(text.split('\n\n')[0]).alternative.move;
+    const ok = JSON.parse(readFileSync(`${out}/${n}.masked.json`, 'utf8')).better === JSON.parse(r.sheet).alternative.move;
     recovered.push(ok);
     if (!ok) found.push('masked: better move not recovered');
   }
@@ -321,7 +281,7 @@ const report = answers.map(n => {
 });
 writeFileSync(`${out}/summary.txt`, report.join('\n') + '\n');
 console.log(`\n${report.length} positions, ${report.filter(r => !r.endsWith(' ok')).length} flagged (see ${out}/summary.txt)`);
-const words = answers.map(n => readFileSync(`${out}/${n}.txt`, 'utf8').split('\n\n').slice(1).join(' ').split(/\s+/).filter(Boolean).length)
+const words = answers.map(n => (readRun(out, n)?.answer ?? '').split(/\s+/).filter(Boolean).length)
   .filter(Boolean).sort((x, y) => x - y);
 if (words.length) console.log(`median ${words[words.length >> 1]} words, ${words.filter(w => w > 120).length} over 120`);
 if (verdicts.length) {
@@ -340,10 +300,10 @@ async function judgeAll(names) {
   // API-bound, not CPU-bound: more in flight than the engine runs
   await Promise.all(Array.from({ length: 16 }, async () => {
     for (let n; (n = names.shift());) {
-      const text = readFileSync(`${out}/${n}.txt`, 'utf8'), cut = text.indexOf('\n\n');
-      if (text.startsWith('ERROR') || cut < 0) continue; // nothing to judge
+      const r = readRun(out, n);
+      if (!r?.answer) continue; // nothing to judge
       try {
-        const v = await judge(text.slice(0, cut), text.slice(cut + 2), reference[n]);
+        const v = await judge(r.sheet, r.answer, reference[n]);
         writeFileSync(`${out}/${n}.judge.json`, JSON.stringify(v, null, 1) + '\n');
         console.log(n, 'judged');
       } catch (e) {
@@ -390,11 +350,11 @@ async function pairAll(names) {
   const todo = names.filter(n => !existsSync(file(n)));
   await Promise.all(Array.from({ length: 16 }, async () => {
     for (let n; (n = todo.shift());) {
-      const [a, b] = [out, pair].map(d => readFileSync(`${d}/${n}.txt`, 'utf8'));
-      if ([a, b].some(t => t.startsWith('ERROR') || !t.includes('\n\n'))) continue;
+      const [a, b] = [out, pair].map(d => readRun(d, n));
+      if (!a?.answer || !b?.answer) continue;
       // half the positions show B first, so the judge's lean toward the second answer cancels out in the totals
       const swap = [...n].reduce((h, c) => h + c.charCodeAt(0), 0) % 2 === 1;
-      const [[sheetA, answerA], [sheetB, answerB]] = (swap ? [b, a] : [a, b]).map(t => [t.slice(0, t.indexOf('\n\n')), t.slice(t.indexOf('\n\n') + 2)]);
+      const [{ sheet: sheetA, answer: answerA }, { sheet: sheetB, answer: answerB }] = swap ? [b, a] : [a, b];
       const sheets = sheetA === sheetB ? `Fact sheet (both answers):\n${sheetA}` : `Fact sheet A:\n${sheetA}\n\nFact sheet B:\n${sheetB}`;
       const ref = reference[n] ? `\n\nReference reason:\n${reference[n]}` : '';
       try {
@@ -416,20 +376,26 @@ async function pairAll(names) {
     + `; false claims ${tally('fewer_false_claims')} (fewer); about $${usd.toFixed(2)}`);
 }
 
-/** The rule checks on one CLI output (fact sheet JSON, blank line, answer). */
-function problems(text) {
-  const cut = text.indexOf('\n\n');
-  if (cut < 0) return []; // --no-llm: fact sheet only
-  return checkAnswer(text.slice(cut + 2), JSON.parse(text.slice(0, cut))).map(c => c.problem);
+/** Reads <dir>/<name>.txt, the CLI output: the fact sheet JSON, a blank line and the answer (no answer with --no-llm).
+    Null for a run that failed. */
+function readRun(dir, name) {
+  const text = readFileSync(`${dir}/${name}.txt`, 'utf8'), cut = text.indexOf('\n\n');
+  if (text.startsWith('ERROR')) return null;
+  return cut < 0 ? { sheet: text, answer: null } : { sheet: text.slice(0, cut), answer: text.slice(cut + 2) };
+}
+
+/** The rule checks on one run's answer. */
+function problems({ sheet, answer }) {
+  return answer ? checkAnswer(answer, JSON.parse(sheet)).map(c => c.problem) : [];
 }
 
 /** Writes <name>.masked.txt: the answer with the better move written "[better move]" and the played one "[played move]",
     so a reader who names the better move from the position got it from what the text says about each (Parfenova 2026). */
 function mask(n) {
-  const text = readFileSync(`${out}/${n}.txt`, 'utf8'), cut = text.indexOf('\n\n');
-  if (text.startsWith('ERROR') || cut < 0) return;
-  const sheet = JSON.parse(text.slice(0, cut));
-  let answer = text.slice(cut + 2);
+  const r = readRun(out, n);
+  if (!r?.answer) return;
+  const sheet = JSON.parse(r.sheet);
+  let { answer } = r;
   for (const [move, tag] of [[sheet.alternative.move, '[better move]'], [sheet.played.move, '[played move]']]) {
     const esc = move.replace(/[+#]$/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     answer = answer.replace(new RegExp(`(?<![A-Za-z0-9])${esc}[+#]?(?![A-Za-z0-9])`, 'g'), tag);

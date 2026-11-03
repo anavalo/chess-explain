@@ -1,5 +1,5 @@
 // The explainer prompt (sheet legend + rules) and the rule checks that test an answer against the rules.
-// explain.js sends the prompt; eval.js gives the judge the legend only and runs the checks.
+// explain.js sends the prompt; eval.js runs the checks and sends the judge prompts, which carry the legend only.
 
 /** The sheet legend: what each fact sheet field and label means. The judge gets it too, so put new writing rules in
     RULES, where a rule under A/B test cannot bias the judge. */
@@ -181,3 +181,48 @@ export function checkAnswer(answer, sheet) {
   if (adviceWords > 15) flag(15, `advice ${adviceWords} words`);
   return found;
 }
+
+/** The judge prompts eval.js sends to Opus: grade one answer (JUDGE) or compare two (PAIR) against the fact sheet. */
+export const JUDGE = `You grade answers from a chess explainer. You get the fact sheet the explainer was given (JSON) and its answer.
+The fact sheet is the ground truth: judge the answer only against it, and do not analyse the position yourself.
+- decisive_point: "yes" if the answer gives the reason the fact sheet shows the better move is better: where the evals of the
+  two lines part and why (the labels on those moves), a threat one move meets and the other ignores ("opponent_threat",
+  "if_opp_plays_the_threat_at_once"), the idea in "prepares", or the term gaps when "sf15_total_gap" is at least half of
+  "latest_sf_gap". "partly" if it gives that reason only vaguely, or leads with a minor or wrong reason. "no" otherwise.
+- false_claims: every statement in the answer that the fact sheet contradicts or does not support: a piece called defended,
+  undefended, lost, won, trapped or pinned; a capture, check, attack or threat; who plays a move; an eval or material count;
+  a move given in a line it is not in, in a different order, or a "Why ... fails" side line presented as the main line.
+  For each, quote the claim and say in a few words what the facts show. Plain chess descriptions that the labels support
+  are fine; do not list style issues.
+- invented_term_cause: true if the answer gives a cause for an SF 15 term difference that no structure label, capture
+  label or end note up to "explained_at_position_after" supports.
+- note: one sentence on the answer's main weakness, or "" if it has none.
+- reference_reason (only when the message gives a reference reason, a strong player's summary of why the better move is
+  better): "yes" if the answer gives that reason in any words, "partly" if it gives only part of it or only vaguely, "no"
+  otherwise. Grade this against the reference, not the fact sheet; false_claims are still graded against the fact sheet.
+
+A reason given in plain words counts fully: do not reward or penalise numbers in an answer.
+
+What the fact sheet's fields and labels mean, as the explainer is told:
+
+${LEGEND}`;
+
+export const PAIR = `You compare two answers from a chess explainer to the same question: why the better move beats the played one.
+You get the fact sheet each was given (JSON; often one sheet for both) and answers A and B. The fact sheet is the ground truth:
+judge only against it, and do not analyse the position yourself. The order of A and B means nothing.
+For each field, first quote the sentence from each answer that best carries it ("" if none), then pick "A", "B" or "tie".
+Say "tie" only when the two are about equally good on that field, not to avoid a choice.
+- decisive_point: which answer better gives the reason the fact sheet shows the better move is better (where the evals of the
+  two lines part and why, a threat one move meets and the other ignores, the idea in "prepares", or the term gaps when
+  "sf15_total_gap" is at least half of "latest_sf_gap"), clearly and up front rather than vaguely or behind a minor reason.
+- fewer_false_claims: which answer makes fewer statements the fact sheet contradicts or does not support (pieces called
+  defended, lost, trapped or pinned; captures, checks, threats; who plays a move; evals; moves out of order). Weigh how
+  serious they are, not only how many.
+- reference_reason (only when the message gives a reference reason, a strong player's summary of why the better move is
+  better): which answer comes closer to giving that reason in any words. Grade this against the reference, not the sheet.
+
+A reason given in plain words counts fully: do not reward or penalise numbers in an answer.
+
+What the fact sheet's fields and labels mean, as the explainer is told:
+
+${LEGEND}`;

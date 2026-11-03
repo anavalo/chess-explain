@@ -6,7 +6,7 @@ import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chess
 import { Refused, handle, moveLabels, nodeEngines, pawnPushes, pins, sanToUci, trapped } from './extension/explain.js';
 import { KINDS, endNotes, imbalances, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { linkMoves, md } from './extension/md.js';
-import { LEGEND, checkAnswer, systemFor } from './extension/prompt.js';
+import { JUDGE, LEGEND, PAIR, checkAnswer, systemFor } from './extension/prompt.js';
 
 const pos = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
 
@@ -124,7 +124,8 @@ globalThis.fetch = async url => {
 };
 const engines = await nodeEngines();
 let facts;
-const stub = f => ((facts = f), '(stub)');
+const sheets = [];
+const stub = f => (sheets.push(facts = f), '(stub)');
 const ask = (fen, move, best) => handle(engines, { fen, move, best, user: 'fable6' }, null, stub);
 try {
   const fen = 'r3k2r/1p1bbpp1/pqn1p2p/2ppP3/3P4/2PB1N2/PP1N1PPP/R2Q1RK1 w kq - 2 11';
@@ -168,6 +169,14 @@ try {
   assert.equal(facts.alternative.prepares.move, 'Nxg6');
   assert.match(facts.alternative.prepares.follow_up_fails, /^Why 25\.Qxh6 fails: 25\. you Qxh6 .* 25\.\.\. opp Qxf2\+ /);
   assert.equal(facts.alternative.prepares.better_move_guards, 'f2');
+
+  // every field the explainer and judge prompts quote is on a fact sheet built above, so a renamed field fails here
+  const keys = new Set();
+  const walk = v => { if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) { if (!Array.isArray(v)) keys.add(k); walk(x); } };
+  sheets.forEach(walk);
+  const notFields = ['you', 'opp', 'check', 'yes', 'partly', 'no', 'tie']; // quoted labels and verdict values
+  const quoted = new Set([...(LEGEND + JUDGE + PAIR).matchAll(/"([a-z][a-z0-9_]*)"/g)].map(m => m[1]));
+  assert.deepEqual([...quoted].filter(k => !keys.has(k) && !notFields.includes(k)), []);
   console.log('ok');
 } finally {
   engines.quit();
