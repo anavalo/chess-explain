@@ -160,17 +160,6 @@ function render(data, b) {
 }
 
 async function explain() {
-  out.replaceChildren();
-  try {
-    await run();
-  } catch (e) {
-    console.error(e);
-    out.replaceChildren();
-    error(e.message);
-  }
-}
-
-async function run() {
   const apiKey = await showKeyStatus();
   if (!apiKey) return error('Set your Anthropic API key first (above).');
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -195,8 +184,8 @@ async function run() {
     const ready = await Promise.race([engines, crashed, new Promise((_, fail) =>
       setTimeout(() => fail(new Error('Stockfish did not start within 30 s.')), 30_000))]);
     stage = `Analysing ${move}`;
-    const llm = (facts, key) => ((stage = 'Asking Claude'), askClaude(facts, key, model()));
-    const data = await Promise.race([handle(ready, { fen: b.fen, move, best: b.best }, apiKey, llm), crashed]);
+    const llm = facts => ((stage = 'Asking Claude'), askClaude(facts, apiKey, model()));
+    const data = await Promise.race([handle(ready, { fen: b.fen, move, best: b.best }, llm), crashed]);
     out.replaceChildren();
     render(data, b);
   } finally {
@@ -207,5 +196,14 @@ async function run() {
 document.getElementById('form').onsubmit = async e => {
   e.preventDefault();
   button.disabled = true;
-  try { await explain(); } finally { button.disabled = false; }
+  out.replaceChildren();
+  try {
+    await explain();
+  } catch (e) {
+    console.error(e);
+    out.replaceChildren();
+    error(e.message);
+  } finally {
+    button.disabled = false;
+  }
 };

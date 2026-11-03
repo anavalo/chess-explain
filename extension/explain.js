@@ -12,8 +12,8 @@ import {
   parseSan, parseUci, squareFile, squareRank,
 } from './vendor/chessops.js';
 import {
-  endNotes, hasBishopPair, imbalances, isOutpost, islandChange, key, leafDiff, outpostSquares, owner, passedPawns, pawnWeaknesses,
-  rookFile, shieldHoles, word,
+  endNotes, hasBishopPair, imbalances, isOutpost, islandChange, key, leafDiff, orNull, outpostSquares, owner, passedPawns,
+  pawnWeaknesses, rookFile, shieldHoles, word,
 } from './features.js';
 import { systemFor } from './prompt.js';
 
@@ -87,7 +87,7 @@ export async function search(sf, pos, nodes, { moves, multipv = 1 } = {}) {
 // ---- board helpers ----
 
 export const position = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
-export const fenOf = pos => makeFen(pos.toSetup());
+const fenOf = pos => makeFen(pos.toSetup());
 export const play = (pos, uci) => { const p = pos.clone(); p.play(parseUci(uci)); return p; };
 export const san = (pos, uci) => makeSan(pos, parseUci(uci));
 const moveNo = pos => `${pos.fullmoves}${pos.turn === 'white' ? '.' : '...'}`; // '12.' for White, '12...' for Black
@@ -117,12 +117,12 @@ const attackers = (pos, color, sq) => pos.kingAttackers(sq, color, pos.board.occ
 const signed = n => (n >= 0 ? `+${n}` : `${n}`);
 const round2 = x => Math.round(x * 100) / 100;
 
-export function scoreStr(s) {
+function scoreStr(s) {
   if ('mate' in s) return s.mate > 0 ? `mates in ${s.mate}` : `gets mated in ${-s.mate}`;
   return `${s.cp >= 0 ? '+' : ''}${(s.cp / 100).toFixed(2)}`;
 }
 const flip = s => ('mate' in s ? { mate: -s.mate } : { cp: -s.cp });
-export const pov = (s, pos, color) => (pos.turn === color ? s : flip(s)); // `s` is from pos's side to move
+const pov = (s, pos, color) => (pos.turn === color ? s : flip(s)); // `s` is from pos's side to move
 const cpOf = s => ('mate' in s ? (s.mate > 0 ? 10000 - s.mate : -10000 - s.mate) : s.cp);
 
 /** Play the first LEAF_PLIES of the engine line and stop at the last quiet position (no check, last move not
@@ -233,8 +233,7 @@ export function pawnPushes(pos, pv, you, maxPlies = 10) {
 
 /** The pushes with a point in line `a` that line `b` never plays, as text, or null. */
 function onlyIn(a, b) {
-  const d = a.filter(p => p.point && !b.some(q => q.move === p.move)).map(p => p.text);
-  return d.length ? d : null;
+  return orNull(a.filter(p => p.point && !b.some(q => q.move === p.move)).map(p => p.text));
 }
 
 /** Bishops (other than the mover) whose reach changes by 3+ squares when move `uci` from `b` to `next` moves or takes a
@@ -292,7 +291,7 @@ export function moveLabels(b, next, uci, you) {
 /** '12. you Bc3 (-7.52) 12... opp Bb4 (-7.50) 13. you Bd2 (-7.68) 13... opp Qxa1 [takes rook, material -5] (-7.38) ...':
     Stockfish 19's eval after every move, from `you`'s view, for `maxPlies` plies and then on until an exchange is over.
     A skipped recapture that loses is played out on its own line below. `nested` is set for those lines, so they do not branch again. */
-export async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20, you = pos.turn, nested = false) {
+async function lineWithEvals(sf, pos, pv, nodes, maxPlies = 20, you = pos.turn, nested = false) {
   let b = pos, captured = false;
   const out = [], why = [], seenTrapped = new Set();
   for (const [i, uci] of pv.entries()) {
@@ -400,14 +399,13 @@ export function trapped(pos) {
 }
 
 /** What is already on the board before you move: check, loose pieces, pins. */
-export function positionBefore(pos) {
+function positionBefore(pos) {
   const checkers = [...pos.ctx().checkers].map(s => `${pos.board.getRole(s)} on ${makeSquare(s)}`);
-  const or = list => (list.length ? list : null);
-  const pinned = color => or(pins(pos, color).map(p => `${pinText(pos, p)}, by ${pos.board.getRole(p.pinner)} on ${makeSquare(p.pinner)}`));
+  const pinned = color => orNull(pins(pos, color).map(p => `${pinText(pos, p)}, by ${pos.board.getRole(p.pinner)} on ${makeSquare(p.pinner)}`));
   return {
-    you_are_in_check_from: or(checkers),
-    your_pieces_in_danger: or(loosePieces(pos, pos.turn)),
-    opponent_pieces_you_can_win: or(loosePieces(pos, opposite(pos.turn))),
+    you_are_in_check_from: orNull(checkers),
+    your_pieces_in_danger: orNull(loosePieces(pos, pos.turn)),
+    opponent_pieces_you_can_win: orNull(loosePieces(pos, opposite(pos.turn))),
     your_pinned_pieces: pinned(pos.turn),
     opponent_pinned_pieces: pinned(opposite(pos.turn)),
   };
@@ -424,7 +422,7 @@ function passed(pos) {
 
 /** The opponent's best move if you could pass (null move), when it would gain at least `min` centipawns.
     `scoreNow` is the current eval from the side to move. Returns [threat UCI, facts] or [null, null]. */
-export async function opponentThreat(sf, pos, nodes, scoreNow, min = 100) {
+async function opponentThreat(sf, pos, nodes, scoreNow, min = 100) {
   const p = !pos.isCheck() && passed(pos);
   if (!p) return [null, null];
   const { score, pv } = (await search(sf, p, nodes))[0];
@@ -609,23 +607,23 @@ export async function factSheet(engines, fen, move, best = null, nodes = NODES) 
     would only invent one. */
 export const aboutEqual = facts => Math.abs(facts.latest_sf_gap) < EQUAL_GAP;
 
-/** The answer for a fact sheet: a plain verdict when the moves are about equal (no LLM call), else `llm`'s. */
-export async function answer(facts, apiKey, llm = explain) {
+/** The answer for a fact sheet: a plain verdict when the moves are about equal (no LLM call), else `llm(facts)`. */
+export async function answer(facts, llm) {
   return aboutEqual(facts)
     ? `**${facts.played.move}** is about as good as **${facts.alternative.move}**: the engine sees no real difference `
       + 'between them. Either move is fine.'
-    : llm(facts, apiKey);
+    : llm(facts);
 }
 
 /** {fen, move, best} -> {text, best, compared}. move: the move to compare against (SAN or UCI), best: lichess's top
-    move (UCI, optional). `llm` is replaceable for tests. */
-export async function handle(engines, req, apiKey, llm = explain) {
+    move (UCI, optional). `llm(facts)` writes the answer; tests pass a stub. */
+export async function handle(engines, req, llm) {
   const facts = await factSheet(engines, req.fen, req.move, req.best, NODES);
   const line = k => ({
     move: facts[k].move, eval: facts[k].latest_sf_eval, line: facts[k].line_with_evals,
     threat_line: facts[k].if_opp_plays_the_threat_at_once,
   });
-  return { text: await answer(facts, apiKey, llm), best: line('alternative'), compared: line('played') };
+  return { text: await answer(facts, llm), best: line('alternative'), compared: line('played') };
 }
 
 // ---- node ----
@@ -658,7 +656,7 @@ if (import.meta.main) { // node 24.2+; undefined in the browser
   try {
     const facts = await factSheet(engines, fen, move, o.vs, Number(o.nodes));
     console.log(JSON.stringify(facts, null, 1));
-    if (!o['no-llm']) console.log('\n' + await answer(facts, process.env.ANTHROPIC_API_KEY, (f, key) => explain(f, key, o.model)));
+    if (!o['no-llm']) console.log('\n' + await answer(facts, f => explain(f, process.env.ANTHROPIC_API_KEY, o.model)));
   } finally {
     engines.quit();
   }

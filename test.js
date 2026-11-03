@@ -147,7 +147,7 @@ const engines = await nodeEngines();
 let facts;
 const sheets = [];
 const stub = f => (sheets.push(facts = f), '(stub)');
-const ask = (fen, move, best) => handle(engines, { fen, move, best }, null, stub);
+const ask = (fen, move, best) => handle(engines, { fen, move, best }, stub);
 try {
   const fen = 'r3k2r/1p1bbpp1/pqn1p2p/2ppP3/3P4/2PB1N2/PP1N1PPP/R2Q1RK1 w kq - 2 11';
   let r = await ask(fen, 'dxc5', 'c3c4');

@@ -1,7 +1,7 @@
 // The features: structural facts about one side's pawns and pieces, the one table that words them as labels, and the
 // imbalances and leaf diffs built from them. Pure board code: no engine, no LLM.
 
-import { SquareSet, makeSquare, opposite, pawnAttacks, squareFile, squareRank } from './vendor/chessops.js';
+import { FILE_NAMES, SquareSet, makeSquare, opposite, pawnAttacks, squareFile, squareRank } from './vendor/chessops.js';
 
 /** Whose pieces a label is about, on a sheet written for `you`: 'your' or "opp's". */
 export const owner = (color, you) => (color === you ? 'your' : "opp's");
@@ -10,6 +10,8 @@ const LIGHT = SquareSet.lightSquares(), DARK = SquareSet.darkSquares();
 const CENTRE_FILES = [2, 3, 4, 5].map(f => SquareSet.fromFile(f)).reduce((a, b) => a.union(b)); // c-f
 const ahead = (color, sq) => (color === 'white' ? sq + 8 : sq - 8);
 const sameColour = sq => (LIGHT.has(sq) ? LIGHT : DARK);
+/** A sheet field with nothing in it is null, not []. */
+export const orNull = list => (list.length ? list : null);
 
 // ---- features: structural facts about one side's pawns and pieces, and the one place they are worded ----
 
@@ -72,7 +74,7 @@ export function outpostSquares(board, color) {
 export function pawnWeaknesses(board, color) {
   const own = board.pawn.intersect(board[color]), theirs = board.pawn.diff(own), out = [];
   for (const p of own) {
-    const f = squareFile(p), file = SquareSet.fromFile(f), name = 'abcdefgh'[f];
+    const f = squareFile(p), file = SquareSet.fromFile(f), name = FILE_NAMES[f];
     const neighbours = own.intersect(SquareSet.fromFile(Math.max(f - 1, 0)).union(SquareSet.fromFile(Math.min(f + 1, 7)))).diff(file);
     if (own.intersect(file).size() > 1) out.push({ kind: 'doubled', file: name });
     if (neighbours.isEmpty()) { out.push({ kind: 'isolated', file: name }); continue; }
@@ -99,7 +101,7 @@ export function passedPawns(board, color) {
   for (const p of own) {
     const f = squareFile(p), r = squareRank(p);
     if (![...theirs].some(t => Math.abs(squareFile(t) - f) <= 1 && (color === 'white' ? squareRank(t) > r : squareRank(t) < r)))
-      out.push({ kind: 'passed', file: 'abcdefgh'[f] });
+      out.push({ kind: 'passed', file: FILE_NAMES[f] });
   }
   return uniq(out);
 }
@@ -111,7 +113,7 @@ export function shieldHoles(board, color) {
   if (k === undefined || squareRank(k) !== back || squareFile(k) === 3 || squareFile(k) === 4) return out;
   const own = [...board.pawn.intersect(board[color])], c = Math.min(Math.max(squareFile(k), 1), 6);
   for (let f = c - 1; f <= c + 1; f++)
-    if (!own.some(p => squareFile(p) === f && Math.abs(squareRank(p) - back) <= 2)) out.push({ kind: 'shieldHole', file: 'abcdefgh'[f] });
+    if (!own.some(p => squareFile(p) === f && Math.abs(squareRank(p) - back) <= 2)) out.push({ kind: 'shieldHole', file: FILE_NAMES[f] });
   return out;
 }
 
@@ -129,11 +131,11 @@ function kingInCentre(pos, color) {
 export function rookFile(board, sq, color) {
   const pawns = board.pawn.intersect(SquareSet.fromFile(squareFile(sq)));
   const open = pawns.isEmpty() ? 'open' : pawns.intersects(board[color]) ? null : 'semi-open';
-  return open && { kind: 'rookFile', open, file: 'abcdefgh'[squareFile(sq)] };
+  return open && { kind: 'rookFile', open, file: FILE_NAMES[squareFile(sq)] };
 }
 
 /** The pawn and square features of one side, `(board, color) -> [feature]`, for a position and for the change a move makes. */
-export const STRUCTURE = [passedPawns, pawnWeaknesses, shieldHoles, outpostSquares];
+const STRUCTURE = [passedPawns, pawnWeaknesses, shieldHoles, outpostSquares];
 
 /** Silman's imbalances as features: what already differs on the board before any move, for the side to move
     ("yours"), the opponent, and both (the piece imbalance and the end notes). Each list may be empty.
@@ -163,8 +165,8 @@ export function features(pos, you = pos.turn) {
 
 /** The imbalances worded for the fact sheet; a side with none is null. */
 export function imbalances(pos, you = pos.turn) {
-  const f = features(pos, you), or = labels => (labels.length ? labels : null);
-  return { yours: or(f.yours.map(x => word(x))), opponents: or(f.opponents.map(x => word(x))), both: or(f.both.map(x => word(x, undefined, you))) };
+  const f = features(pos, you);
+  return { yours: orNull(f.yours.map(x => word(x))), opponents: orNull(f.opponents.map(x => word(x))), both: orNull(f.both.map(x => word(x, undefined, you))) };
 }
 
 /** The pieces `you` and the opponent still have, as 'you: Q R R B N, opp: Q R B B N'. */
@@ -194,18 +196,13 @@ export function leafDiff(leafA, leafP, you) {
   }
   // the same fact at both leaves is the same owner and every field equal; a wording change cannot alter that
   const same = ([w, f], [v, g]) => w === v && JSON.stringify(f) === JSON.stringify(g);
-  const only = (x, y) => {
-    const d = x.filter(e => !y.some(o => same(e, o))).map(([whose, f]) => (whose ? `${whose} ${word(f)}` : word(f, undefined, you)));
-    return d.length ? d : null;
-  };
+  const only = (x, y) => orNull(x.filter(e => !y.some(o => same(e, o))).map(([whose, f]) => (whose ? `${whose} ${word(f)}` : word(f, undefined, you))));
   return {
     pieces_left: { alternative: piecesLeft(leafA.board, you), played: piecesLeft(leafP.board, you) },
     only_after_alternative: only(a, p),
     only_after_played: only(p, a),
   };
 }
-
-
 
 /** Features of the position at the end of a line, shared by both sides: opposite-coloured bishops and bad bishops
     (at least two own centre pawns on the bishop's colour, each blocked by an enemy pawn). */
@@ -224,6 +221,5 @@ function endNoteFeatures(pos) {
 
 /** The end-of-line features worded for the fact sheet, from `you`'s view; null when there are none. */
 export function endNotes(pos, you) {
-  const notes = endNoteFeatures(pos).map(f => word(f, undefined, you));
-  return notes.length ? notes : null;
+  return orNull(endNoteFeatures(pos).map(f => word(f, undefined, you)));
 }
