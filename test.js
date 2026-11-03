@@ -7,6 +7,7 @@ import {
   Refused, endNotes, handle, imbalances, isOutpost, leafDiff, moveLabels, nodeEngines, pawnPushes, pawnWeaknesses, pins, sanToUci, trapped,
 } from './extension/explain.js';
 import { linkMoves, md } from './extension/md.js';
+import { LEGEND, checkAnswer, systemFor } from './extension/prompt.js';
 
 const pos = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
 
@@ -25,7 +26,26 @@ assert.deepEqual(links(linkMoves(md('1.Ra7 Kd8 2.Kd2+ wins.\n\n1...Kd8 and Kd2. 
     '1. you Ra7 (+9) 1... opp Kd8 (+9) 2. you Kd2 (+9)',
     '1. you Rb1 [x] (+9) 1... opp Kd8 (+9) 2. you Kd2 (+9)\nWhy 2.Kf2 fails: 2. you Kf2 (+9)',
   ])), ['1.Ra7: Ra7', 'Kd8: Ra7 Kd8', '2.Kd2+: Ra7 Kd8 Kd2', '1.Rb1: Rb1', 'Kd8: Rb1 Kd8', '2.Kf2: Rb1 Kd8 Kf2']);
-// lichess's engine line writes castling as the king's two-square move
+// explainer prompt: Haiku gets no rule 15; the legend the judge sees holds no rules
+assert.ok(systemFor('claude-haiku-5-5').startsWith(LEGEND) && !systemFor('claude-haiku-5-5').includes('Next time:'));
+assert.ok(systemFor('claude-opus-5-5').startsWith(systemFor('claude-haiku-5-5')) && systemFor('claude-opus-5-5').includes('Next time:'));
+assert.ok(!LEGEND.includes('\nRules:'));
+
+// rule checks: each answer fails exactly the rules listed; move numbers, squares and ranks are not numbers
+const sheet = { played: { line_with_evals: '12. you Nf3 [x] (+0.3) 12... opp Nc6 (+0.2)' } };
+const failed = answer => checkAnswer(answer, sheet).map(c => c.rule);
+assert.deepEqual(failed('After 12.Nf3 Nc6 your rook reaches the 7th rank.\nNext time: ask what Nf3 gives up.'), []);
+assert.deepEqual(failed('word '.repeat(121)), [5]);
+assert.deepEqual(failed('12. Nf3 wins.'), [6]);
+assert.deepEqual(failed('12.Nf3 [takes] wins.'), [7]);
+assert.deepEqual(failed('12.Qh5 wins.'), [5]);
+assert.deepEqual(failed('Your king is in check.'), [5]);
+assert.deepEqual(failed('White must take back.'), [5]);
+assert.deepEqual(failed('12.Nf3 keeps +0.3, half a pawn (0.5) or 30 cp better.'), [14]);
+assert.deepEqual(failed('Stockfish likes 12.Nf3.'), [14]);
+assert.deepEqual(failed('Next time: ask.\nThen play on.'), [15]);
+assert.deepEqual(failed(`Next time: ${'word '.repeat(16)}`), [15]);
+
 assert.deepEqual(sanToUci('r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1', ['O-O', 'O-O-O']), ['e1g1', 'e8c8']);
 
 // later pawn pushes: Nd2 leaves f3 for the f-pawn, e4 attacks the queen; h3 and the knight's own move have no point

@@ -159,7 +159,7 @@ export function checkAnswer(answer, sheet) {
   const found = [];
   const flag = (rule, problem) => found.push({ rule, problem });
   const words = answer.split(/\s+/).filter(Boolean).length;
-  if (words > 150) flag(5, `${words} words`);
+  if (words > 120) flag(5, `${words} words`);
   if (/\[(takes|line ends)|\b\d+\.(\.\.)? (you|opp) /.test(answer)) flag(7, 'raw label');
   if (/(?<![\d.+\-−])\b\d+\.(\.\.)? ([KQRBN][a-h1-8]?x?[a-h][1-8]|[a-h]x?[a-h]?[1-8]\b|O-O)/.test(answer)) flag(6, 'space after move number');
   if (!sheet.position_before_move?.you_are_in_check_from && /\bin check\b/i.test(answer)) flag(5, 'check not in facts');
@@ -170,7 +170,14 @@ export function checkAnswer(answer, sheet) {
   // story words rule 5 bans unless a label backs them, and rule 8's must / has to / forced
   const banned = answer.match(/\b(active|passive|cramped|boxed in|loose|tied down|pushed back|tempo|counterplay|initiative|must|has to|forced)\b/gi) ?? [];
   if (banned.length) flag(5, `story words: ${[...new Set(banned.map(w => w.toLowerCase()))].join(' ')}`);
-  const evals = [...new Set(answer.match(/[+\-−]\d+\.\d\d\b/g) ?? [])].filter(e => !facts.includes(e.replace('−', '-').replace(/^\+/, '')));
-  if (evals.length) flag(8, `evals not in facts: ${evals.join(' ')}`);
+  // evals, gaps and term sizes ("+0.3", "0.5 pawns", "-1"), but not move numbers (12.Nf3), squares or ranks (the 7th)
+  const numbers = answer.match(/(?<![\w.])[+\-−]?\d+\.\d+|(?<![\w.])[+\-−]\d+\b|\bcentipawns?\b|\bcp\b/gi) ?? [];
+  if (numbers.length) flag(14, `numbers: ${[...new Set(numbers)].join(' ')}`);
+  if (/\bStockfish\b|\bSF ?1[59]\b/i.test(answer)) flag(14, 'engine named');
+  // rule 15, for the models that get it: the "Next time:" line closes the answer in at most 15 words
+  const lines = answer.trim().split('\n'), advice = lines.findIndex(l => /^\**Next time:/.test(l));
+  if (advice >= 0 && advice < lines.length - 1) flag(15, 'advice not last');
+  const adviceWords = advice >= 0 ? lines[advice].replace(/^\**Next time:\**/, '').split(/\s+/).filter(Boolean).length : 0;
+  if (adviceWords > 15) flag(15, `advice ${adviceWords} words`);
   return found;
 }
