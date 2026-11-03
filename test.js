@@ -1,10 +1,10 @@
 // Checks the fact builder and request handling with the LLM stubbed out. Uses the real WASM engines on one
-// thread (node-limited single-thread search is deterministic) and calls lichess for the fair-play check.
+// thread (node-limited single-thread search is deterministic); lichess's status API is stubbed.
 // usage: node test.js   (about 3 minutes)
 import assert from 'node:assert/strict';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  Refused, handle, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pins, sanToUci, sf15Terms, trapped,
+  Refused, checkNotPlaying, handle, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pins, sanToUci, sf15Terms, trapped,
 } from './extension/explain.js';
 import { KINDS, endNotes, imbalances, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { linkMoves, md } from './extension/md.js';
@@ -134,16 +134,20 @@ assert.deepEqual(lineToLeaf(pos(afterD5), sanToUci(afterD5, ['exd5', 'Qxd5'])).l
 const afterE4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
 assert.deepEqual(lineToLeaf(pos(afterE4), sanToUci(afterE4, ['e5', 'Nf3', 'Nc6'])).leafSans, ['1...e5', '2.Nf3', 'Nc6']);
 
-// lichess status stub: the real user may be in a game when CI runs
+// fair play, with a lichess status stub (the real user may be in a game when CI runs): fail closed
 globalThis.fetch = async url => {
   const id = new URL(url).searchParams.get('ids');
   return Response.json(id === 'zz_no_such_user_zz' ? [] : [{ id, playing: id === 'in_a_game' }]);
 };
+await checkNotPlaying('fable6');
+for (const user of [undefined, 'zz_no_such_user_zz', 'in_a_game']) await assert.rejects(checkNotPlaying(user), Refused);
+delete globalThis.fetch; // nothing past here may call out
+
 const engines = await nodeEngines();
 let facts;
 const sheets = [];
 const stub = f => (sheets.push(facts = f), '(stub)');
-const ask = (fen, move, best) => handle(engines, { fen, move, best, user: 'fable6' }, null, stub);
+const ask = (fen, move, best) => handle(engines, { fen, move, best }, null, stub);
 try {
   const fen = 'r3k2r/1p1bbpp1/pqn1p2p/2ppP3/3P4/2PB1N2/PP1N1PPP/R2Q1RK1 w kq - 2 11';
   let r = await ask(fen, 'dxc5', 'c3c4');
@@ -152,8 +156,6 @@ try {
   r = await ask(fen, 'c4', 'c3c4');
   assert.equal(r.best.move, 'c4');
   assert.notEqual(r.compared.move, 'c4');
-  for (const user of [undefined, 'zz_no_such_user_zz', 'in_a_game'])
-    await assert.rejects(handle(engines, { fen, move: 'dxc5', user }, null, stub), Refused);
 
   // regression positions: the facts must carry the point a good answer makes
   r = await ask('1r3rk1/p1p2ppp/bb1q4/3p4/BP1Pn3/2P1B3/P4PPP/RN1QR1K1 b - - 4 16', 'Bc4', 'c7c6');

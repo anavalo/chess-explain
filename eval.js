@@ -23,7 +23,7 @@ import { basename } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
-import { NODES, explain, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
+import { NODES, aboutEqual, answer, explain, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
 import { JUDGE, PAIR, checkAnswer, systemFor } from './extension/prompt.js';
 
 // [lichess game, FEN, move played, better move]
@@ -247,7 +247,7 @@ await Promise.all(Array.from({ length: facts ? 16 : 4 }, async () => {
     try {
       if (facts) {
         const { sheet } = readRun(facts, name) ?? {};
-        text = `${sheet}\n\n${await explain(JSON.parse(sheet), process.env.ANTHROPIC_API_KEY, o.model)}\n`;
+        text = `${sheet}\n\n${await answer(JSON.parse(sheet), process.env.ANTHROPIC_API_KEY, (f, key) => explain(f, key, o.model))}\n`;
       } else text = (await run(process.execPath, [cli, fen, played, '--vs', better, ...flags], { maxBuffer: 1 << 24 })).stdout;
     } catch (e) {
       text = `ERROR: ${e.stderr || e.message}`;
@@ -257,11 +257,15 @@ await Promise.all(Array.from({ length: facts ? 16 : 4 }, async () => {
   }
 }));
 const answers = readdirSync(out).filter(f => f.endsWith('.txt') && f !== 'summary.txt' && !f.endsWith('.masked.txt')).sort().map(f => f.slice(0, -4));
-if (pair) await pairAll(answers.filter(n => existsSync(`${pair}/${n}.txt`)));
-if (o.judge) await judgeAll(answers.filter(n => !existsSync(`${out}/${n}.judge.json`)));
-if (o.masked) for (const n of answers) mask(n);
+// the panel answers these with a plain verdict and no LLM, so there is nothing to grade; an older run may still hold
+// an LLM answer and verdicts for them, which are left out of every count so runs before and after compare
+const equal = new Set(answers.filter(n => { const r = readRun(out, n); return r && aboutEqual(JSON.parse(r.sheet)); }));
+const explained = answers.filter(n => !equal.has(n));
+if (pair) await pairAll(explained.filter(n => existsSync(`${pair}/${n}.txt`)));
+if (o.judge) await judgeAll(explained.filter(n => !existsSync(`${out}/${n}.judge.json`)));
+if (o.masked) for (const n of explained) mask(n);
 const verdicts = [], recovered = [];
-const report = answers.map(n => {
+const report = explained.map(n => {
   const r = readRun(out, n);
   const found = r ? problems(r) : ['failed'];
   if (existsSync(`${out}/${n}.judge.json`)) {
@@ -279,9 +283,10 @@ const report = answers.map(n => {
   }
   return `${n} ${found.join(', ') || 'ok'}`;
 });
-writeFileSync(`${out}/summary.txt`, report.join('\n') + '\n');
-console.log(`\n${report.length} positions, ${report.filter(r => !r.endsWith(' ok')).length} flagged (see ${out}/summary.txt)`);
-const words = answers.map(n => (readRun(out, n)?.answer ?? '').split(/\s+/).filter(Boolean).length)
+writeFileSync(`${out}/summary.txt`, [...report, ...[...equal].map(n => `${n} about equal, no LLM`)].sort().join('\n') + '\n');
+console.log(`\n${answers.length} positions, ${equal.size} about equal (no LLM), ${report.filter(r => !r.endsWith(' ok')).length} `
+  + `of the other ${report.length} flagged (see ${out}/summary.txt)`);
+const words = explained.map(n => (readRun(out, n)?.answer ?? '').split(/\s+/).filter(Boolean).length)
   .filter(Boolean).sort((x, y) => x - y);
 if (words.length) console.log(`median ${words[words.length >> 1]} words, ${words.filter(w => w > 120).length} over 120`);
 if (verdicts.length) {

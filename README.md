@@ -149,8 +149,8 @@ node test.js
 ```
 
 This runs the real engines on a set of regression positions, with the LLM stubbed out. The engines run
-on one thread, so they give the same lines on every run. The tests call lichess for the fair-play check
-and take about three minutes. CI runs them on every push to `main` and every pull request.
+on one thread, so they give the same lines on every run. lichess's status API is stubbed for the fair-play
+check, and the tests take about three minutes. CI runs them on every push to `main` and every pull request.
 
 ### Eval set
 
@@ -172,7 +172,8 @@ cause for a term difference. The judge gets the sheet legend but not the rules, 
 bias it. A verdict costs about 4 cents and is kept in `out-dir/<name>.judge.json`, so a
 second `--judge` only grades new answers. `--set FILE` runs a JSON list of `{id, fen, played, better}` instead
 of the built-in positions; an entry with a `reference_reason` (a strong player's reason) also has the judge
-say whether the answer gives that reason. Each run prints the judge totals, the median answer length and how
+say whether the answer gives that reason. A position where the two moves are within 0.3 pawns gets the panel's
+plain "about as good" verdict, no LLM call, and is left out of the checks and the judge totals. Each run prints the judge totals, the median answer length and how
 many answers go over 120 words.
 
 ```sh

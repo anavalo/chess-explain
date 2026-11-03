@@ -576,8 +576,8 @@ export async function explain(facts, apiKey, model = 'claude-haiku-5-5') {
 
 // ---- one panel request ----
 
-/** Fair play: fail closed unless lichess confirms `user` is not in a game. */
-async function checkNotPlaying(user) {
+/** Fair play: fail closed unless lichess confirms `user` is not in a game. The panel asks before any engine runs. */
+export async function checkNotPlaying(user) {
   if (!/^[A-Za-z0-9_-]{2,30}$/.test(user ?? '')) throw new Refused('Log in to lichess so I can check you are not playing a game.');
   let status;
   try {
@@ -591,30 +591,41 @@ async function checkNotPlaying(user) {
   if (status.some(s => s.playing)) throw new Refused('You are playing a game on lichess. No engine help during games.');
 }
 
-/** {fen, move, best, user} -> {text, best, compared}. move: the move to compare against (SAN or UCI),
-    best: lichess's top move (UCI, optional), user: lichess username. `llm` is replaceable for tests. */
-export async function handle(engines, req, apiKey, llm = explain) {
-  await checkNotPlaying(req.user);
+/** The fact sheet for `move` (SAN or UCI) in `fen`, against `best` (optional; else the best other move). The panel,
+    the CLI and so the eval all build it here, so they all see the same sheet. */
+export async function factSheet(engines, fen, move, best = null, nodes = NODES) {
   let pos;
-  try { pos = position(req.fen); } catch { throw new Error('invalid position'); }
-  let move = parseMove(pos, req.move);
+  try { pos = position(fen); } catch { throw new Error('invalid position'); }
+  let played = parseMove(pos, move);
+  const vs = best ? parseMove(pos, best) : null;
   // the hash and history tables carry over from earlier requests: clear them, so the same request gives the same lines
   await Promise.all([engines.sf, engines.sf2].map(e => e.until(['ucinewgame', 'isready'], l => l === 'readyok')));
-  const best = req.best ? parseMove(pos, req.best) : null;
   // you played lichess's move: still explain that move, against the best other move
-  if (best === move) move = await otherBest(engines.sf, pos, move, NODES);
-  const facts = await buildFacts(engines, req.fen, move, best, NODES);
+  if (vs === played) played = await otherBest(engines.sf, pos, played, nodes);
+  return buildFacts(engines, fen, played, vs, nodes);
+}
+
+/** True when the two moves are too close to explain: the engines' lines differ for reasons too small, and a story
+    would only invent one. */
+export const aboutEqual = facts => Math.abs(facts.latest_sf_gap) < EQUAL_GAP;
+
+/** The answer for a fact sheet: a plain verdict when the moves are about equal (no LLM call), else `llm`'s. */
+export async function answer(facts, apiKey, llm = explain) {
+  return aboutEqual(facts)
+    ? `**${facts.played.move}** is about as good as **${facts.alternative.move}**: the engine sees no real difference `
+      + 'between them. Either move is fine.'
+    : llm(facts, apiKey);
+}
+
+/** {fen, move, best} -> {text, best, compared}. move: the move to compare against (SAN or UCI), best: lichess's top
+    move (UCI, optional). `llm` is replaceable for tests. */
+export async function handle(engines, req, apiKey, llm = explain) {
+  const facts = await factSheet(engines, req.fen, req.move, req.best, NODES);
   const line = k => ({
     move: facts[k].move, eval: facts[k].latest_sf_eval, line: facts[k].line_with_evals,
     threat_line: facts[k].if_opp_plays_the_threat_at_once,
   });
-  const gap = Math.abs(facts.latest_sf_gap);
-  // the engines' lines differ for reasons too small to explain; a story would only invent one
-  const text = gap < EQUAL_GAP
-    ? `**${facts.played.move}** is about as good as **${facts.alternative.move}**: the engine sees no real difference `
-      + 'between them. Either move is fine.'
-    : await llm(facts, apiKey);
-  return { text, best: line('alternative'), compared: line('played') };
+  return { text: await answer(facts, apiKey, llm), best: line('alternative'), compared: line('played') };
 }
 
 // ---- node ----
@@ -645,10 +656,9 @@ if (import.meta.main) { // node 24.2+; undefined in the browser
   });
   const engines = await nodeEngines();
   try {
-    const pos = position(fen);
-    const facts = await buildFacts(engines, fen, parseMove(pos, move), o.vs ? parseMove(pos, o.vs) : null, Number(o.nodes));
+    const facts = await factSheet(engines, fen, move, o.vs, Number(o.nodes));
     console.log(JSON.stringify(facts, null, 1));
-    if (!o['no-llm']) console.log('\n' + await explain(facts, process.env.ANTHROPIC_API_KEY, o.model));
+    if (!o['no-llm']) console.log('\n' + await answer(facts, process.env.ANTHROPIC_API_KEY, (f, key) => explain(f, key, o.model)));
   } finally {
     engines.quit();
   }

@@ -1,4 +1,4 @@
-import { explain as askClaude, handle, sanToUci, startEngines, uciEngine } from './explain.js';
+import { explain as askClaude, checkNotPlaying, handle, sanToUci, startEngines, uciEngine } from './explain.js';
 import { linkMoves, md } from './md.js';
 
 // Runs inside the lichess tab. The engine panel (.pv_box) only exists when lichess allows analysis,
@@ -184,17 +184,19 @@ async function run() {
 
   const status = el('div', 'card status');
   el('div', 'spinner', {}, status);
-  let stage = 'Starting Stockfish';
+  let stage = 'Checking you are not in a game';
   const label = el('span', '', { text: `${stage}…` }, status);
   const started = Date.now();
   const timer = setInterval(() => (label.textContent = `${stage}… ${Math.round((Date.now() - started) / 1000)} s`), 1000);
   try {
+    await checkNotPlaying(b.user);
+    stage = 'Starting Stockfish';
     if (!engines) throw new Error('Stockfish cannot start: the panel is not cross-origin isolated. Reload the extension at chrome://extensions.');
     const ready = await Promise.race([engines, crashed, new Promise((_, fail) =>
       setTimeout(() => fail(new Error('Stockfish did not start within 30 s.')), 30_000))]);
     stage = `Analysing ${move}`;
     const llm = (facts, key) => ((stage = 'Asking Claude'), askClaude(facts, key, model()));
-    const data = await Promise.race([handle(ready, { fen: b.fen, move, best: b.best, user: b.user }, apiKey, llm), crashed]);
+    const data = await Promise.race([handle(ready, { fen: b.fen, move, best: b.best }, apiKey, llm), crashed]);
     out.replaceChildren();
     render(data, b);
   } finally {
