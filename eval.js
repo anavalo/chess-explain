@@ -28,7 +28,7 @@ import { basename } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
-import { NODES, aboutEqual, answer, explain, linePlies, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
+import { NODES, aboutEqual, answer, ask, linePlies, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
 import { JUDGE, PAIR, checkAnswer, systemFor } from './extension/prompt.js';
 
 // ---- the judge (its prompts are in extension/prompt.js) ----
@@ -118,7 +118,9 @@ await Promise.all(Array.from({ length: facts ? 16 : 4 }, async () => {
     try {
       if (facts) {
         const { sheet } = readRun(facts, name) ?? {};
-        text = `${sheet}\n\n${await answer(JSON.parse(sheet), f => explain(f, process.env.ANTHROPIC_API_KEY, o.model))}\n`;
+        const key = process.env.ANTHROPIC_API_KEY;
+        const a = await answer(JSON.parse(sheet), (system, f, m) => ask(system, f, key, m), { model: o.model });
+        text = `${JSON.stringify(a.facts, null, 1)}\n\n${a.text}\n`;
       } else text = (await run(process.execPath, [cli, fen, played, '--vs', better, ...flags], { maxBuffer: 1 << 24 })).stdout;
     } catch (e) {
       text = `ERROR: ${e.stderr || e.message}`;

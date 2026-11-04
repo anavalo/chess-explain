@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  Refused, checkNotPlaying, handle, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
+  Refused, ask as anthropic, checkNotPlaying, handle, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
 } from './extension/explain.js';
 import { KINDS, endNotes, imbalances, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { linkMoves, md } from './extension/md.js';
@@ -177,17 +177,16 @@ assert.deepEqual(render(cSheet, verify(cSheet, [{ concept: 'k', claim: 'k', chec
 assert.deepEqual(claimsIn('The sheet says [takes pawn]. Claims:\n[{"concept": "a"}]\nDone [ok].'), [{ concept: 'a' }]);
 assert.deepEqual([claimsIn('none [here]'), claimsIn('[]')], [null, []]);
 assert.match(v[2].checks[0].error, /no piece on e4/);
+assert.deepEqual(render(cSheet, v), [{ concept: 'centre', claim: 'd4 takes the centre.', checked: [
+  'after 1.d4: d4: your pawn', 'after 1.e4: d4: empty', 'after 1.d4 d5: your pieces attacking e5: 1'] }]);
+// a sheet without the field the concepts go after fails loudly, before any LLM call
+await assert.rejects(withConcepts({ fen: start }, () => assert.fail('called the LLM')), /pawn_plan_only_in_better_line/);
+// one Messages API call: the system prompt, the sheet as the user message, the reply's text
 let sent;
 globalThis.fetch = async (url, { body }) => ((sent = JSON.parse(body)),
-  Response.json({ stop_reason: 'end_turn', content: [{ type: 'text', text: `Here:\n${JSON.stringify(claims)}` }] }));
-const deeper = await withConcepts(cSheet, 'key');
-assert.equal(sent.model, 'claude-opus-5-5');
-assert.equal(sent.system, PROPOSER);
-assert.deepEqual(Object.keys(deeper.facts), ['fen', 'side_to_move', 'pawn_plan_only_in_better_line', 'verified_concepts', 'latest_sf_gap', 'played', 'alternative']);
-assert.deepEqual(deeper.concepts, [{ concept: 'centre', claim: 'd4 takes the centre.', checked: [
-  'after 1.d4: d4: your pawn', 'after 1.e4: d4: empty', 'after 1.d4 d5: your pieces attacking e5: 1'] }]);
-globalThis.fetch = async () => Response.json({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'no claims' }] });
-assert.deepEqual(await withConcepts(cSheet, 'key').then(d => [d.concepts, d.read]), [null, false]);
+  Response.json({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'Fine.' }] }));
+assert.equal(await anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5'), 'Fine.');
+assert.deepEqual([sent.model, sent.system, sent.messages], ['claude-opus-5-5', PROPOSER, [{ role: 'user', content: JSON.stringify(cSheet, null, 1) }]]);
 // the deeper read's prompt is the plain one plus the "verified_concepts" entry
 for (const m of ['claude-haiku-5-5', 'claude-opus-5-5'])
   assert.ok(systemFor(m, true).includes('"verified_concepts"') && systemFor(m, true).replace(/\n- "verified_concepts"[^]*?swing in the lines still comes first\./, '') === systemFor(m));
@@ -238,8 +237,10 @@ function recordedEngines() {
 const engines = record ? await recordingEngines() : recordedEngines();
 let facts;
 const sheets = [];
-const stub = f => (sheets.push(facts = f), '(stub)');
-const ask = (fen, move, best) => handle(engines, { fen, move, best }, stub);
+// the LLM stub: logs each call; the proposer gets `proposer`, the explainer's sheet is kept in `facts`
+let calls = [], proposer = null;
+const stub = (system, f, model) => (calls.push([system, model]), system === PROPOSER ? proposer : (sheets.push(facts = f), '(stub)'));
+const ask = (fen, move, best, opts) => handle(engines, { fen, move, best }, stub, opts);
 try {
   const fen = 'r3k2r/1p1bbpp1/pqn1p2p/2ppP3/3P4/2PB1N2/PP1N1PPP/R2Q1RK1 w kq - 2 11';
   let r = await ask(fen, 'dxc5', 'c3c4');
@@ -253,8 +254,10 @@ try {
   r = await ask('1r3rk1/p1p2ppp/bb1q4/3p4/BP1Pn3/2P1B3/P4PPP/RN1QR1K1 b - - 4 16', 'Bc4', 'c7c6');
   assert.equal(facts.opponent_threat.move, 'f3'); // White threatens f3; c6 prepares Bc7 and Qxh2#
   assert.match(facts.alternative.if_opp_plays_the_threat_at_once, /you Bc7 \[threatens Qxh2#\]/);
-  r = await ask('r4rk1/p1p2pp1/1pnb1q1p/3p1b2/P2P4/1NP2N2/1P2BPPP/R2QR1K1 b - - 0 13', 'Rfe8', 'c6e7');
-  assert.match(r.text, /about as good as/); // equal moves: no LLM call, plain verdict
+  calls = [];
+  r = await ask('r4rk1/p1p2pp1/1pnb1q1p/3p1b2/P2P4/1NP2N2/1P2BPPP/R2QR1K1 b - - 0 13', 'Rfe8', 'c6e7', { depth: true });
+  assert.match(r.text, /about as good as/); // equal moves: no LLM call, plain verdict, even with depth on
+  assert.deepEqual([calls, r.concepts, r.read], [[], null, undefined]);
   r = await ask('rn3rk1/p1N2pbp/1p2p1p1/2p1n1B1/2P5/5b2/PP2BPPP/3R1RK1 w - - 0 15', 'Nxa8', 'g2f3');
   assert.match(r.compared.line, /opp Bxe2 \[takes bishop, attacks your rook on d1, attacks your rook on f1/); // fork
   r = await ask('r3k1nr/4pp1p/p1ppb1p1/q3b3/N1B1P3/1P6/P1P2PPP/R1BQ1RK1 w kq - 1 12', 'Bd5', 'c1d2');
@@ -271,12 +274,31 @@ try {
   assert.match(r.compared.line, /opp Bxf3 \[takes knight, material -3, your recapture 2\.gxf3 fails \(line below\)\]/);
   assert.match(r.compared.line, /\nWhy 2\.gxf3 fails: 2\. you gxf3 \[takes bishop/);
   assert.match(linkMoves('2.gxf3', [r.compared.line]), /data-line="b4 Bxf3 gxf3"/);
-  // Kramnik-Leko 2001: Qa1 prepares Bxd5, which fails at once to Qb6 hitting the queen on b2
-  r = await ask('2rq1rk1/R2n1ppp/4p3/2pb4/5B2/6P1/1Q2PPBP/3R2K1 w - - 0 21', 'e4', 'b2a1');
+  // Kramnik-Leko 2001: Qa1 prepares Bxd5, which fails at once to Qb6 hitting the queen on b2.
+  // With depth on: the proposer, then the explainer with the concepts entry and the verified concepts after the pawn plan
+  calls = [];
+  const steps = [];
+  proposer = `Ideas:\n${JSON.stringify([
+    { concept: 'king', claim: 'Your king is on g1.', checks: [{ pos: 'start', op: 'king_square', args: { side: 'white' }, expect: 'g1' }] },
+    { concept: 'wrong', claim: 'x', checks: [{ pos: 'start', op: 'king_square', args: { side: 'white' }, expect: 'h1' }] }])}`;
+  r = await ask('2rq1rk1/R2n1ppp/4p3/2pb4/5B2/6P1/1Q2PPBP/3R2K1 w - - 0 21', 'e4', 'b2a1',
+    { model: 'claude-opus-5-5', depth: true, onStep: t => steps.push(t) });
+  assert.deepEqual(calls, [[PROPOSER, 'claude-opus-5-5'], [systemFor('claude-opus-5-5', true), 'claude-opus-5-5']]);
+  assert.deepEqual(steps, ['Looking for positional ideas', 'Asking Claude']);
+  assert.deepEqual([r.read, r.concepts], [true, [{ concept: 'king', claim: 'Your king is on g1.', checked: ['now, before your move: your king on g1'] }]]);
+  assert.equal(r.facts, facts);
+  const order = Object.keys(facts);
+  assert.equal(order[order.indexOf('pawn_plan_only_in_better_line') + 1], 'verified_concepts');
+  assert.equal(facts.verified_concepts, r.concepts);
   assert.equal(facts.prepares.move, 'Bxd5');
   assert.match(facts.prepares.line_if_played_at_once, /opp Qb6 \[attacks your queen on b2/);
-  // Skoberne-Suarez 2012: Rf1 prepares Nxg6; at once the engine line avoids Qxh6, which fails to Qxf2+ (Rf1 guards f2)
-  r = await ask('r4rkb/ppR5/3Np1pp/4n3/5N2/4Q3/q4PPP/3R2K1 w - - 2 24', 'Re7', 'd1f1');
+  // Skoberne-Suarez 2012: Rf1 prepares Nxg6; at once the engine line avoids Qxh6, which fails to Qxf2+ (Rf1 guards f2).
+  // With depth on and no claim list in the proposer's reply: the plain prompt, and the panel is told the reply was unread
+  calls = [];
+  proposer = 'No ideas.';
+  r = await ask('r4rkb/ppR5/3Np1pp/4n3/5N2/4Q3/q4PPP/3R2K1 w - - 2 24', 'Re7', 'd1f1', { depth: true });
+  assert.deepEqual(calls, [[PROPOSER, 'claude-opus-5-5'], [systemFor('claude-haiku-5-5'), 'claude-haiku-5-5']]);
+  assert.deepEqual([r.read, r.concepts, 'verified_concepts' in facts, facts.verified_concepts], [false, null, true, null]);
   assert.equal(facts.prepares.move, 'Nxg6');
   assert.match(facts.prepares.follow_up_fails, /^Why 25\.Qxh6 fails: 25\. you Qxh6 .* 25\.\.\. opp Qxf2\+ /);
   assert.equal(facts.prepares.better_move_guards, 'f2');

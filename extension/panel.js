@@ -1,5 +1,4 @@
-import { aboutEqual, explain as askClaude, checkNotPlaying, handle, sanToUci, startEngines, uciEngine } from './explain.js';
-import { withConcepts } from './concepts.js';
+import { ask, checkNotPlaying, handle, sanToUci, startEngines, uciEngine } from './explain.js';
 import { linkMoves, md } from './md.js';
 
 // Runs inside the lichess tab. The engine panel (.pv_box) only exists when lichess allows analysis,
@@ -207,21 +206,13 @@ async function explain() {
     const ready = await Promise.race([engines, crashed, new Promise((_, fail) =>
       setTimeout(() => fail(new Error('Stockfish did not start within 30 s.')), 30_000))]);
     s.set(`Analysing ${move}`);
-    const depth = deep.checked;
-    let concepts = null, read = true;
-    const llm = async facts => {
-      if (depth) {
-        s.set('Looking for positional ideas');
-        ({ facts, concepts, read } = await withConcepts(facts, apiKey));
-      }
-      s.set('Asking Claude');
-      return askClaude(facts, apiKey, model(), !!concepts);
-    };
-    const data = await Promise.race([handle(ready, { fen: b.fen, move, best: b.best }, llm), crashed]);
+    const llm = (system, facts, m) => ask(system, facts, apiKey, m);
+    const data = await Promise.race([handle(ready, { fen: b.fen, move, best: b.best }, llm,
+      { model: model(), depth: deep.checked, onStep: s.set }), crashed]);
     out.replaceChildren();
-    render({ ...data, concepts }, b, apiKey);
-    if (depth && !concepts && !aboutEqual(data.facts))
-      el('div', 'card note', { text: read ? 'No positional idea passed the board checks.' : 'Could not read the positional ideas in the reply.' });
+    render(data, b, apiKey);
+    if (data.read !== undefined && !data.concepts)
+      el('div', 'card note', { text: data.read ? 'No positional idea passed the board checks.' : 'Could not read the positional ideas in the reply.' });
   } finally {
     s.done();
   }

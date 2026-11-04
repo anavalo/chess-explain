@@ -1,8 +1,8 @@
-// Positional concepts behind the panel's "Deeper positional read" button: the strongest model proposes concepts for a fact sheet, each
-// backed by board checks; verify() runs the checks and drops a claim unless every one holds; render() turns the
-// survivors into the sheet field "verified_concepts" (checks in words, sides as your/opp's).
+// The deeper read, run before the answer when the panel's positional depth switch is on: the strongest model proposes
+// concepts for a fact sheet, each backed by board checks; verify() runs the checks and drops a claim unless every one
+// holds; render() turns the survivors into the sheet field "verified_concepts" (checks in words, sides as your/opp's).
 import { SquareSet, attacks, between, parseSquare, makeSquare, squareFile, squareRank } from './vendor/chessops.js';
-import { ask, linePlies, position, play, sanToUci } from './explain.js';
+import { linePlies, position, play, sanToUci } from './explain.js';
 import { isOutpost } from './features.js';
 import { PROPOSER } from './prompt.js';
 
@@ -138,13 +138,17 @@ export function claimsIn(reply) {
   return null;
 }
 
-/** The deeper read's sheet: the proposer suggests concepts for `facts`, verify() keeps those whose checks all hold, and they go
-    in as "verified_concepts" after "pawn_plan_only_in_better_line". Returns {facts, concepts, read} (concepts null when
-    no claim survived; read false when the reply held no claim list). */
-export async function withConcepts(facts, apiKey) {
-  const claims = claimsIn(await ask(PROPOSER, facts, apiKey, PROPOSER_MODEL));
+/** The deeper read's sheet: the proposer suggests concepts for `facts` (one `llm(system, facts, model)` call, see answer()),
+    verify() keeps those whose checks all hold, and they go in as "verified_concepts" right after ANCHOR, the slot the
+    concepts A/B tested. Returns {facts, concepts, read} (concepts null when no claim survived; read false when the reply
+    held no claim list). Throws when the sheet has no ANCHOR, so a renamed field fails the tests instead of dropping
+    the concepts. */
+export async function withConcepts(facts, llm) {
+  if (!(ANCHOR in facts)) throw new Error(`the fact sheet has no "${ANCHOR}" to put the verified concepts after`);
+  const claims = claimsIn(await llm(PROPOSER, facts, PROPOSER_MODEL));
   const concepts = claims ? render(facts, verify(facts, claims)) : null;
   const out = {};
-  for (const [k, v] of Object.entries(facts)) { out[k] = v; if (k === 'pawn_plan_only_in_better_line') out.verified_concepts = concepts; }
+  for (const [k, v] of Object.entries(facts)) { out[k] = v; if (k === ANCHOR) out.verified_concepts = concepts; }
   return { facts: out, concepts, read: claims !== null };
 }
+const ANCHOR = 'pawn_plan_only_in_better_line';

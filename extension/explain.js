@@ -16,6 +16,8 @@ import {
   pawnWeaknesses, rookFile, shieldHoles, word,
 } from './features.js';
 import { systemFor } from './prompt.js';
+// concepts.js imports chess helpers from here: a cycle, safe because neither module uses the other's exports at load time
+import { withConcepts } from './concepts.js';
 
 export const NODES = 2_000_000;
 const THREADS = 1; // one search thread: a node-limited search then gives the same lines every run
@@ -584,10 +586,6 @@ function bySide(diff, a, p) {
 
 // ---- the LLM ----
 
-/** The answer for a fact sheet. `concepts`: the sheet has "verified_concepts" (a deeper read), so the prompt explains them. */
-export const explain = (facts, apiKey, model = 'claude-haiku-5-5', concepts = false) =>
-  ask(systemFor(model, concepts), facts, apiKey, model);
-
 /** One Messages API call: `system`, the fact sheet as the user message. Returns the reply's text. */
 export async function ask(system, facts, apiKey, model) {
   // Haiku has no server-side fallback; on the others a safety decline is retried on a fallback model
@@ -654,23 +652,35 @@ export async function factSheet(engines, fen, move, best = null, nodes = NODES) 
     would only invent one. */
 export const aboutEqual = facts => Math.abs(facts.latest_sf_gap) < EQUAL_GAP;
 
-/** The answer for a fact sheet: a plain verdict when the moves are about equal (no LLM call), else `llm(facts)`. */
-export async function answer(facts, llm) {
-  return aboutEqual(facts)
-    ? `**${facts.played.move}** is about as good as **${facts.alternative.move}**: the engine sees no real difference `
-      + 'between them. Either move is fine.'
-    : llm(facts);
+/** The answer for a fact sheet: a plain verdict when the moves are about equal (no LLM call), else the explainer's text,
+    after a deeper read when `depth` is on. `llm(system, facts, model)` is one LLM call: ask() with the key, or a test stub.
+    `onStep(words)` hears which call comes next. Returns {text, facts, concepts, read}: facts as the explainer saw them;
+    concepts, the verified concepts (null when none held); read, whether the proposer's reply held a claim list
+    (undefined when no deeper read ran). */
+export async function answer(facts, llm, { model = 'claude-haiku-5-5', depth = false, onStep = () => {} } = {}) {
+  if (aboutEqual(facts)) {
+    return { facts, concepts: null, text: `**${facts.played.move}** is about as good as **${facts.alternative.move}**: `
+      + 'the engine sees no real difference between them. Either move is fine.' };
+  }
+  let concepts = null, read;
+  if (depth) {
+    onStep('Looking for positional ideas');
+    ({ facts, concepts, read } = await withConcepts(facts, llm));
+  }
+  onStep('Asking Claude');
+  return { text: await llm(systemFor(model, !!facts.verified_concepts), facts, model), facts, concepts, read };
 }
 
-/** {fen, move, best} -> {text, best, compared, facts}. move: the move to compare against (SAN or UCI), best: lichess's top
-    move (UCI, optional). `llm(facts)` writes the answer; tests pass a stub. */
-export async function handle(engines, req, llm) {
-  const facts = await factSheet(engines, req.fen, req.move, req.best, NODES);
+/** {fen, move, best} -> answer()'s {text, facts, concepts, read} plus the two moves' {move, eval, line, threat_line} as best
+    and compared. move: the move to compare against (SAN or UCI), best: lichess's top move (UCI, optional). `llm` and
+    `opts` go to answer(). */
+export async function handle(engines, req, llm, opts) {
+  const a = await answer(await factSheet(engines, req.fen, req.move, req.best, NODES), llm, opts);
   const line = k => ({
-    move: facts[k].move, eval: facts[k].latest_sf_eval, line: facts[k].line_with_evals,
-    threat_line: facts[k].if_opp_plays_the_threat_at_once,
+    move: a.facts[k].move, eval: a.facts[k].latest_sf_eval, line: a.facts[k].line_with_evals,
+    threat_line: a.facts[k].if_opp_plays_the_threat_at_once,
   });
-  return { text: await answer(facts, llm), best: line('alternative'), compared: line('played'), facts };
+  return { ...a, best: line('alternative'), compared: line('played') };
 }
 
 // ---- node ----
@@ -701,9 +711,14 @@ if (import.meta.main) { // node 24.2+; undefined in the browser
   });
   const engines = await nodeEngines();
   try {
-    const facts = await factSheet(engines, fen, move, o.vs, Number(o.nodes));
-    console.log(JSON.stringify(facts, null, 1));
-    if (!o['no-llm']) console.log('\n' + await answer(facts, f => explain(f, process.env.ANTHROPIC_API_KEY, o.model)));
+    const sheet = await factSheet(engines, fen, move, o.vs, Number(o.nodes));
+    if (o['no-llm']) console.log(JSON.stringify(sheet, null, 1));
+    else {
+      const key = process.env.ANTHROPIC_API_KEY;
+      const { facts, text } = await answer(sheet, (system, f, m) => ask(system, f, key, m), { model: o.model });
+      console.log(JSON.stringify(facts, null, 1));
+      console.log('\n' + text);
+    }
   } finally {
     engines.quit();
   }
