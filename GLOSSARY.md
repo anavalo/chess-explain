@@ -28,9 +28,17 @@ _Avoid_: feature (when only the root position is meant)
 The LLM that writes the answer from a fact sheet.
 _Avoid_: coach, model (when the role is meant)
 
+**Answer**:
+What the user gets for one fact sheet: a plain verdict when the two moves are about equal, else the explainer's text, written after a deeper read when depth is on.
+_Avoid_: reply, response
+
+**About equal**:
+Two moves whose engine gap is too small to explain: the answer is a plain verdict and no explainer runs.
+_Avoid_: draw, equal position
+
 **Deeper read**:
-The panel's second pass on the same fact sheet: the concept proposer suggests positional ideas, the board checks them, and the explainer writes again with the verified concepts on the sheet.
-_Avoid_: deep mode, concept mode
+An optional step before the explainer writes: the concept proposer suggests positional ideas for the fact sheet, the board checks them, and the verified concepts go on the sheet. It runs when depth is on.
+_Avoid_: deep mode, concept mode, second pass
 
 **Concept proposer**:
 The strongest-model call in a deeper read that names positional ideas for a fact sheet, each as a claim sentence plus board checks.
