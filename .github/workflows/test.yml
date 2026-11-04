@@ -14,3 +14,5 @@ jobs:
           node-version: 24
       # no npm install: the tests only use the committed extension/vendor/
       - run: node test.js
+      # the real engines must still give the recorded replies
+      - run: node test.js --record && git diff --exit-code test-engines.json
