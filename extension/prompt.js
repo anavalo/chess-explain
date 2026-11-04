@@ -164,10 +164,16 @@ const CONCEPTS = `
   swing in the lines still comes first.`;
 
 /** The explainer prompt for `model`: every model gets the legend and rules 1-14, all but Haiku also rule 15. A deeper
-    read (`concepts`) also gets the "verified_concepts" entry, after the pawn plan's. */
+    read (`concepts`) also gets the "verified_concepts" entry. */
 export function systemFor(model, concepts = false) {
-  const legend = concepts ? LEGEND.replace(PAWN_PLAN_END, PAWN_PLAN_END + CONCEPTS) : LEGEND;
-  return legend + RULES + (model.startsWith('claude-haiku') ? '' : ADVICE);
+  return (concepts ? withConceptsEntry(LEGEND) : LEGEND) + RULES + (model.startsWith('claude-haiku') ? '' : ADVICE);
+}
+
+/** `prompt`, which holds the sheet legend (the explainer's, or a judge prompt), with the "verified_concepts" entry after
+    the pawn plan's: what a deeper read's sheet needs explained. */
+export function withConceptsEntry(prompt) {
+  if (!prompt.includes(PAWN_PLAN_END)) throw new Error('the prompt has no pawn plan entry to put the concepts entry after');
+  return prompt.replace(PAWN_PLAN_END, PAWN_PLAN_END + CONCEPTS);
 }
 const PAWN_PLAN_END = "better move cleared that pawn's way. See rule 13.";
 

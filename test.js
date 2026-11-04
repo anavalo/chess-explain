@@ -12,7 +12,7 @@ import {
 } from './extension/explain.js';
 import { KINDS, endNotes, imbalances, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { linkMoves, md } from './extension/md.js';
-import { JUDGE, LEGEND, PAIR, PROPOSER, checkAnswer, systemFor } from './extension/prompt.js';
+import { JUDGE, LEGEND, PAIR, PROPOSER, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
 import { claimsIn, render, verify, withConcepts } from './extension/concepts.js';
 
 const pos = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
@@ -190,6 +190,8 @@ assert.deepEqual([sent.model, sent.system, sent.messages], ['claude-opus-5-5', P
 // the deeper read's prompt is the plain one plus the "verified_concepts" entry
 for (const m of ['claude-haiku-5-5', 'claude-opus-5-5'])
   assert.ok(systemFor(m, true).includes('"verified_concepts"') && systemFor(m, true).replace(/\n- "verified_concepts"[^]*?swing in the lines still comes first\./, '') === systemFor(m));
+// eval --deep gives both judges the same entry
+for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verified_concepts"'));
 
 // fair play, with a lichess status stub (the real user may be in a game when CI runs): fail closed
 globalThis.fetch = async url => {

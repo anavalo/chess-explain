@@ -5,7 +5,8 @@
 // An LLM turns those numbers into plain language.
 //
 // Runs in the side panel (engines in Web Workers) and in node (engines as child processes):
-//   node extension/explain.js FEN MOVE [--vs MOVE] [--nodes N] [--no-llm] [--model ID]
+//   node extension/explain.js FEN MOVE [--vs MOVE] [--nodes N] [--no-llm] [--model ID] [--deep]
+// --deep runs the deeper read before the answer, as the panel's positional depth switch does.
 
 import {
   Chess, SquareSet, attacks, castlingSide, kingCastlesTo, makeFen, makeSan, makeSquare, makeUci, opposite, parseFen,
@@ -707,15 +708,16 @@ if (import.meta.main) { // node 24.2+; undefined in the browser
   const { values: o, positionals: [fen, move] } = parseArgs({
     allowPositionals: true,
     options: { vs: { type: 'string' }, nodes: { type: 'string', default: String(NODES) },
-      'no-llm': { type: 'boolean' }, model: { type: 'string' } },
+      'no-llm': { type: 'boolean' }, model: { type: 'string' }, deep: { type: 'boolean' } },
   });
+  if (o.deep && o['no-llm']) throw new Error('--deep needs the LLM');
   const engines = await nodeEngines();
   try {
     const sheet = await factSheet(engines, fen, move, o.vs, Number(o.nodes));
     if (o['no-llm']) console.log(JSON.stringify(sheet, null, 1));
     else {
       const key = process.env.ANTHROPIC_API_KEY;
-      const { facts, text } = await answer(sheet, (system, f, m) => ask(system, f, key, m), { model: o.model });
+      const { facts, text } = await answer(sheet, (system, f, m) => ask(system, f, key, m), { model: o.model, depth: o.deep });
       console.log(JSON.stringify(facts, null, 1));
       console.log('\n' + text);
     }

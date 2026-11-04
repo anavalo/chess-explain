@@ -3,7 +3,7 @@
 // move loses 0.5-1.6 pawns to the engine's best (at least 0.3 at the eval's 2M nodes), and the first 3 plies of both
 // lines hold no capture or check.
 // The engines give the same lines on every run, so run this before and after a change and diff the two folders.
-// usage: ANTHROPIC_API_KEY=... node eval.js [out-dir] [--no-llm] [--model ID] [--facts DIR] [--set FILE] [--summary] [--judge]   (out-dir defaults to eval-out)
+// usage: ANTHROPIC_API_KEY=... node eval.js [out-dir] [--no-llm] [--model ID] [--deep] [--facts DIR] [--set FILE] [--summary] [--judge]   (out-dir defaults to eval-out)
 // out-dir/summary.txt flags format slips in each answer; node eval.js out-dir --summary re-checks without a run.
 // --facts DIR reuses DIR's fact sheets (no engines), so only the LLM runs, 16 at a time.
 // --judge has Claude Opus grade each answer against its fact sheet (a few cents per answer, kept in <name>.judge.json).
@@ -17,6 +17,8 @@
 // the reference variant with --set), for subagent runs that write <name>.txt and <name>.judge.json without the API.
 // --compare DIR pairs out-dir's judge verdicts with DIR's by position (A = DIR, B = out-dir) and prints the flips with
 // their noise, overall and by the SF 15 gate; run it on two samples of the same arm first to see the noise floor.
+// --deep runs the deeper read before each answer (as the panel's positional depth switch does), and gives the judge, the
+// pairwise judge and --print the "verified_concepts" legend entry; to compare a deep run with a plain one, judge both with --deep.
 // --masked writes <name>.masked.txt per answer, with the two candidate moves hidden, for a reader (a Haiku subagent) to say
 // which move the text argues for in <name>.masked.json ({"better": "<SAN>"}); the summary counts how many it recovers.
 import { PgnParser, parseComment, startingPosition } from 'chessops/pgn';
@@ -29,7 +31,7 @@ import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
 import { NODES, aboutEqual, answer, ask, linePlies, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
-import { JUDGE, PAIR, checkAnswer, systemFor } from './extension/prompt.js';
+import { JUDGE, PAIR, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
 
 // ---- the judge (its prompts are in extension/prompt.js) ----
 
@@ -76,8 +78,11 @@ const str = { type: 'string' }, bool = { type: 'boolean' };
 const { values: o, positionals: [out = 'eval-out'] } = parseArgs({
   allowPositionals: true,
   options: { 'no-llm': bool, model: str, facts: str, set: str, summary: bool, judge: bool, pair: str, sample: str, month: str,
-    print: str, masked: bool, compare: str },
+    print: str, masked: bool, compare: str, deep: bool },
 });
+if (o.deep && o['no-llm']) throw new Error('--deep needs the LLM');
+// the judges get the "verified_concepts" legend entry on --deep runs
+const legend = prompt => (o.deep ? withConceptsEntry(prompt) : prompt);
 if (o.sample) {
   await sample(Number(o.sample), o.month);
   process.exit(0);
@@ -90,9 +95,9 @@ if (o.print) {
   const ref = Object.values(reference).some(Boolean);
   const withSchema = (prompt, schema) => `${prompt}\n\nReply with only JSON matching this schema:\n${JSON.stringify(schema, null, 1)}`;
   const prompts = {
-    explainer: () => systemFor(o.model ?? 'claude-haiku-5-5'),
-    judge: () => withSchema(JUDGE, ref ? WITH_REFERENCE : VERDICT),
-    pair: () => withSchema(PAIR, ref ? PAIR_WITH_REFERENCE : PAIR_VERDICT),
+    explainer: () => systemFor(o.model ?? 'claude-haiku-5-5', o.deep),
+    judge: () => withSchema(legend(JUDGE), ref ? WITH_REFERENCE : VERDICT),
+    pair: () => withSchema(legend(PAIR), ref ? PAIR_WITH_REFERENCE : PAIR_VERDICT),
   };
   if (!prompts[o.print]) throw new Error('--print takes explainer, judge or pair');
   process.stdout.write(prompts[o.print]());
@@ -104,7 +109,7 @@ if (o.compare) {
 }
 const facts = o.facts ?? null;
 const pair = o.pair?.replace(/\/$/, '') ?? null;
-const flags = [...o['no-llm'] ? ['--no-llm'] : [], ...o.model ? ['--model', o.model] : []];
+const flags = [...o['no-llm'] ? ['--no-llm'] : [], ...o.model ? ['--model', o.model] : [], ...o.deep ? ['--deep'] : []];
 const cli = fileURLToPath(new URL('extension/explain.js', import.meta.url));
 const run = promisify(execFile);
 mkdirSync(out, { recursive: true });
@@ -119,7 +124,7 @@ await Promise.all(Array.from({ length: facts ? 16 : 4 }, async () => {
       if (facts) {
         const { sheet } = readRun(facts, name) ?? {};
         const key = process.env.ANTHROPIC_API_KEY;
-        const a = await answer(JSON.parse(sheet), (system, f, m) => ask(system, f, key, m), { model: o.model });
+        const a = await answer(JSON.parse(sheet), (system, f, m) => ask(system, f, key, m), { model: o.model, depth: o.deep });
         text = `${JSON.stringify(a.facts, null, 1)}\n\n${a.text}\n`;
       } else text = (await run(process.execPath, [cli, fen, played, '--vs', better, ...flags], { maxBuffer: 1 << 24 })).stdout;
     } catch (e) {
@@ -197,7 +202,7 @@ async function judgeAll(names) {
 }
 
 function judge(facts, answer, ref) {
-  return claude(JUDGE, `Fact sheet:\n${facts}\n\nAnswer:\n${answer}${ref ? `\n\nReference reason:\n${ref}` : ''}`, ref ? WITH_REFERENCE : VERDICT);
+  return claude(legend(JUDGE), `Fact sheet:\n${facts}\n\nAnswer:\n${answer}${ref ? `\n\nReference reason:\n${ref}` : ''}`, ref ? WITH_REFERENCE : VERDICT);
 }
 
 /** One Opus call with a cached system prompt and a JSON schema; returns the parsed JSON plus usage. */
@@ -241,7 +246,7 @@ async function pairAll(names) {
       const sheets = sheetA === sheetB ? `Fact sheet (both answers):\n${sheetA}` : `Fact sheet A:\n${sheetA}\n\nFact sheet B:\n${sheetB}`;
       const ref = reference[n] ? `\n\nReference reason:\n${reference[n]}` : '';
       try {
-        const v = await claude(PAIR, `${sheets}\n\nAnswer A:\n${answerA}\n\nAnswer B:\n${answerB}${ref}`, ref ? PAIR_WITH_REFERENCE : PAIR_VERDICT);
+        const v = await claude(legend(PAIR), `${sheets}\n\nAnswer A:\n${answerA}\n\nAnswer B:\n${answerB}${ref}`, ref ? PAIR_WITH_REFERENCE : PAIR_VERDICT);
         if (swap) for (const k of ['decisive_point', 'fewer_false_claims', 'reference_reason']) v[k] = { A: 'B', B: 'A' }[v[k]] ?? v[k];
         writeFileSync(file(n), JSON.stringify({ ...v, swap }, null, 1) + '\n');
         console.log(n, 'compared');

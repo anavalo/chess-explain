@@ -147,11 +147,12 @@ All commands below need [Node.js](https://nodejs.org/) 24.2 or newer.
 `explain.js` also runs without the extension:
 
 ```sh
-ANTHROPIC_API_KEY=... node extension/explain.js "<FEN>" <move> [--vs <move>] [--nodes <N>] [--no-llm]
+ANTHROPIC_API_KEY=... node extension/explain.js "<FEN>" <move> [--vs <move>] [--nodes <N>] [--no-llm] [--model ID] [--deep]
 ```
 
 `--no-llm` prints the fact sheet the model would see, and needs no API key. It is the best way to see
-what an explanation is built from.
+what an explanation is built from. `--deep` checks positional ideas before the answer, as the **Positional depth**
+switch does, and prints the sheet with them.
 
 ### Tests
 
@@ -170,13 +171,15 @@ is out of date.
 ### Eval set
 
 ```sh
-ANTHROPIC_API_KEY=... node eval.js [out-dir] [--no-llm] [--model ID] [--facts DIR] [--set FILE] [--summary] [--judge]
+ANTHROPIC_API_KEY=... node eval.js [out-dir] [--no-llm] [--model ID] [--deep] [--facts DIR] [--set FILE] [--summary] [--judge]
 ```
 
 This explains the 132 quiet positions in `eval-sets/quiet-132.json`, from lichess games, where the better move
 wins on position rather than with a tactic, and writes one fact sheet and answer per position to `out-dir` (default `eval-out/`). Run
 it before and after a change and diff the two folders. `--no-llm` writes the fact sheets only.
-`--model ID` picks the Claude model (default Haiku 5.5). `--facts DIR` reuses the fact sheets in `DIR`
+`--model ID` picks the Claude model (default Haiku 5.5). `--deep` checks positional ideas before each answer, as the
+**Positional depth** switch does, and tells the judge what the checked ideas on a sheet mean; to compare a deep run
+with a plain one, judge both with `--deep`. `--facts DIR` reuses the fact sheets in `DIR`
 instead of running the engines, so a prompt or model change takes a minute or two instead of half an hour.
 `out-dir/summary.txt` lists the rule checks each answer fails: over 120 words, raw labels, a space after a move
 number, a check or move that is not in the fact sheet, story words, evals or other numbers, naming the engine, and a
@@ -192,7 +195,7 @@ plain "about as good" verdict, no LLM call, and is left out of the checks and th
 many answers go over 120 words.
 
 ```sh
-node eval.js --print explainer|judge|pair [--model ID] [--set FILE]
+node eval.js --print explainer|judge|pair [--model ID] [--set FILE] [--deep]
 ```
 
 prints that prompt exactly and exits: the explainer prompt for `--model` (default Haiku 5.5), or a judge prompt with the
