@@ -15,6 +15,8 @@
 // (gitignored, run it with --set). Never tune on them: a new month per release.
 // --print explainer|judge|pair prints that prompt and exits (explainer: for --model; judge and pair: with the verdict schema,
 // the reference variant with --set), for subagent runs that write <name>.txt and <name>.judge.json without the API.
+// --compare DIR pairs out-dir's judge verdicts with DIR's by position (A = DIR, B = out-dir) and prints the flips with
+// their noise, overall and by the SF 15 gate; run it on two samples of the same arm first to see the noise floor.
 // --masked writes <name>.masked.txt per answer, with the two candidate moves hidden, for a reader (a Haiku subagent) to say
 // which move the text argues for in <name>.masked.json ({"better": "<SAN>"}); the summary counts how many it recovers.
 import { PgnParser, parseComment, startingPosition } from 'chessops/pgn';
@@ -71,7 +73,7 @@ const str = { type: 'string' }, bool = { type: 'boolean' };
 const { values: o, positionals: [out = 'eval-out'] } = parseArgs({
   allowPositionals: true,
   options: { 'no-llm': bool, model: str, facts: str, set: str, summary: bool, judge: bool, pair: str, sample: str, month: str,
-    print: str, masked: bool },
+    print: str, masked: bool, compare: str },
 });
 if (o.sample) {
   await sample(Number(o.sample), o.month);
@@ -91,6 +93,10 @@ if (o.print) {
   };
   if (!prompts[o.print]) throw new Error('--print takes explainer, judge or pair');
   process.stdout.write(prompts[o.print]());
+  process.exit(0);
+}
+if (o.compare) {
+  compare(o.compare.replace(/\/$/, ''));
   process.exit(0);
 }
 const facts = o.facts ?? null;
@@ -241,6 +247,26 @@ async function pairAll(names) {
   console.log(`\n${vs.length} pairs, A = ${out}, B = ${pair}: decisive point ${tally('decisive_point')}`
     + (vs.some(v => v.reference_reason) ? `; reference reason ${tally('reference_reason')}` : '')
     + `; false claims ${tally('fewer_false_claims')} (fewer); about $${usd.toFixed(2)}`);
+}
+
+/** Pairs out-dir's judge verdicts (B) with DIR's (A) by position and prints the flips, overall and split by the SF 15
+    gate (the terms carry at least half the gap). Noise is 2*sqrt(discordant): a net inside it is a coin toss. */
+function compare(dir) {
+  const verdict = (d, n) => existsSync(`${d}/${n}.judge.json`) ? JSON.parse(readFileSync(`${d}/${n}.judge.json`, 'utf8')) : null;
+  const names = readdirSync(out).filter(f => f.endsWith('.judge.json')).map(f => f.slice(0, -11)).filter(n => verdict(dir, n));
+  const gate = n => { const s = JSON.parse(readRun(out, n).sheet); return s.sf15_total_gap != null && s.sf15_total_gap >= s.latest_sf_gap / 2; };
+  const flips = (ns, hit) => {
+    const pairs = ns.map(n => [hit(verdict(dir, n)), hit(verdict(out, n))]);
+    const lost = pairs.filter(([a, b]) => a && !b).length, won = pairs.filter(([a, b]) => !a && b).length;
+    return `${pairs.filter(([a]) => a).length} -> ${pairs.filter(([, b]) => b).length}, agree ${pairs.length - lost - won}, `
+      + `lost ${lost}, won ${won}, net ${won - lost >= 0 ? '+' : ''}${won - lost}, noise ±${(2 * Math.sqrt(lost + won)).toFixed(1)}`;
+  };
+  const claims = d => names.reduce((s, n) => s + verdict(d, n).false_claims.length, 0);
+  console.log(`${names.length} positions, A = ${dir}, B = ${out}; false claims ${claims(dir)} -> ${claims(out)} total`);
+  for (const [label, ns] of [['all', names], ['gate pass', names.filter(gate)], ['gate fail', names.filter(n => !gate(n))]]) {
+    console.log(`${label} (${ns.length}): decisive yes ${flips(ns, v => v.decisive_point === 'yes')}`);
+    console.log(`${' '.repeat(label.length + String(ns.length).length + 3)}  no false claim ${flips(ns, v => !v.false_claims.length)}`);
+  }
 }
 
 /** Reads <dir>/<name>.txt, the CLI output: the fact sheet JSON, a blank line and the answer (no answer with --no-llm).
