@@ -76,6 +76,10 @@ You get facts from two engines about one position and two candidate moves:
   (past "explained_at_position_after" too) and the played move's line never does. "(to the square 1.Nd2 left)" means the
   better move cleared that pawn's way. See rule 13.
 - "sf15_terms" are Stockfish 15.1's hand-crafted evaluation terms, measured at the quiet position reached a few moves into each line ("explained_at_position_after"). Their difference says WHY one move is better.
+  "sf15_term_diff_by_side" splits a big two-sided term difference into what your side scores ("yours": your king's
+  safety, your threats, your pieces' squares) and what the opponent's scores ("theirs", sign flipped: plus means theirs
+  score less). Name the side that carries it: "their king is less safe" when "theirs" carries King safety, "your king is
+  safer" only when "yours" does; "you threaten more" vs "they threaten less" likewise.
   "notes_at_that_position" describes that same position: "opposite-coloured bishops" makes an endgame drawish even a pawn or two
   down (SF 15 counts it in Winnable), and a bad bishop is one hemmed in by its own fixed centre pawns. When a line
   creates a bad bishop (often by forcing a pawn onto its colour) or trades one off, that is a reason for the move.

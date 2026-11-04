@@ -123,8 +123,8 @@ assert.ok(!JSON.stringify(imbalances(pos('r1b2rk1/pp3ppp/2n5/8/8/2N5/PPP2PPP/R1B
 const evalTable = ['|      Term    |    White    |    Black    |    Total    |', '|              |   MG    EG  |   MG    EG  |   MG    EG  |',
   '|     Mobility |  0.85  1.26 |  0.83  1.20 |  1.00  2.00 |', 'Final evaluation       +0.10 (white side)'];
 const fakeSf15 = { until: async () => evalTable };
-assert.deepEqual(await sf15Terms(fakeSf15, pos('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'), 'white'), { Mobility: 0.58 });
-assert.deepEqual(await sf15Terms(fakeSf15, pos('4k3/4p3/8/8/8/8/4P3/4K3 w - - 0 1'), 'black'), { Mobility: -1.15 });
+assert.deepEqual(await sf15Terms(fakeSf15, pos('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'), 'white'), { terms: { Mobility: 0.58 }, sides: { Mobility: { yours: 0.49, theirs: -0.48 } } });
+assert.deepEqual(await sf15Terms(fakeSf15, pos('4k3/4p3/8/8/8/8/4P3/4K3 w - - 0 1'), 'black'), { terms: { Mobility: -1.15 }, sides: { Mobility: { yours: 0.69, theirs: -0.73 } } });
 
 // the leaf: the last quiet position in the first plies, before an exchange; a line that is all captures falls back to its end
 const start = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';

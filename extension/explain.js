@@ -152,15 +152,22 @@ function phase(pos) {
   return Math.floor((npm - ENDGAME_LIMIT) * 128 / (MIDGAME_LIMIT - ENDGAME_LIMIT));
 }
 
-/** Run SF 15 `eval` and return {term: value in pawns} from `color`'s side, MG/EG blended by phase. */
+/** Run SF 15 `eval` and return {terms: {term: value in pawns}, sides: {term: {yours, theirs}}} from `color`'s side, MG/EG
+    blended by phase. sides holds the two-sided terms split by whose pieces score them: yours + theirs = the term, and
+    theirs > 0 means their side scores less (their king is less safe), not that yours scores more. */
 export async function sf15Terms(sf15, pos, color) {
   const lines = await sf15.until([`position fen ${fenOf(pos)}`, 'eval'], l => l.startsWith('Final evaluation'));
-  const ph = phase(pos), sign = color === 'white' ? 1 : -1, terms = {};
+  const ph = phase(pos), sign = color === 'white' ? 1 : -1, terms = {}, sides = {};
+  const blend = (mg, eg) => (mg * ph + eg * (128 - ph)) / 128 / SF15_SCALE;
   for (const l of lines) {
-    const m = l.match(/^\|\s*([A-Za-z ]+?)\s*\|.*\|\s*(-?\d+\.\d+)\s+(-?\d+\.\d+)\s*\|$/);
-    if (m) terms[m[1]] = round2(sign * (m[2] * ph + m[3] * (128 - ph)) / 128 / SF15_SCALE);
+    const m = l.match(/^\|\s*([A-Za-z ]+?)\s*\|\s*(\S+)\s+(\S+)\s*\|\s*(\S+)\s+(\S+)\s*\|\s*(-?\d+\.\d+)\s+(-?\d+\.\d+)\s*\|$/);
+    if (!m) continue;
+    terms[m[1]] = round2(sign * blend(m[6], m[7]));
+    if (m[2] === '----') continue; // one-sided: Material, Imbalance, Winnable, Total
+    const [w, b] = [blend(m[2], m[3]), blend(m[4], m[5])];
+    sides[m[1]] = color === 'white' ? { yours: round2(w), theirs: round2(-b) } : { yours: round2(b), theirs: round2(-w) };
   }
-  return terms;
+  return { terms, sides };
 }
 
 /** Material balance in pawns (1/3/3/5/9) from `color`'s side. */
@@ -492,19 +499,21 @@ async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
   ]);
   const [threat, threatFacts] = await opponentThreat(sf, pos, nodes, before, QUIET_THREAT);
   if (!played || !other) throw new Error('There is only one legal move here: nothing to compare.');
-  const pushes = {};
+  const pushes = {}, sides = {};
   const lineNodes = Math.max(Math.floor(nodes / 10), 100_000);
   const line = async (engine, mv) => {
     const { score, pv } = (await search(engine, pos, nodes, { moves: [mv] }))[0];
     const { leaf, leafSans } = lineToLeaf(pos, pv);
     pushes[mv] = pawnPushes(pos, pv, pos.turn);
+    const t = leaf ? await sf15Terms(sf15, leaf, pos.turn) : { terms: {}, sides: {} };
+    sides[mv] = t.sides;
     const out = {
       move: san(pos, mv), latest_sf_eval: scoreStr(score), cp: cpOf(score),
       line_with_evals: await lineWithEvals(engine, pos, pv, lineNodes),
       explained_at_position_after: leafSans.join(' '),
       explained_fen: leaf ? fenOf(leaf) : null,
       notes_at_that_position: leaf ? endNotes(leaf, pos.turn) : null,
-      sf15_terms: leaf ? await sf15Terms(sf15, leaf, pos.turn) : {},
+      sf15_terms: t.terms,
     };
     if (threat) out.if_opp_plays_the_threat_at_once = await answerToThreat(engine, pos, mv, threat, lineNodes);
     return out;
@@ -536,8 +545,17 @@ async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
     pawn_plan_only_in_better_line: onlyIn(pushes[other], pushes[played]),
     after_each_line: leafDiff(leafOf(lines.alternative), leafOf(lines.played), pos.turn),
     sf15_term_diff_alternative_minus_played: Object.fromEntries(diff.sort((x, y) => Math.abs(y[1]) - Math.abs(x[1]))),
+    sf15_term_diff_by_side: bySide(diff, sides[other], sides[played]),
     sf15_total_gap: hasTerms ? round2((a.Total ?? 0) - (p.Total ?? 0)) : null,
   };
+}
+
+/** The two-sided term differences of at least 0.25, split into your side's part and theirs (see sf15Terms), so
+    "their king is less safe" is not told as "your king is safer". Null when none. */
+function bySide(diff, a, p) {
+  const out = diff.filter(([k, d]) => Math.abs(d) >= 0.25 && a?.[k] && p?.[k])
+    .map(([k]) => [k, { yours: round2(a[k].yours - p[k].yours), theirs: round2(a[k].theirs - p[k].theirs) }]);
+  return out.length ? Object.fromEntries(out) : null;
 }
 
 // ---- the LLM ----
