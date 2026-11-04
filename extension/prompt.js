@@ -178,6 +178,9 @@ export function checkAnswer(answer, sheet) {
   const numbers = answer.match(/(?<![\w.])[+\-−]?\d+\.\d+|(?<![\w.])[+\-−]\d+\b|\bcentipawns?\b|\bcp\b/gi) ?? [];
   if (numbers.length) flag(14, `numbers: ${[...new Set(numbers)].join(' ')}`);
   if (/\bStockfish\b|\bSF ?1[59]\b/i.test(answer)) flag(14, 'engine named');
+  // a move still losing (eval below zero) called winning, an edge or better for you, not better than the played move
+  const absolute = sheet.alternative?.cp < 0 && answer.match(/\bwinning\b(?! (a|an|the|two|back|material|pawns?|pieces?)\b)|\ban? (small |slight |clear )?edge\b|\bbetter for you\b/gi);
+  if (absolute) flag(14, `absolute eval: ${[...new Set(absolute.map(w => w.toLowerCase()))].join(' ')}`);
   // rule 15, for the models that get it: the "Next time:" line closes the answer in at most 15 words
   const lines = answer.trim().split('\n'), advice = lines.findIndex(l => /^\**Next time:/.test(l));
   if (advice >= 0 && advice < lines.length - 1) flag(15, 'advice not last');
@@ -200,6 +203,11 @@ The fact sheet is the ground truth: judge the answer only against it, and do not
   are fine; do not list style issues.
 - invented_term_cause: true if the answer gives a cause for an SF 15 term difference that no structure label, capture
   label or end note up to "explained_at_position_after" supports.
+- cause: what the answer's main reason rests on. "labelled": a label or fact on the sheet (a capture, structure or attack
+  label, "opponent_threat", "prepares", "after_each_line", "notes_at_that_position"); "line": the moves or evals of a line
+  alone, with no label behind the reason; "term": an SF 15 term difference; "none": no reason given.
+- played_fault_quote: the sentence in the answer that says what is wrong with the played move, quoted exactly ("" if none).
+- better_gain_quote: the sentence in the answer that says what the better move gains, quoted exactly ("" if none).
 - note: one sentence on the answer's main weakness, or "" if it has none.
 - reference_reason (only when the message gives a reference reason, a strong player's summary of why the better move is
   better): "yes" if the answer gives that reason in any words, "partly" if it gives only part of it or only vaguely, "no"

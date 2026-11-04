@@ -45,9 +45,12 @@ const VERDICT = {
       },
     },
     invented_term_cause: { type: 'boolean' },
+    cause: { type: 'string', enum: ['labelled', 'line', 'term', 'none'] },
+    played_fault_quote: { type: 'string' },
+    better_gain_quote: { type: 'string' },
     note: { type: 'string' },
   },
-  required: ['decisive_point', 'false_claims', 'invented_term_cause', 'note'],
+  required: ['decisive_point', 'false_claims', 'invented_term_cause', 'cause', 'played_fault_quote', 'better_gain_quote', 'note'],
   additionalProperties: false,
 };
 const WITH_REFERENCE = {
@@ -133,9 +136,12 @@ if (pair) await pairAll(explained.filter(n => existsSync(`${pair}/${n}.txt`)));
 if (o.judge) await judgeAll(explained.filter(n => !existsSync(`${out}/${n}.judge.json`)));
 if (o.masked) for (const n of explained) mask(n);
 const verdicts = [], recovered = [];
+let pastCount = 0;
 const report = explained.map(n => {
   const r = readRun(out, n);
   const found = r ? problems(r) : ['failed'];
+  const past = r?.answer ? pastLeaf(r) : [];
+  if (past.length) { pastCount++; found.push(`past leaf: ${past.join(' ')}`); }
   if (existsSync(`${out}/${n}.judge.json`)) {
     const v = JSON.parse(readFileSync(`${out}/${n}.judge.json`, 'utf8'));
     verdicts.push(v);
@@ -156,6 +162,7 @@ console.log(`\n${answers.length} positions, ${equal.size} about equal (no LLM), 
   + `of the other ${report.length} flagged (see ${out}/summary.txt)`);
 const words = explained.map(n => (readRun(out, n)?.answer ?? '').split(/\s+/).filter(Boolean).length)
   .filter(Boolean).sort((x, y) => x - y);
+console.log(`answers quoting moves past the leaf: ${pastCount}`);
 if (words.length) console.log(`median ${words[words.length >> 1]} words, ${words.filter(w => w > 120).length} over 120`);
 if (verdicts.length) {
   const count = f => verdicts.filter(f).length;
@@ -163,6 +170,7 @@ if (verdicts.length) {
     + `partly ${count(v => v.decisive_point === 'partly')}, no ${count(v => v.decisive_point === 'no')}; `
     + `false claims in ${count(v => v.false_claims.length)} (${verdicts.reduce((n, v) => n + v.false_claims.length, 0)} total); `
     + `invented term causes in ${count(v => v.invented_term_cause)}`
+    + (verdicts.some(v => v.cause) ? `; cause ${['labelled', 'line', 'term', 'none'].map(c => `${c} ${count(v => v.cause === c)}`).join(', ')}` : '')
     + (verdicts.some(v => v.reference_reason) ? `; reference reason yes ${count(v => v.reference_reason === 'yes')}, `
       + `partly ${count(v => v.reference_reason === 'partly')}, no ${count(v => v.reference_reason === 'no')}` : ''));
 }
@@ -263,6 +271,12 @@ function compare(dir) {
   };
   const claims = d => names.reduce((s, n) => s + verdict(d, n).false_claims.length, 0);
   console.log(`${names.length} positions, A = ${dir}, B = ${out}; false claims ${claims(dir)} -> ${claims(out)} total`);
+  const causes = d => names.map(n => verdict(d, n).cause).filter(Boolean);
+  if (causes(dir).length && causes(out).length) {
+    const moved = {};
+    for (const n of names) { const k = `${verdict(dir, n).cause}->${verdict(out, n).cause}`; moved[k] = (moved[k] ?? 0) + 1; }
+    console.log(`cause A->B: ${Object.entries(moved).sort(([, x], [, y]) => y - x).map(([k, c]) => `${k} ${c}`).join(', ')}`);
+  }
   for (const [label, ns] of [['all', names], ['gate pass', names.filter(gate)], ['gate fail', names.filter(n => !gate(n))]]) {
     console.log(`${label} (${ns.length}): decisive yes ${flips(ns, v => v.decisive_point === 'yes')}`);
     console.log(`${' '.repeat(label.length + String(ns.length).length + 3)}  no false claim ${flips(ns, v => !v.false_claims.length)}`);
@@ -275,6 +289,25 @@ function readRun(dir, name) {
   const text = readFileSync(`${dir}/${name}.txt`, 'utf8'), cut = text.indexOf('\n\n');
   if (text.startsWith('ERROR')) return null;
   return cut < 0 ? { sheet: text, answer: null } : { sheet: text.slice(0, cut), answer: text.slice(cut + 2) };
+}
+
+/** Moves the answer quotes from past "explained_at_position_after" in either line: SANs that show up nowhere else on the
+    sheet (not before the leaf, not in a side line), so a hit means the answer leans on the deep, unlabelled part of a line. */
+function pastLeaf({ sheet, answer }) {
+  const s = JSON.parse(sheet);
+  let rest = sheet;
+  const deep = new Set();
+  for (const side of [s.played, s.alternative]) {
+    const cut = side.explained_at_position_after.split(' ').filter(t => !/^\d+\.+$/.test(t)).length;
+    const plies = [...side.line_with_evals.matchAll(/\d+\.(?:\.\.)? (?:you|opp) /g)];
+    if (plies.length <= cut) continue;
+    const tail = side.line_with_evals.slice(plies[cut].index);
+    rest = rest.replace(JSON.stringify(tail).slice(1, -1), '');
+    for (const m of tail.matchAll(/\d+\.(?:\.\.)? (?:you|opp) (\S+)/g)) deep.add(m[1].replace(/[+#]$/, ''));
+  }
+  const esc = m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return [...deep].filter(m => !new RegExp(`(?<![A-Za-z0-9])${esc(m)}(?![A-Za-z0-9])`).test(rest)
+    && new RegExp(`(?<![A-Za-z0-9])${esc(m)}(?![A-Za-z0-9])`).test(answer));
 }
 
 /** The rule checks on one run's answer. */

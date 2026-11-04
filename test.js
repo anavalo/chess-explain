@@ -49,6 +49,11 @@ assert.deepEqual(failed('Your king is in check.'), [5]);
 assert.deepEqual(failed('White must take back.'), [5]);
 assert.deepEqual(failed('12.Nf3 keeps +0.3, half a pawn (0.5) or 30 cp better.'), [14]);
 assert.deepEqual(failed('Stockfish likes 12.Nf3.'), [14]);
+// a still-losing better move called an edge or winning; "winning a pawn" is a capture, and a positive eval may say edge
+const losing = { ...sheet, alternative: { cp: -40 } };
+assert.deepEqual(checkAnswer('12.Nf3 is a small edge and winning.', losing).map(c => c.problem), ['absolute eval: a small edge winning']);
+assert.deepEqual(checkAnswer('12.Nf3 loses less, winning a pawn.', losing), []);
+assert.deepEqual(checkAnswer('12.Nf3 is a small edge.', { ...sheet, alternative: { cp: 40 } }), []);
 assert.deepEqual(failed('Next time: ask.\nThen play on.'), [15]);
 assert.deepEqual(failed(`Next time: ${'word '.repeat(16)}`), [15]);
 
@@ -193,7 +198,7 @@ try {
   const keys = new Set();
   const walk = v => { if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) { if (!Array.isArray(v)) keys.add(k); walk(x); } };
   sheets.forEach(walk);
-  const notFields = ['you', 'opp', 'check', 'yes', 'partly', 'no', 'tie']; // quoted labels and verdict values
+  const notFields = ['you', 'opp', 'check', 'yes', 'partly', 'no', 'tie', 'labelled', 'line', 'term', 'none']; // quoted labels and verdict values
   const quoted = new Set([...(LEGEND + JUDGE + PAIR).matchAll(/"([a-z][a-z0-9_]*)"/g)].map(m => m[1]));
   assert.deepEqual([...quoted].filter(k => !keys.has(k) && !notFields.includes(k)), []);
   console.log('ok');
