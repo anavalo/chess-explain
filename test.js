@@ -294,6 +294,8 @@ try {
   assert.equal(facts.verified_concepts, r.concepts);
   assert.equal(facts.prepares.move, 'Bxd5');
   assert.match(facts.prepares.line_if_played_at_once, /opp Qb6 \[attacks your queen on b2/);
+  // the panel links the at-once line's moves too: it starts at the explained position
+  assert.match(linkMoves('21.Bxd5 exd5 22.Rxd5 Qb6', [facts.prepares.line_if_played_at_once]), /data-line="Bxd5 exd5 Rxd5 Qb6">Qb6</);
   // Skoberne-Suarez 2012: Rf1 prepares Nxg6; at once the engine line avoids Qxh6, which fails to Qxf2+ (Rf1 guards f2).
   // With depth on and no claim list in the proposer's reply: the plain prompt, and the panel is told the reply was unread
   calls = [];

@@ -153,7 +153,8 @@ function render(data, b, apiKey) {
   const moves = el('div', 'card moves');
   moveRow(moves, 'best', 'engine move', data.best);
   moveRow(moves, 'compared', 'compared', data.compared);
-  const lines = [data.best, data.compared].flatMap(m => [m.line, m.threat_line]);
+  // every line that starts at the explained position (prepares.follow_up_fails starts mid-line, so it is left out)
+  const lines = [data.best, data.compared].flatMap(m => [m.line, m.threat_line]).concat(data.facts.prepares?.line_if_played_at_once);
   const answer = el('div', 'card answer', { html: linkMoves(md(data.text), lines) });
   // a move link plays its line on the lichess board, up to that move
   answer.onclick = async e => {
