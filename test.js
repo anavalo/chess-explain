@@ -34,7 +34,8 @@ assert.deepEqual(links(linkMoves(md('1.Ra7 Kd8 2.Kd2+ wins.\n\n1...Kd8 and Kd2. 
   ])), ['1.Ra7: Ra7', 'Kd8: Ra7 Kd8', '2.Kd2+: Ra7 Kd8 Kd2', '1.Rb1: Rb1', 'Kd8: Rb1 Kd8', '2.Kf2: Rb1 Kd8 Kf2']);
 // explainer prompt: Haiku gets no rule 15; the legend the judge sees holds no rules
 assert.ok(systemFor('claude-haiku-5-5').startsWith(LEGEND) && !systemFor('claude-haiku-5-5').includes('Next time:'));
-assert.ok(systemFor('claude-opus-5-5').startsWith(systemFor('claude-haiku-5-5')) && systemFor('claude-opus-5-5').includes('Next time:'));
+assert.ok(systemFor('claude-opus-5-5').includes('Next time:') && systemFor('claude-opus-5-5').includes('"loses less"'));
+assert.ok(systemFor('claude-haiku-5-5').includes('more than that "winning"') && !systemFor('claude-haiku-5-5').includes('"loses less"'));
 assert.ok(!LEGEND.includes('\nRules:'));
 // the legend quotes every label kind's wording (it wraps lines, so match across whitespace); a sample is the placeholders
 const legend = LEGEND.replace(/\s+/g, ' ');
