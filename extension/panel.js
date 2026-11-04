@@ -113,6 +113,11 @@ chrome.storage.local.get('model').then(({ model: m }) => {
   if (radio) radio.checked = true;
 });
 settings.onchange = e => e.target.name === 'model' && chrome.storage.local.set({ model: e.target.value });
+// positional depth: before the answer, the strongest model proposes positional ideas, the board checks them, and the
+// answer is written with the ideas that held. One more call; remembered like the model.
+const deep = document.getElementById('deep');
+chrome.storage.local.get('deep').then(({ deep: on }) => (deep.checked = !!on));
+deep.onchange = () => chrome.storage.local.set({ deep: deep.checked });
 const button = document.getElementById('go');
 
 // Builds an element; `html` is only ever our own markup or md() output, which escapes the model's text.
@@ -177,40 +182,10 @@ function render(data, b, apiKey) {
       const ul = el('ul', '', {}, d);
       for (const k of c.checked) el('li', '', { text: k }, ul);
     }
-  } else if (!aboutEqual(data.facts)) deeperButton(data, b, apiKey);
+  }
 }
 
 const esc = t => t.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`);
-
-// The deeper read: Opus proposes positional ideas for the same fact sheet, the board checks them, and the answer is
-// written again with the ideas that held. Two more calls (Opus proposes, the chosen model rewrites); the engines do not run again.
-function deeperButton(data, b, apiKey) {
-  const card = el('div', 'card deeper');
-  const go = el('button', 'secondary', { text: 'Deeper positional read' }, card);
-  el('p', 'note', { text: 'Opus looks for positional ideas, the board checks each one, and the answer is rewritten with those that hold. Two more calls: Opus proposes, then your chosen model rewrites. About the cost of one Opus explanation on top (two with Opus chosen), and up to a minute longer.' }, card);
-  go.onclick = async () => {
-    card.remove();
-    const s = spinner('Opus is looking for positional ideas');
-    try {
-      const { facts, concepts, read } = await withConcepts(data.facts, apiKey);
-      if (s.gone()) return s.done();
-      if (!concepts) {
-        s.done();
-        return el('div', 'card note', { text: read ? 'No positional idea passed the board checks. The answer above stands.' : 'Could not read the positional ideas from Opus\'s reply. The answer above stands.' });
-      }
-      s.set('Asking Claude');
-      const text = await askClaude(facts, apiKey, model(), true);
-      if (s.gone()) return s.done();
-      s.done();
-      out.replaceChildren();
-      render({ ...data, text, facts, concepts }, b, apiKey);
-    } catch (e) {
-      console.error(e);
-      s.done();
-      error(e.message);
-    }
-  };
-}
 
 async function explain() {
   const apiKey = await showKeyStatus();
@@ -232,10 +207,21 @@ async function explain() {
     const ready = await Promise.race([engines, crashed, new Promise((_, fail) =>
       setTimeout(() => fail(new Error('Stockfish did not start within 30 s.')), 30_000))]);
     s.set(`Analysing ${move}`);
-    const llm = facts => (s.set('Asking Claude'), askClaude(facts, apiKey, model()));
+    const depth = deep.checked;
+    let concepts = null, read = true;
+    const llm = async facts => {
+      if (depth) {
+        s.set('Looking for positional ideas');
+        ({ facts, concepts, read } = await withConcepts(facts, apiKey));
+      }
+      s.set('Asking Claude');
+      return askClaude(facts, apiKey, model(), !!concepts);
+    };
     const data = await Promise.race([handle(ready, { fen: b.fen, move, best: b.best }, llm), crashed]);
     out.replaceChildren();
-    render(data, b, apiKey);
+    render({ ...data, concepts }, b, apiKey);
+    if (depth && !concepts && !aboutEqual(data.facts))
+      el('div', 'card note', { text: read ? 'No positional idea passed the board checks.' : 'Could not read the positional ideas in the reply.' });
   } finally {
     s.done();
   }

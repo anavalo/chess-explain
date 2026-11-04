@@ -33,7 +33,7 @@ The panel's second pass on the same fact sheet: the concept proposer suggests po
 _Avoid_: deep mode, concept mode
 
 **Concept proposer**:
-The Opus call in a deeper read that names positional ideas for a fact sheet, each as a claim sentence plus board checks.
+The strongest-model call in a deeper read that names positional ideas for a fact sheet, each as a claim sentence plus board checks.
 _Avoid_: coach, concept LLM
 
 **Verified concept**:

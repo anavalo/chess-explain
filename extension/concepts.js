@@ -1,4 +1,4 @@
-// Positional concepts behind the panel's "Deeper positional read" button: Opus proposes concepts for a fact sheet, each
+// Positional concepts behind the panel's "Deeper positional read" button: the strongest model proposes concepts for a fact sheet, each
 // backed by board checks; verify() runs the checks and drops a claim unless every one holds; render() turns the
 // survivors into the sheet field "verified_concepts" (checks in words, sides as your/opp's).
 import { SquareSet, attacks, between, parseSquare, makeSquare, squareFile, squareRank } from './vendor/chessops.js';
@@ -6,7 +6,7 @@ import { ask, position, play, sanToUci } from './explain.js';
 import { isOutpost } from './features.js';
 import { PROPOSER } from './prompt.js';
 
-// the proposer is always Opus, whatever model writes the answer
+// the proposer is always the strongest model, whatever model writes the answer
 const PROPOSER_MODEL = 'claude-opus-5-5';
 const LIGHT = SquareSet.lightSquares();
 const VALUE = { pawn: 1, knight: 3, bishop: 3, rook: 5, queen: 9, king: 0 };
@@ -127,7 +127,7 @@ export function render(sheet, verified) {
   return out.length ? out : null;
 }
 
-/** The claim list in Opus's reply: the first [...] span that parses as an array, or null when there is none.
+/** The claim list in the proposer's reply: the first [...] span that parses as an array, or null when there is none.
     ponytail: tries every [ / ] pair, quadratic in brackets; fine for replies of a few KB. */
 export function claimsIn(reply) {
   const opens = [...reply.matchAll(/\[/g)].map(m => m.index), closes = [...reply.matchAll(/\]/g)].map(m => m.index).reverse();
@@ -138,7 +138,7 @@ export function claimsIn(reply) {
   return null;
 }
 
-/** The deeper read's sheet: Opus proposes concepts for `facts`, verify() keeps those whose checks all hold, and they go
+/** The deeper read's sheet: the proposer suggests concepts for `facts`, verify() keeps those whose checks all hold, and they go
     in as "verified_concepts" after "pawn_plan_only_in_better_line". Returns {facts, concepts, read} (concepts null when
     no claim survived; read false when the reply held no claim list). */
 export async function withConcepts(facts, apiKey) {
