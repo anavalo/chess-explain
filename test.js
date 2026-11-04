@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  Refused, checkNotPlaying, handle, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pins, sanToUci, sf15Terms, trapped,
+  Refused, checkNotPlaying, handle, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
 } from './extension/explain.js';
 import { KINDS, endNotes, imbalances, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { linkMoves, md } from './extension/md.js';
@@ -205,22 +205,21 @@ const RECORDED = new URL('test-engines.json', import.meta.url);
 const record = process.argv.includes('--record');
 
 /** The real engines, with every reply logged per engine as {cmds, lines}. Search output keeps only what search() reads:
-    per MultiPV line the last exact info line (else the last bound), without nps and time, and the bestmove. */
+    per MultiPV line the info line pickInfos() picks, cut to multipv, score and pv, and the bestmove. The caller gets the
+    same cut lines, so a recording run sees what a replay will. */
 async function recordingEngines() {
   const real = await nodeEngines(), log = { sf: [], sf2: [], sf15: [] };
-  const trim = lines => {
-    if (!lines.at(-1).startsWith('bestmove')) return lines;
-    const keep = new Map();
-    for (const l of lines) {
-      if (!/ pv /.test(l)) continue;
-      const k = l.match(/ multipv (\d+)/)?.[1] ?? '1', bound = / (lower|upper)bound /.test(l);
-      if (!bound || !keep.has(k) || keep.get(k).bound) keep.set(k, { l, bound });
-    }
-    // speed and time vary run to run; drop them so a re-recording is byte-identical
-    return [...[...keep.values()].map(x => x.l.replace(/ (nps|time) \d+/g, '')), lines.at(-1)];
-  };
-  const wrap = k => ({ until: async (cmds, done) => { const lines = await real[k].until(cmds, done); log[k].push({ cmds, lines: trim(lines) }); return lines; } });
-  return { sf: wrap('sf'), sf2: wrap('sf2'), sf15: wrap('sf15'), quit: real.quit, save: () => writeFileSync(RECORDED, JSON.stringify(log) + '\n') };
+  // depth, nodes, speed and the like vary with the build and machine: drop them so only a change in the facts fails CI.
+  // SF 15 prints a blank line after "Final evaluation", which lands in the next reply or nowhere, by how stdout is
+  // chunked: blank lines are dropped too (sf15Terms reads only the table rows)
+  const trim = lines => !lines.at(-1).startsWith('bestmove') ? lines.filter(l => l)
+    : [...pickInfos(lines).map(l => l.replace(/ (depth|seldepth|nodes|nps|time|hashfull|tbhits) \d+/g, '')), lines.at(-1)];
+  const wrap = k => ({ until: async (cmds, done) => { const lines = trim(await real[k].until(cmds, done)); log[k].push({ cmds, lines }); return lines; } });
+  // the two sides share sf15, and which one asks first depends on machine speed. Replay only keeps the order of
+  // replies to the same commands, so a stable sort by command keeps the file the same on every machine
+  const key = e => e.cmds.join('\n'), byCmds = (a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0;
+  const save = () => writeFileSync(RECORDED, JSON.stringify(Object.fromEntries(Object.entries(log).map(([k, v]) => [k, v.sort(byCmds)]))) + '\n');
+  return { sf: wrap('sf'), sf2: wrap('sf2'), sf15: wrap('sf15'), quit: real.quit, save };
 }
 
 /** Engines that answer from the recording: each engine replays its replies to the same commands, in the order recorded.
@@ -229,7 +228,8 @@ function recordedEngines() {
   const engine = rec => {
     const q = new Map();
     for (const { cmds, lines } of rec) { const key = cmds.join('\n'); q.set(key, [...(q.get(key) ?? []), lines]); }
-    return { until: async cmds => q.get(cmds.join('\n'))?.shift() ?? assert.fail(`not recorded (node test.js --record): ${cmds.join(' | ')}`) };
+    return { until: async cmds => q.get(cmds.join('\n'))?.shift()
+      ?? assert.fail(`${q.has(cmds.join('\n')) ? 'asked more times than' : 'not'} recorded (node test.js --record): ${cmds.join(' | ')}`) };
   };
   const log = JSON.parse(readFileSync(RECORDED, 'utf8'));
   return { sf: engine(log.sf), sf2: engine(log.sf2), sf15: engine(log.sf15), quit: () => {} };

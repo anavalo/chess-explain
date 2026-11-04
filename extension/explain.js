@@ -73,15 +73,26 @@ export async function search(sf, pos, nodes, { moves, multipv = 1 } = {}) {
     `position fen ${fenOf(pos)}`,
     `go nodes ${nodes}${moves ? ' searchmoves ' + moves.join(' ') : ''}`,
   ], l => l.startsWith('bestmove'));
-  const infos = [];
+  const infos = pickInfos(lines).map(l => {
+    const m = l.match(INFO);
+    return { score: { [m[1]]: Number(m[2]) }, pv: m[4].trim().split(' ') };
+  });
+  return infos.length ? infos : [{ score: { cp: 0 }, pv: [] }]; // no legal moves
+}
+
+const INFO = /^info .* score (cp|mate) (-?\d+)( lowerbound| upperbound)?.*? pv (.*)$/;
+
+/** The info lines search() reads, one per MultiPV line: the last exact one, else the last bound. A bound comes from
+    an unfinished iteration (score not exact, pv cut short), so an exact line always wins over it. */
+export function pickInfos(lines) {
+  const keep = [];
   for (const l of lines) {
-    const m = l.match(/^info .* score (cp|mate) (-?\d+)( lowerbound| upperbound)?.*? pv (.*)$/);
+    const m = l.match(INFO);
     if (!m) continue;
     const k = Number(l.match(/ multipv (\d+)/)?.[1] ?? 1) - 1;
-    // a bound comes from an unfinished iteration (score not exact, pv cut short): keep the last exact line instead
-    if (!m[3] || !infos[k] || infos[k].bound) infos[k] = { score: { [m[1]]: Number(m[2]) }, pv: m[4].trim().split(' '), bound: !!m[3] };
+    if (!m[3] || !keep[k] || keep[k].match(INFO)[3]) keep[k] = l;
   }
-  return infos.length ? infos : [{ score: { cp: 0 }, pv: [] }]; // no legal moves
+  return keep;
 }
 
 // ---- board helpers ----
@@ -296,9 +307,15 @@ export function moveLabels(b, next, uci, you) {
 }
 
 /** Reads a line lineWithEvals wrote back into moves: per row (the main line, then each "Why X fails:" line), the
-    plies as {no: '12.' or '12...', san, at: index in that row}. The one reader of that format: keep it next to the writer. */
-export const linePlies = text => text.split('\n').map(row => [...row.matchAll(/(\d+\.(?:\.\.)?) (?:you|opp) (\S+)/g)]
-  .map(m => ({ no: m[1], san: m[2], at: m.index })));
+    plies as {no: '12.' or '12...', san, at: index in `text`}. The one reader of that format: keep it next to the writer. */
+export const linePlies = text => {
+  let start = 0;
+  return text.split('\n').map(row => {
+    const at = start;
+    start += row.length + 1;
+    return [...row.matchAll(/(\d+\.(?:\.\.)?) (?:you|opp) (\S+)/g)].map(m => ({ no: m[1], san: m[2], at: at + m.index }));
+  });
+};
 
 /** '12. you Bc3 (-7.52) 12... opp Bb4 (-7.50) 13. you Bd2 (-7.68) 13... opp Qxa1 [takes rook, material -5] (-7.38) ...':
     Stockfish 19's eval after every move, from `you`'s view, for `maxPlies` plies and then on until an exchange is over.

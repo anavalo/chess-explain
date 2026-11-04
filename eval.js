@@ -299,7 +299,7 @@ function pastLeaf({ sheet, answer }) {
   const deep = new Set();
   for (const side of [s.played, s.alternative]) {
     const cut = side.explained_at_position_after.split(' ').filter(t => !/^\d+\.+$/.test(t)).length;
-    const plies = linePlies(side.line_with_evals)[0];
+    const plies = linePlies(side.line_with_evals).flat(); // all rows: a leaf at the main row's end still cuts the "Why" rows
     if (plies.length <= cut) continue;
     const tail = side.line_with_evals.slice(plies[cut].at); // the main row from the leaf on, and the "Why" rows after it
     rest = rest.replace(JSON.stringify(tail).slice(1, -1), '');
