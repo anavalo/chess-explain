@@ -562,7 +562,12 @@ function bySide(diff, a, p) {
 
 // ---- the LLM ----
 
-export async function explain(facts, apiKey, model = 'claude-haiku-5-5') {
+/** The answer for a fact sheet. `concepts`: the sheet has "verified_concepts" (a deeper read), so the prompt explains them. */
+export const explain = (facts, apiKey, model = 'claude-haiku-5-5', concepts = false) =>
+  ask(systemFor(model, concepts), facts, apiKey, model);
+
+/** One Messages API call: `system`, the fact sheet as the user message. Returns the reply's text. */
+export async function ask(system, facts, apiKey, model) {
   // Haiku has no server-side fallback; on the others a safety decline is retried on a fallback model
   const fallback = !model.startsWith('claude-haiku');
   const r = await fetch('https://api.anthropic.com/v1/messages', {
@@ -580,7 +585,7 @@ export async function explain(facts, apiKey, model = 'claude-haiku-5-5') {
       max_tokens: 16000,
       output_config: { effort: 'high' },
       ...fallback && { fallbacks: 'default' },
-      system: systemFor(model),
+      system,
       messages: [{ role: 'user', content: JSON.stringify(facts, null, 1) }],
     }),
     signal: AbortSignal.timeout(120_000),
@@ -635,7 +640,7 @@ export async function answer(facts, llm) {
     : llm(facts);
 }
 
-/** {fen, move, best} -> {text, best, compared}. move: the move to compare against (SAN or UCI), best: lichess's top
+/** {fen, move, best} -> {text, best, compared, facts}. move: the move to compare against (SAN or UCI), best: lichess's top
     move (UCI, optional). `llm(facts)` writes the answer; tests pass a stub. */
 export async function handle(engines, req, llm) {
   const facts = await factSheet(engines, req.fen, req.move, req.best, NODES);
@@ -643,7 +648,7 @@ export async function handle(engines, req, llm) {
     move: facts[k].move, eval: facts[k].latest_sf_eval, line: facts[k].line_with_evals,
     threat_line: facts[k].if_opp_plays_the_threat_at_once,
   });
-  return { text: await answer(facts, llm), best: line('alternative'), compared: line('played') };
+  return { text: await answer(facts, llm), best: line('alternative'), compared: line('played'), facts };
 }
 
 // ---- node ----

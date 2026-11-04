@@ -1,4 +1,5 @@
-import { explain as askClaude, checkNotPlaying, handle, sanToUci, startEngines, uciEngine } from './explain.js';
+import { aboutEqual, explain as askClaude, checkNotPlaying, handle, sanToUci, startEngines, uciEngine } from './explain.js';
+import { withConcepts } from './concepts.js';
 import { linkMoves, md } from './md.js';
 
 // Runs inside the lichess tab. The engine panel (.pv_box) only exists when lichess allows analysis,
@@ -133,7 +134,18 @@ function moveRow(parent, cls, label, m) {
   el('span', 'eval', { text: m.eval }, row);
 }
 
-function render(data, b) {
+// a spinner card whose label counts the seconds; returns {set(stage), done(), gone()}; gone: a new Explain cleared it
+function spinner(stage) {
+  const status = el('div', 'card status');
+  el('div', 'spinner', {}, status);
+  const label = el('span', '', { text: `${stage}…` }, status);
+  const started = Date.now();
+  const tick = () => (label.textContent = `${stage}… ${Math.round((Date.now() - started) / 1000)} s`);
+  const timer = setInterval(tick, 1000);
+  return { set: s => ((stage = s), tick()), done: () => { clearInterval(timer); status.remove(); }, gone: () => !status.isConnected };
+}
+
+function render(data, b, apiKey) {
   const moves = el('div', 'card moves');
   moveRow(moves, 'best', 'engine move', data.best);
   moveRow(moves, 'compared', 'compared', data.compared);
@@ -157,6 +169,47 @@ function render(data, b) {
       error(e.message);
     }
   };
+  if (data.concepts) {
+    const d = el('details', 'card', {});
+    el('summary', '', { text: 'Checked positional ideas' }, d);
+    for (const c of data.concepts) {
+      el('p', '', { html: `<strong>${esc(c.concept)}</strong>: ${esc(c.claim)}` }, d);
+      const ul = el('ul', '', {}, d);
+      for (const k of c.checked) el('li', '', { text: k }, ul);
+    }
+  } else if (!aboutEqual(data.facts)) deeperButton(data, b, apiKey);
+}
+
+const esc = t => t.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`);
+
+// The deeper read: Opus proposes positional ideas for the same fact sheet, the board checks them, and the answer is
+// written again with the ideas that held. One more Opus call; the engines do not run again.
+function deeperButton(data, b, apiKey) {
+  const card = el('div', 'card deeper');
+  const go = el('button', 'secondary', { text: 'Deeper positional read' }, card);
+  el('p', 'note', { text: 'Opus looks for positional ideas, the board checks each one, and the answer is rewritten with those that hold. One more Opus call, costing about what an Opus explanation does, and up to a minute longer.' }, card);
+  go.onclick = async () => {
+    card.remove();
+    const s = spinner('Opus is looking for positional ideas');
+    try {
+      const { facts, concepts } = await withConcepts(data.facts, apiKey);
+      if (s.gone()) return s.done();
+      if (!concepts) {
+        s.done();
+        return el('div', 'card note', { text: 'No positional idea passed the board checks. The answer above stands.' });
+      }
+      s.set('Asking Claude');
+      const text = await askClaude(facts, apiKey, model(), true);
+      if (s.gone()) return s.done();
+      s.done();
+      out.replaceChildren();
+      render({ ...data, text, facts, concepts }, b, apiKey);
+    } catch (e) {
+      console.error(e);
+      s.done();
+      error(e.message);
+    }
+  };
 }
 
 async function explain() {
@@ -171,25 +224,20 @@ async function explain() {
   const move = document.getElementById('move').value.trim() || b.next;
   if (!move) return error('No next game move here. Type a move to compare with.');
 
-  const status = el('div', 'card status');
-  el('div', 'spinner', {}, status);
-  let stage = 'Checking you are not in a game';
-  const label = el('span', '', { text: `${stage}…` }, status);
-  const started = Date.now();
-  const timer = setInterval(() => (label.textContent = `${stage}… ${Math.round((Date.now() - started) / 1000)} s`), 1000);
+  const s = spinner('Checking you are not in a game');
   try {
     await checkNotPlaying(b.user);
-    stage = 'Starting Stockfish';
+    s.set('Starting Stockfish');
     if (!engines) throw new Error('Stockfish cannot start: the panel is not cross-origin isolated. Reload the extension at chrome://extensions.');
     const ready = await Promise.race([engines, crashed, new Promise((_, fail) =>
       setTimeout(() => fail(new Error('Stockfish did not start within 30 s.')), 30_000))]);
-    stage = `Analysing ${move}`;
-    const llm = facts => ((stage = 'Asking Claude'), askClaude(facts, apiKey, model()));
+    s.set(`Analysing ${move}`);
+    const llm = facts => (s.set('Asking Claude'), askClaude(facts, apiKey, model()));
     const data = await Promise.race([handle(ready, { fen: b.fen, move, best: b.best }, llm), crashed]);
     out.replaceChildren();
-    render(data, b);
+    render(data, b, apiKey);
   } finally {
-    clearInterval(timer);
+    s.done();
   }
 }
 

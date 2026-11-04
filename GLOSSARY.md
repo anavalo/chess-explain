@@ -28,6 +28,18 @@ _Avoid_: feature (when only the root position is meant)
 The LLM that writes the answer from a fact sheet.
 _Avoid_: coach, model (when the role is meant)
 
+**Deeper read**:
+The panel's second pass on the same fact sheet: the concept proposer suggests positional ideas, the board checks them, and the explainer writes again with the verified concepts on the sheet.
+_Avoid_: deep mode, concept mode
+
+**Concept proposer**:
+The Opus call in a deeper read that names positional ideas for a fact sheet, each as a claim sentence plus board checks.
+_Avoid_: coach, concept LLM
+
+**Verified concept**:
+A proposed idea whose board checks all held, shown on the fact sheet in `verified_concepts` with its checks in words.
+_Avoid_: concept (when an unchecked proposal is meant)
+
 ## Prompt
 
 **Sheet legend**:

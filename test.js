@@ -8,7 +8,8 @@ import {
 } from './extension/explain.js';
 import { KINDS, endNotes, imbalances, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { linkMoves, md } from './extension/md.js';
-import { JUDGE, LEGEND, PAIR, checkAnswer, systemFor } from './extension/prompt.js';
+import { JUDGE, LEGEND, PAIR, PROPOSER, checkAnswer, systemFor } from './extension/prompt.js';
+import { verify, withConcepts } from './extension/concepts.js';
 
 const pos = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
 
@@ -138,6 +139,38 @@ const afterD5 = 'rnbqkbnr/ppp1pppp/8/3p4/4P3/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2';
 assert.deepEqual(lineToLeaf(pos(afterD5), sanToUci(afterD5, ['exd5', 'Qxd5'])).leafSans, ['2.exd5', 'Qxd5']);
 const afterE4 = 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1';
 assert.deepEqual(lineToLeaf(pos(afterE4), sanToUci(afterE4, ['e5', 'Nf3', 'Nc6'])).leafSans, ['1...e5', '2.Nf3', 'Nc6']);
+
+// deeper read: a claim survives only if every check holds; the survivors go in after the pawn plan, in words
+const cSheet = {
+  fen: start, side_to_move: 'White', pawn_plan_only_in_better_line: null, latest_sf_gap: 0.5,
+  played: { line_with_evals: '1. you e4 (+0.30) 1... opp e5 (+0.30)', explained_fen: null },
+  alternative: { line_with_evals: '1. you d4 (+0.30) 1... opp d5 (+0.30)', explained_at_position_after: '1.d4 d5', explained_fen: 'rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq d6 0 2' },
+};
+const claims = [
+  { concept: 'centre', claim: 'd4 takes the centre.', checks: [
+    { pos: 'better:1', op: 'piece_on', args: { square: 'd4' }, expect: 'white pawn' },
+    { pos: 'played:1', op: 'piece_on', args: { square: 'd4' }, expect: 'empty' },
+    { pos: 'better_leaf', op: 'attackers', args: { square: 'e5', side: 'white' }, expect: { min: 1 } }] },
+  { concept: 'wrong', claim: 'x', checks: [{ pos: 'start', op: 'piece_on', args: { square: 'd4' }, expect: 'white pawn' }] },
+  { concept: 'broken', claim: 'y', checks: [{ pos: 'start', op: 'attacks', args: { from: 'e4', to: 'e5' }, expect: true }] },
+];
+const v = verify(cSheet, claims);
+assert.deepEqual(v.map(c => [c.verified, c.contrast]), [[true, true], [false, false], [false, false]]);
+assert.match(v[2].checks[0].error, /no piece on e4/);
+let sent;
+globalThis.fetch = async (url, { body }) => ((sent = JSON.parse(body)),
+  Response.json({ stop_reason: 'end_turn', content: [{ type: 'text', text: `Here:\n${JSON.stringify(claims)}` }] }));
+const deeper = await withConcepts(cSheet, 'key');
+assert.equal(sent.model, 'claude-opus-5-5');
+assert.equal(sent.system, PROPOSER);
+assert.deepEqual(Object.keys(deeper.facts), ['fen', 'side_to_move', 'pawn_plan_only_in_better_line', 'verified_concepts', 'latest_sf_gap', 'played', 'alternative']);
+assert.deepEqual(deeper.concepts, [{ concept: 'centre', claim: 'd4 takes the centre.', checked: [
+  'after 1.d4: d4: your pawn', 'after 1.e4: d4: empty', 'after 1.d4 d5: your pieces attacking e5: 1'] }]);
+globalThis.fetch = async () => Response.json({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'no claims' }] });
+assert.equal((await withConcepts(cSheet, 'key')).concepts, null);
+// the deeper read's prompt is the plain one plus the "verified_concepts" entry
+for (const m of ['claude-haiku-5-5', 'claude-opus-5-5'])
+  assert.ok(systemFor(m, true).includes('"verified_concepts"') && systemFor(m, true).replace(/\n- "verified_concepts"[^]*?swing in the lines still comes first\./, '') === systemFor(m));
 
 // fair play, with a lichess status stub (the real user may be in a game when CI runs): fail closed
 globalThis.fetch = async url => {

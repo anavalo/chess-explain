@@ -63,6 +63,13 @@ browser for Anthropic (the explanation) and lichess (the fair-play check).
 When both moves are within 0.3 pawns, it says so and skips the LLM call. Sometimes the honest answer is
 "either move is fine".
 
+Under the answer, **Deeper positional read** asks Claude Opus for the positional ideas behind the better
+move (a weak square, a bad bishop, an open file), each backed by board checks: which piece stands where,
+what it attacks, whether a pawn can ever cover a square. The extension runs every check on the board and
+throws away any idea with a check that does not hold, then rewrites the answer with the ideas that passed.
+On 39 positions from Silman's *How to Reassess Your Chess*, this took Opus from giving the book's reason in
+14 of 78 answers to 34, with no clear rise in false claims.
+
 ## Fair play
 
 Using engine help during a game you are playing is cheating, and this tool would rather not be your
@@ -111,7 +118,8 @@ which comes to a fraction of a cent. Even if the model used its whole 16,000-tok
 explanation would cost less than one cent.
 
 Settings also offer Claude Opus 5.5, at about 7 cents an explanation. On the 132-position eval set below it
-made about half as many false or unsupported claims as Haiku and found the decisive point more often.
+made about half as many false or unsupported claims as Haiku and found the decisive point more often. A
+deeper positional read adds one more Opus call, about the cost of an Opus explanation.
 
 ## Development
 
@@ -121,7 +129,8 @@ The extension is about 1,000 lines of plain JavaScript, with no framework and no
 | -------------------------- | -------------------------------------------------------------------------- |
 | `extension/explain.js`     | The core: engine I/O, the fact builder and the Claude call. Runs in the side panel and in Node. |
 | `extension/features.js`    | The pawn and piece features, the one table that words them as labels, and the imbalances built from them. |
-| `extension/prompt.js`      | The explainer prompt (sheet legend and rules) and the rule checks the eval runs on each answer. |
+| `extension/prompt.js`      | The explainer prompt (sheet legend and rules), the concept proposer's prompt and the rule checks the eval runs on each answer. |
+| `extension/concepts.js`    | The deeper read: the board checks behind each positional idea Opus proposes, and their wording on the fact sheet. |
 | `extension/panel.js`       | The side panel UI: reads the lichess board and renders the answer.         |
 | `extension/md.js`          | The small Markdown renderer and the move links in the answer.              |
 | `extension/background.js`  | Shows the side panel on lichess tabs only.                                 |

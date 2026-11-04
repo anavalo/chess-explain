@@ -154,10 +154,22 @@ const ADVICE = `
    stand after each move. Never give general advice the facts do not tie to this position. The advice comes after
    everything else and never replaces the opening sentence or the main reason; the 120-word limit includes it.`;
 
-/** The explainer prompt for `model`: every model gets the legend and rules 1-14, all but Haiku also rule 15. */
-export function systemFor(model) {
-  return LEGEND + RULES + (model.startsWith('claude-haiku') ? '' : ADVICE);
+/** The legend entry for "verified_concepts", which only a deeper read's sheet has (see concepts.js). */
+const CONCEPTS = `
+- "verified_concepts" (when not null) are positional ideas a coach proposed for this position, each backed by board facts
+  that a program checked ("checked": every one of them is true, at the position named before the colon). The facts are
+  ground truth; the "claim" sentence is the coach's reading of them. When a concept explains why the better move is better,
+  use it as the reason or part of it, in the words of its checked facts ("after ...g6 no pawn of yours can ever cover h6"),
+  and do not add what the facts do not show. A concept never overrides the engine lines: a threat, a tactic or a material
+  swing in the lines still comes first.`;
+
+/** The explainer prompt for `model`: every model gets the legend and rules 1-14, all but Haiku also rule 15. A deeper
+    read (`concepts`) also gets the "verified_concepts" entry, after the pawn plan's. */
+export function systemFor(model, concepts = false) {
+  const legend = concepts ? LEGEND.replace(PAWN_PLAN_END, PAWN_PLAN_END + CONCEPTS) : LEGEND;
+  return legend + RULES + (model.startsWith('claude-haiku') ? '' : ADVICE);
 }
+const PAWN_PLAN_END = "better move cleared that pawn's way. See rule 13.";
 
 /** Rule checks: mechanical tests of one answer against its fact sheet. They catch format slips, not wrong chess.
     Returns [{rule, problem}], empty when the answer passes. */
@@ -191,6 +203,43 @@ export function checkAnswer(answer, sheet) {
   if (adviceWords > 15) flag(15, `advice ${adviceWords} words`);
   return found;
 }
+
+/** The concept proposer (Opus) behind the deeper read: it gets the fact sheet and replies with claims for verify(). */
+export const PROPOSER = `You are a strong chess coach. You get a fact sheet (JSON) about one position: the side to move ("you") played the move in
+"played" and the engine prefers the move in "alternative". The sheet holds the engine lines with labels, but its labels
+cover only some positional ideas. Your job: name the positional concept (or two or three) that best explains why the better
+move is better, and back each one with board checks that a program will run. A claim whose checks fail is thrown away, so
+make every check something that is literally true on the board; never guess.
+
+Positions a check can name:
+- "start": the position before any move (the sheet's "fen").
+- "played:N" / "better:N": after the first N plies of that move's main line ("line_with_evals"; ply 1 is the move itself).
+- "played_leaf" / "better_leaf": the position at "explained_at_position_after" of that line ("explained_fen").
+
+Checks (op, args -> value):
+- piece_on {square} -> "white knight", "black pawn", ... or "empty"
+- attacks {from, to} -> true/false (the piece on \`from\` attacks \`to\`; pawns: their capture squares)
+- attackers {square, side} -> how many of that side's pieces attack the square
+- defenders {square} -> how many pieces of the owner of the piece on that square defend it
+- piece_squares {square} -> squares the piece attacks that are not taken by its own pieces (its scope)
+- pawn_can_ever_attack {square, side} -> can any pawn of that side ever attack the square (a pawn on a neighbouring file not yet past it)
+- outpost {square, side} -> pawn-protected square on that side's 4th-6th rank that no enemy pawn can ever attack
+- pawns_on_colour {side, colour: "light"|"dark"} -> how many of that side's pawns stand on that square colour
+- file_state {file: "a".."h"} -> "open", "semi-open for white", "semi-open for black" or "closed"
+- ray_clear {from, to} -> true if no piece stands between the two squares (they must share a line or diagonal)
+- passed {square} -> is the pawn on that square passed
+- king_square {side} -> e.g. "g8"
+- undeveloped_minors {side} -> how many knights and bishops are still on their starting squares
+- material {side} -> pawns 1, minors 3, rooks 5, queen 9
+- legal_moves {square} -> legal moves of that piece (only meaningful when its side is to move in that position)
+Sides are "white" or "black" (not "you"). "expect" is the exact value, or {"min": n} / {"max": n} for numbers.
+
+Prefer contrastive claims: the same check in the better line and the played line (or before and after a move) giving
+different results, so the claim shows what the move changes. A claim may use up to 6 checks.
+Work out the board carefully from the FENs and lines; you may reason step by step before answering.
+
+Reply with only JSON: [{"concept": "<short name, e.g. weak dark squares around the king>",
+ "claim": "<one sentence a club player would read>", "checks": [{"pos": "...", "op": "...", "args": {...}, "expect": ...}]}]`;
 
 /** The judge prompts eval.js sends to Opus: grade one answer (JUDGE) or compare two (PAIR) against the fact sheet. */
 export const JUDGE = `You grade answers from a chess explainer. You get the fact sheet the explainer was given (JSON) and its answer.
