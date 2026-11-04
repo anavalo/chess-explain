@@ -186,13 +186,13 @@ try {
   assert.match(linkMoves('2.gxf3', [r.compared.line]), /data-line="b4 Bxf3 gxf3"/);
   // Kramnik-Leko 2001: Qa1 prepares Bxd5, which fails at once to Qb6 hitting the queen on b2
   r = await ask('2rq1rk1/R2n1ppp/4p3/2pb4/5B2/6P1/1Q2PPBP/3R2K1 w - - 0 21', 'e4', 'b2a1');
-  assert.equal(facts.alternative.prepares.move, 'Bxd5');
-  assert.match(facts.alternative.prepares.line_if_played_at_once, /opp Qb6 \[attacks your queen on b2/);
+  assert.equal(facts.prepares.move, 'Bxd5');
+  assert.match(facts.prepares.line_if_played_at_once, /opp Qb6 \[attacks your queen on b2/);
   // Skoberne-Suarez 2012: Rf1 prepares Nxg6; at once the engine line avoids Qxh6, which fails to Qxf2+ (Rf1 guards f2)
   r = await ask('r4rkb/ppR5/3Np1pp/4n3/5N2/4Q3/q4PPP/3R2K1 w - - 2 24', 'Re7', 'd1f1');
-  assert.equal(facts.alternative.prepares.move, 'Nxg6');
-  assert.match(facts.alternative.prepares.follow_up_fails, /^Why 25\.Qxh6 fails: 25\. you Qxh6 .* 25\.\.\. opp Qxf2\+ /);
-  assert.equal(facts.alternative.prepares.better_move_guards, 'f2');
+  assert.equal(facts.prepares.move, 'Nxg6');
+  assert.match(facts.prepares.follow_up_fails, /^Why 25\.Qxh6 fails: 25\. you Qxh6 .* 25\.\.\. opp Qxf2\+ /);
+  assert.equal(facts.prepares.better_move_guards, 'f2');
 
   // every field the explainer and judge prompts quote is on a fact sheet built above, so a renamed field fails here
   const keys = new Set();

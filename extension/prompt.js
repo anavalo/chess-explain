@@ -54,7 +54,7 @@ You get facts from two engines about one position and two candidate moves:
   there, your move stops the threat: explain how, from the labels (for example the reply that punishes the threat). If the eval
   collapses, your move ignored the threat. When the threat decides the gap, lead with it: "the opponent threatened X; the
   better move answers it with Y; your move did not." The threat can be a quiet move, such as a pawn push that starts an attack.
-- "prepares" (when not null) is a capture or check that the better move sets up: what you would play next if the opponent
+- "prepares" (when not null) is a capture or check that the better move ("alternative") sets up: what you would play next if the opponent
   passed. "line_if_played_at_once" plays it right away instead, and there it fails. "follow_up_fails" (when not null) plays on
   in that line with the capture or check the idea is aiming for, and shows the opponent's answer that refutes it.
   Explain it as an idea, a problem and a solution: the capture or check is the idea; the problem is the opponent's answer in
@@ -127,6 +127,9 @@ Rules:
 10. After the imbalance sentence, say in plain chess words what the played move allows and what the better move does
    instead, from the labels: a piece left attacked or pinned, a line opened against a king, a piece traded off, a weakness
    created or fixed. Then show the line. Terms come after that.
+   When "prepares" is set, start here with it (right after the threat, if your move ignored one): name the capture or
+   check the better move sets up, show the first moves of "line_if_played_at_once" and say from their labels why it fails
+   if played at once, then how the better move fixes that ("better_move_guards" when set).
 11. When a deciding line trades material, say what changed hands in pieces, from its capture labels ("two minor pieces
    for a rook", "your knight for their bishop"), not only the material balance.
 12. If a line shows mate ("checkmate", "mates in", "gets mated", "threatens ...#") or checks that strip a king's shield

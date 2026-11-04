@@ -519,10 +519,11 @@ async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
     return out;
   };
   const lines = {};
+  let prep;
   await Promise.all([
     line(sf, played).then(l => (lines.played = l)),
     line(sf2, other).then(async l => {
-      l.prepares = await prepares(sf2, pos, other, played, l.cp, lineNodes);
+      prep = await prepares(sf2, pos, other, played, l.cp, lineNodes);
       lines.alternative = l;
     }),
   ]);
@@ -542,6 +543,7 @@ async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
     played: lines.played,
     alternative: lines.alternative,
     latest_sf_gap: round2((lines.alternative.cp - lines.played.cp) / 100),
+    prepares: prep,
     pawn_plan_only_in_better_line: onlyIn(pushes[other], pushes[played]),
     after_each_line: leafDiff(leafOf(lines.alternative), leafOf(lines.played), pos.turn),
     sf15_term_diff_alternative_minus_played: Object.fromEntries(diff.sort((x, y) => Math.abs(y[1]) - Math.abs(x[1]))),
