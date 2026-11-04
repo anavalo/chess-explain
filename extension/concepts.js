@@ -2,7 +2,7 @@
 // backed by board checks; verify() runs the checks and drops a claim unless every one holds; render() turns the
 // survivors into the sheet field "verified_concepts" (checks in words, sides as your/opp's).
 import { SquareSet, attacks, between, parseSquare, makeSquare, squareFile, squareRank } from './vendor/chessops.js';
-import { ask, position, play, sanToUci } from './explain.js';
+import { ask, linePlies, position, play, sanToUci } from './explain.js';
 import { isOutpost } from './features.js';
 import { PROPOSER } from './prompt.js';
 
@@ -15,8 +15,8 @@ const side = s => { const v = String(s).toLowerCase(); if (v === 'white' || v ==
 const sq = s => { const v = parseSquare(s); if (v === undefined) throw new Error(`bad square ${s}`); return v; };
 const pieceAt = (b, s) => { const p = b.get(s); if (!p) throw new Error(`no piece on ${makeSquare(s)}`); return p; };
 const attackersOf = (pos, s, color) => pos.kingAttackers(s, color, pos.board.occupied).size();
-// the SANs of a line's main row, with their move numbers: [{num: '1.', san: 'e4'}, {num: '1...', san: 'e5'}]
-const lineSans = l => [...l.line_with_evals.split('\n')[0].matchAll(/\b(\d+\.(?:\.\.)?) (?:you|opp) (\S+?)(?= \[| \(|$)/g)].map(m => ({ num: m[1], san: m[2] }));
+// the plies of a line's main row: [{no: '1.', san: 'e4'}, {no: '1...', san: 'e5'}]
+const lineSans = l => linePlies(l.line_with_evals)[0];
 
 /** The primitives: (board position, args) -> a value the check's `expect` is compared with. */
 const OPS = {
@@ -102,7 +102,7 @@ export function render(sheet, verified) {
   const where = p => {
     if (p === 'start') return 'now, before your move';
     const m = /^(played|better)(?:_leaf|:(\d+))$/.exec(p), l = m[1] === 'played' ? sheet.played : sheet.alternative;
-    const sans = m[2] === undefined ? l.explained_at_position_after : lineSans(l).slice(0, Number(m[2])).map(m => m.num + m.san).join(' ');
+    const sans = m[2] === undefined ? l.explained_at_position_after : lineSans(l).slice(0, Number(m[2])).map(m => m.no + m.san).join(' ');
     return `after ${sans}`;
   };
   const say = ({ op, args: a, value: v }) => ({

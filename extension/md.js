@@ -1,5 +1,7 @@
 // Minimal markdown for the model's answers: paragraphs, - / 1. lists, # headings, **bold**, *italic*, `code`.
 // HTML is escaped first, so the only tags in the output are the ones added here.
+import { linePlies } from './explain.js';
+
 export function md(text) {
   const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
   const inline = s => esc(s)
@@ -42,8 +44,7 @@ const TOKEN = new RegExp(`(${NO})?(${SAN})`, 'g');
 export function linkMoves(html, lines) {
   // every line as [{no, san}]; a "Why X fails:" line branches off its main line at its first move
   const vars = lines.filter(Boolean).flatMap(text => {
-    const [main, ...whys] = text.split('\n')
-      .map(l => [...l.matchAll(/(\d+\.(?:\.\.)?) (?:you|opp) (\S+)/g)].map(m => ({ no: m[1], san: m[2].replace(/[+#]/g, '') })));
+    const [main, ...whys] = linePlies(text).map(row => row.map(({ no, san }) => ({ no, san: san.replace(/[+#]/g, '') })));
     return [main, ...whys.map(w => [...main.slice(0, main.findIndex(m => m.no === w[0]?.no)), ...w])];
   });
   return html.replace(RUN, run => {

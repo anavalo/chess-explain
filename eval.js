@@ -28,7 +28,7 @@ import { basename } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
-import { NODES, aboutEqual, answer, explain, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
+import { NODES, aboutEqual, answer, explain, linePlies, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
 import { JUDGE, PAIR, checkAnswer, systemFor } from './extension/prompt.js';
 
 // ---- the judge (its prompts are in extension/prompt.js) ----
@@ -299,11 +299,11 @@ function pastLeaf({ sheet, answer }) {
   const deep = new Set();
   for (const side of [s.played, s.alternative]) {
     const cut = side.explained_at_position_after.split(' ').filter(t => !/^\d+\.+$/.test(t)).length;
-    const plies = [...side.line_with_evals.matchAll(/\d+\.(?:\.\.)? (?:you|opp) /g)];
+    const plies = linePlies(side.line_with_evals)[0];
     if (plies.length <= cut) continue;
-    const tail = side.line_with_evals.slice(plies[cut].index);
+    const tail = side.line_with_evals.slice(plies[cut].at); // the main row from the leaf on, and the "Why" rows after it
     rest = rest.replace(JSON.stringify(tail).slice(1, -1), '');
-    for (const m of tail.matchAll(/\d+\.(?:\.\.)? (?:you|opp) (\S+)/g)) deep.add(m[1].replace(/[+#]$/, ''));
+    for (const p of linePlies(tail).flat()) deep.add(p.san.replace(/[+#]$/, ''));
   }
   const esc = m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return [...deep].filter(m => !new RegExp(`(?<![A-Za-z0-9])${esc(m)}(?![A-Za-z0-9])`).test(rest)

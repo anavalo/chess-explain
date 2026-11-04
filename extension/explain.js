@@ -295,6 +295,11 @@ export function moveLabels(b, next, uci, you) {
   return labels;
 }
 
+/** Reads a line lineWithEvals wrote back into moves: per row (the main line, then each "Why X fails:" line), the
+    plies as {no: '12.' or '12...', san, at: index in that row}. The one reader of that format: keep it next to the writer. */
+export const linePlies = text => text.split('\n').map(row => [...row.matchAll(/(\d+\.(?:\.\.)?) (?:you|opp) (\S+)/g)]
+  .map(m => ({ no: m[1], san: m[2], at: m.index })));
+
 /** '12. you Bc3 (-7.52) 12... opp Bb4 (-7.50) 13. you Bd2 (-7.68) 13... opp Qxa1 [takes rook, material -5] (-7.38) ...':
     Stockfish 19's eval after every move, from `you`'s view, for `maxPlies` plies and then on until an exchange is over.
     A skipped recapture that loses is played out on its own line below. `nested` is set for those lines, so they do not branch again. */
