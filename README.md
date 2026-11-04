@@ -60,7 +60,7 @@ browser for Anthropic (the explanation) and lichess (the fair-play check).
    inventing moves or squares that are not in the facts. Chess commentary is a field with a long
    tradition of confident nonsense; we try not to add to it.
 
-When both moves are within 0.3 pawns, it says so and skips the LLM call. Sometimes the honest answer is
+When both moves are within 0.3 pawns, it says so and skips the rest of the analysis and the LLM call. Sometimes the honest answer is
 "either move is fine".
 
 With the **Positional depth** switch on (under the Explain button), the extension first asks the strongest Claude model for the positional ideas behind the better

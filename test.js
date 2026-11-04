@@ -260,6 +260,7 @@ try {
   r = await ask('r4rk1/p1p2pp1/1pnb1q1p/3p1b2/P2P4/1NP2N2/1P2BPPP/R2QR1K1 b - - 0 13', 'Rfe8', 'c6e7', { depth: true });
   assert.match(r.text, /about as good as/); // equal moves: no LLM call, plain verdict, even with depth on
   assert.deepEqual([calls, r.concepts, r.read], [[], null, undefined]);
+  assert.deepEqual(Object.keys(r.facts), ['fen', 'side_to_move', 'played', 'alternative', 'latest_sf_gap']); // stops at the scores
   r = await ask('rn3rk1/p1N2pbp/1p2p1p1/2p1n1B1/2P5/5b2/PP2BPPP/3R1RK1 w - - 0 15', 'Nxa8', 'g2f3');
   assert.match(r.compared.line, /opp Bxe2 \[takes bishop, attacks your rook on d1, attacks your rook on f1/); // fork
   r = await ask('r3k1nr/4pp1p/p1ppb1p1/q3b3/N1B1P3/1P6/P1P2PPP/R1BQ1RK1 w kq - 1 12', 'Bd5', 'c1d2');

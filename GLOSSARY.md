@@ -33,7 +33,7 @@ What the user gets for one fact sheet: a plain verdict when the two moves are ab
 _Avoid_: reply, response
 
 **About equal**:
-Two moves whose engine gap is too small to explain: the answer is a plain verdict and no explainer runs.
+Two moves whose engine gap is too small to explain: the fact sheet stops at the two moves' scores, the answer is a plain verdict and no explainer runs.
 _Avoid_: draw, equal position
 
 **Deeper read**:

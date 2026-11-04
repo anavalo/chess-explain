@@ -515,7 +515,8 @@ async function otherBest(sf, pos, not, nodes) {
 
 /** `played` and `vs` are UCI moves; `vs` null means the engine's best other move.
     The played move's line runs on `sf` and the alternative's on `sf2` at the same time. Each engine always gets the
-    same searches in the same order, so its hash table carries the same history and the lines stay the same every run. */
+    same searches in the same order, so its hash table carries the same history and the lines stay the same every run.
+    When the two moves are about equal the sheet stops at their scores, the only facts their answer needs. */
 async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
   const pos = position(fen);
   const [before, other] = await Promise.all([
@@ -524,16 +525,22 @@ async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
   ]);
   const [threat, threatFacts] = await opponentThreat(sf, pos, nodes, before, QUIET_THREAT);
   if (!played || !other) throw new Error('There is only one legal move here: nothing to compare.');
+  // each move's own search comes first in its line, as it always has, so the about-equal check costs no extra search
+  const [rp, ra] = await Promise.all([[sf, played], [sf2, other]].map(([e, mv]) => search(e, pos, nodes, { moves: [mv] }).then(r => r[0])));
+  const gap = round2((cpOf(ra.score) - cpOf(rp.score)) / 100);
+  const side = pos.turn === 'white' ? 'White' : 'Black';
+  const scored = (mv, { score }) => ({ move: san(pos, mv), latest_sf_eval: scoreStr(score), cp: cpOf(score) });
+  const equal = { fen, side_to_move: side, played: scored(played, rp), alternative: scored(other, ra), latest_sf_gap: gap };
+  if (aboutEqual(equal)) return equal;
   const pushes = {}, sides = {};
   const lineNodes = Math.max(Math.floor(nodes / 10), 100_000);
-  const line = async (engine, mv) => {
-    const { score, pv } = (await search(engine, pos, nodes, { moves: [mv] }))[0];
+  const line = async (engine, mv, { score, pv }) => {
     const { leaf, leafSans } = lineToLeaf(pos, pv);
     pushes[mv] = pawnPushes(pos, pv, pos.turn);
     const t = leaf ? await sf15Terms(sf15, leaf, pos.turn) : { terms: {}, sides: {} };
     sides[mv] = t.sides;
     const out = {
-      move: san(pos, mv), latest_sf_eval: scoreStr(score), cp: cpOf(score),
+      ...scored(mv, { score }),
       line_with_evals: await lineWithEvals(engine, pos, pv, lineNodes),
       explained_at_position_after: leafSans.join(' '),
       explained_fen: leaf ? fenOf(leaf) : null,
@@ -546,8 +553,8 @@ async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
   const lines = {};
   let prep;
   await Promise.all([
-    line(sf, played).then(l => (lines.played = l)),
-    line(sf2, other).then(async l => {
+    line(sf, played, rp).then(l => (lines.played = l)),
+    line(sf2, other, ra).then(async l => {
       prep = await prepares(sf2, pos, other, played, l.cp, lineNodes);
       lines.alternative = l;
     }),
@@ -558,7 +565,7 @@ async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
   const leafOf = l => l.explained_fen && position(l.explained_fen);
   return {
     fen,
-    side_to_move: pos.turn === 'white' ? 'White' : 'Black',
+    side_to_move: side,
     eval_before_any_move: scoreStr(before),
     position_before_move: positionBefore(pos),
     imbalances: imbalances(pos),
@@ -567,7 +574,7 @@ async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
     values_are_from: "side to move's point of view, in pawns",
     played: lines.played,
     alternative: lines.alternative,
-    latest_sf_gap: round2((lines.alternative.cp - lines.played.cp) / 100),
+    latest_sf_gap: gap,
     prepares: prep,
     pawn_plan_only_in_better_line: onlyIn(pushes[other], pushes[played]),
     after_each_line: leafDiff(leafOf(lines.alternative), leafOf(lines.played), pos.turn),
@@ -650,7 +657,7 @@ export async function factSheet(engines, fen, move, best = null, nodes = NODES) 
 }
 
 /** True when the two moves are too close to explain: the engines' lines differ for reasons too small, and a story
-    would only invent one. */
+    would only invent one. Such a sheet holds only the two moves' scores (older saved sheets hold everything). */
 export const aboutEqual = facts => Math.abs(facts.latest_sf_gap) < EQUAL_GAP;
 
 /** The answer for a fact sheet: a plain verdict when the moves are about equal (no LLM call), else the explainer's text,
