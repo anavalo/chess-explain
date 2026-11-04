@@ -1,7 +1,11 @@
-// Checks the fact builder and request handling with the LLM stubbed out. Uses the real WASM engines on one
-// thread (node-limited single-thread search is deterministic); lichess's status API is stubbed.
-// usage: node test.js   (about 3 minutes)
+// Checks the fact builder and request handling with the LLM stubbed out; lichess's status API is stubbed.
+// The engines are replayed from test-engines.json, the UCI output recorded from the real WASM engines on one thread
+// (node-limited single-thread search is deterministic). A change that sends the engines a new command fails with
+// "not recorded": run with --record to search again with the real engines (about 3 minutes) and, if every test
+// passes, rewrite the file.
+// usage: node test.js [--record]
 import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
   Refused, checkNotPlaying, handle, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pins, sanToUci, sf15Terms, trapped,
@@ -197,7 +201,41 @@ await checkNotPlaying('fable6');
 for (const user of [undefined, 'zz_no_such_user_zz', 'in_a_game']) await assert.rejects(checkNotPlaying(user), Refused);
 delete globalThis.fetch; // nothing past here may call out
 
-const engines = await nodeEngines();
+const RECORDED = new URL('test-engines.json', import.meta.url);
+const record = process.argv.includes('--record');
+
+/** The real engines, with every reply logged per engine as {cmds, lines}. Search output keeps only what search() reads:
+    per MultiPV line the last exact info line (else the last bound), without nps and time, and the bestmove. */
+async function recordingEngines() {
+  const real = await nodeEngines(), log = { sf: [], sf2: [], sf15: [] };
+  const trim = lines => {
+    if (!lines.at(-1).startsWith('bestmove')) return lines;
+    const keep = new Map();
+    for (const l of lines) {
+      if (!/ pv /.test(l)) continue;
+      const k = l.match(/ multipv (\d+)/)?.[1] ?? '1', bound = / (lower|upper)bound /.test(l);
+      if (!bound || !keep.has(k) || keep.get(k).bound) keep.set(k, { l, bound });
+    }
+    // speed and time vary run to run; drop them so a re-recording is byte-identical
+    return [...[...keep.values()].map(x => x.l.replace(/ (nps|time) \d+/g, '')), lines.at(-1)];
+  };
+  const wrap = k => ({ until: async (cmds, done) => { const lines = await real[k].until(cmds, done); log[k].push({ cmds, lines: trim(lines) }); return lines; } });
+  return { sf: wrap('sf'), sf2: wrap('sf2'), sf15: wrap('sf15'), quit: real.quit, save: () => writeFileSync(RECORDED, JSON.stringify(log) + '\n') };
+}
+
+/** Engines that answer from the recording: each engine replays its replies to the same commands, in the order recorded.
+    Each engine has its own hash history, so the same command can get a different reply on sf and sf2: never shared. */
+function recordedEngines() {
+  const engine = rec => {
+    const q = new Map();
+    for (const { cmds, lines } of rec) { const key = cmds.join('\n'); q.set(key, [...(q.get(key) ?? []), lines]); }
+    return { until: async cmds => q.get(cmds.join('\n'))?.shift() ?? assert.fail(`not recorded (node test.js --record): ${cmds.join(' | ')}`) };
+  };
+  const log = JSON.parse(readFileSync(RECORDED, 'utf8'));
+  return { sf: engine(log.sf), sf2: engine(log.sf2), sf15: engine(log.sf15), quit: () => {} };
+}
+
+const engines = record ? await recordingEngines() : recordedEngines();
 let facts;
 const sheets = [];
 const stub = f => (sheets.push(facts = f), '(stub)');
@@ -250,6 +288,7 @@ try {
   const notFields = ['you', 'opp', 'check', 'yes', 'partly', 'no', 'tie', 'labelled', 'line', 'term', 'none']; // quoted labels and verdict values
   const quoted = new Set([...(LEGEND + JUDGE + PAIR).matchAll(/"([a-z][a-z0-9_]*)"/g)].map(m => m[1]));
   assert.deepEqual([...quoted].filter(k => !keys.has(k) && !notFields.includes(k)), []);
+  engines.save?.(); // a full run only: a failed one would leave out the searches after the failure
   console.log('ok');
 } finally {
   engines.quit();
