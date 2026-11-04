@@ -9,7 +9,7 @@ import {
 import { KINDS, endNotes, imbalances, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { linkMoves, md } from './extension/md.js';
 import { JUDGE, LEGEND, PAIR, PROPOSER, checkAnswer, systemFor } from './extension/prompt.js';
-import { verify, withConcepts } from './extension/concepts.js';
+import { claimsIn, render, verify, withConcepts } from './extension/concepts.js';
 
 const pos = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
 
@@ -156,6 +156,22 @@ const claims = [
 ];
 const v = verify(cSheet, claims);
 assert.deepEqual(v.map(c => [c.verified, c.contrast]), [[true, true], [false, false], [false, false]]);
+// checks that cannot be answered fail instead of passing vacuously
+const one = (fen, k) => verify({ ...cSheet, fen }, [{ concept: 'c', claim: 'c', checks: [{ pos: 'start', ...k }] }])[0].checks[0];
+assert.ok(one(start, { op: 'legal_moves', args: { square: 'g8' }, expect: 0 }).error); // black knight, white to move
+assert.ok(one(start, { op: 'passed', args: { square: 'g1' }, expect: true }).error); // not a pawn
+const doubled = '4k3/8/8/4P3/4P3/8/8/4K3 w - - 0 1';
+assert.deepEqual([one(doubled, { op: 'passed', args: { square: 'e5' }, expect: true }).ok, one(doubled, { op: 'passed', args: { square: 'e4' }, expect: false }).ok], [true, true]);
+assert.ok(one(start, { op: 'file_state', args: { file: 'E' }, expect: 'closed' }).ok);
+assert.ok(one(start, { op: 'file_state', args: { file: 'z' }, expect: 'open' }).error);
+assert.ok(one(start, { op: 'pawns_on_colour', args: { side: 'white', colour: 'white' }, expect: 4 }).error);
+assert.ok(verify(cSheet, [{ concept: 'c', claim: 'c', checks: [{ pos: 'played_leaf', op: 'piece_on', args: { square: 'e4' }, expect: 'white pawn' }] }])[0].checks[0].error);
+assert.deepEqual(verify(cSheet, [null, { concept: 'c', checks: 'x' }]).map(c => c.verified), [false, false]);
+// sides render the same whatever their case
+assert.deepEqual(render(cSheet, verify(cSheet, [{ concept: 'k', claim: 'k', checks: [{ pos: 'start', op: 'king_square', args: { side: 'White' }, expect: 'e1' }] }]))[0].checked, ['now, before your move: your king on e1']);
+// the claim list is found past brackets in the reasoning; no list at all is told apart from an empty one
+assert.deepEqual(claimsIn('The sheet says [takes pawn]. Claims:\n[{"concept": "a"}]\nDone [ok].'), [{ concept: 'a' }]);
+assert.deepEqual([claimsIn('none [here]'), claimsIn('[]')], [null, []]);
 assert.match(v[2].checks[0].error, /no piece on e4/);
 let sent;
 globalThis.fetch = async (url, { body }) => ((sent = JSON.parse(body)),
@@ -167,7 +183,7 @@ assert.deepEqual(Object.keys(deeper.facts), ['fen', 'side_to_move', 'pawn_plan_o
 assert.deepEqual(deeper.concepts, [{ concept: 'centre', claim: 'd4 takes the centre.', checked: [
   'after 1.d4: d4: your pawn', 'after 1.e4: d4: empty', 'after 1.d4 d5: your pieces attacking e5: 1'] }]);
 globalThis.fetch = async () => Response.json({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'no claims' }] });
-assert.equal((await withConcepts(cSheet, 'key')).concepts, null);
+assert.deepEqual(await withConcepts(cSheet, 'key').then(d => [d.concepts, d.read]), [null, false]);
 // the deeper read's prompt is the plain one plus the "verified_concepts" entry
 for (const m of ['claude-haiku-5-5', 'claude-opus-5-5'])
   assert.ok(systemFor(m, true).includes('"verified_concepts"') && systemFor(m, true).replace(/\n- "verified_concepts"[^]*?swing in the lines still comes first\./, '') === systemFor(m));

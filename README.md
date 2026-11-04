@@ -119,7 +119,8 @@ explanation would cost less than one cent.
 
 Settings also offer Claude Opus 5.5, at about 7 cents an explanation. On the 132-position eval set below it
 made about half as many false or unsupported claims as Haiku and found the decisive point more often. A
-deeper positional read adds one more Opus call, about the cost of an Opus explanation.
+deeper positional read adds two calls: Opus proposes ideas (about the cost of an Opus explanation), then the
+chosen model rewrites the answer, so about 14 cents on top with Opus chosen.
 
 ## Development
 

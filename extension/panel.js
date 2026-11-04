@@ -183,20 +183,20 @@ function render(data, b, apiKey) {
 const esc = t => t.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`);
 
 // The deeper read: Opus proposes positional ideas for the same fact sheet, the board checks them, and the answer is
-// written again with the ideas that held. One more Opus call; the engines do not run again.
+// written again with the ideas that held. Two more calls (Opus proposes, the chosen model rewrites); the engines do not run again.
 function deeperButton(data, b, apiKey) {
   const card = el('div', 'card deeper');
   const go = el('button', 'secondary', { text: 'Deeper positional read' }, card);
-  el('p', 'note', { text: 'Opus looks for positional ideas, the board checks each one, and the answer is rewritten with those that hold. One more Opus call, costing about what an Opus explanation does, and up to a minute longer.' }, card);
+  el('p', 'note', { text: 'Opus looks for positional ideas, the board checks each one, and the answer is rewritten with those that hold. Two more calls: Opus proposes, then your chosen model rewrites. About the cost of one Opus explanation on top (two with Opus chosen), and up to a minute longer.' }, card);
   go.onclick = async () => {
     card.remove();
     const s = spinner('Opus is looking for positional ideas');
     try {
-      const { facts, concepts } = await withConcepts(data.facts, apiKey);
+      const { facts, concepts, read } = await withConcepts(data.facts, apiKey);
       if (s.gone()) return s.done();
       if (!concepts) {
         s.done();
-        return el('div', 'card note', { text: 'No positional idea passed the board checks. The answer above stands.' });
+        return el('div', 'card note', { text: read ? 'No positional idea passed the board checks. The answer above stands.' : 'Could not read the positional ideas from Opus\'s reply. The answer above stands.' });
       }
       s.set('Asking Claude');
       const text = await askClaude(facts, apiKey, model(), true);
