@@ -20,40 +20,20 @@ function readBoard() {
   };
 }
 
-/** Runs inside the lichess tab: puts the board back on the explained position (tree path `path`, FEN `fen`) and plays
-    `ucis` from there, as a click on a move of lichess's own engine line does. That click is handled on .pv_box, which
-    plays the moves of the clicked div.pv (span.pv-san[data-board="fen|uci"]) up to the last one hovered.
-    Lichess adds them all at once and sounds each one, so the sounds are held back and only the last one plays.
-    Runs in the page's main world, for `site.sound`. Returns an error message, or nothing. */
-async function playLine(fen, path, ucis) {
-  const sound = window.site?.sound, move = sound?.move;
+/** Runs in the lichess tab's main world: puts the board back on the explained position (tree path `path`, FEN `fen`)
+    and plays `ucis` from there with lichess's own analysis controller, as a click on a move of lichess's engine line
+    does, so it works with lichess's engine off. Lichess adds the moves all at once and sounds each one, so the sounds
+    are held back and only the last one plays. Returns an error message, or nothing. */
+function playLine(fen, path, ucis) {
+  const ctrl = window.site?.analysis;
+  if (!ctrl?.node) return 'Open a lichess analysis board or study to play the line on the board.';
+  if (ctrl.node.fen !== fen) ctrl.userJumpIfCan(path);
+  if (ctrl.node.fen !== fen) return 'Could not go back to the explained position. Go there and click the move again.';
+  const sound = window.site.sound, move = sound?.move;
   let last;
   if (move) sound.move = (...args) => (last = args);
   try {
-    const box = () => document.querySelector('.pv_box[data-fen]');
-    if (!box()) return "Turn lichess's engine back on to play the line on the board.";
-    if (box().dataset.fen !== fen) {
-      if (path) document.querySelector(`move[p="${CSS.escape(path)}"]`)?.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
-      else document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true })); // the start position
-      for (let i = 0; i < 20 && box()?.dataset.fen !== fen; i++) await new Promise(r => setTimeout(r, 50));
-      if (box()?.dataset.fen !== fen) return 'Could not go back to the explained position. Go there and click the move again.';
-    }
-    const pv = document.createElement('div');
-    pv.className = 'pv';
-    pv.dataset.uci = ucis[0];
-    pv.hidden = true;
-    for (const [i, uci] of ucis.entries()) {
-      const span = document.createElement('span');
-      span.className = 'pv-san';
-      span.dataset.board = `${fen}|${uci}`;
-      span.dataset.moveIndex = i;
-      pv.append(span);
-    }
-    box().append(pv);
-    pv.lastChild.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
-    pv.lastChild.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true }));
-    pv.lastChild.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
-    pv.remove();
+    ctrl.playUciList([...ucis]);
   } finally {
     if (move) {
       sound.move = move;
@@ -208,24 +188,12 @@ function answerCard(text, lines, b) {
   };
 }
 
-/** The board-checked ideas, folded: [{concept, claim, checked}]. */
-function ideasCard(title, ideas) {
-  const d = el('details', 'card', {});
-  el('summary', '', { text: title }, d);
-  for (const c of ideas) {
-    el('p', '', { html: `<strong>${esc(c.concept)}</strong>: ${esc(c.claim)}` }, d);
-    const ul = el('ul', '', {}, d);
-    for (const k of c.checked) el('li', '', { text: k }, ul);
-  }
-}
-
 function render(data, b) {
   const moves = el('div', 'card moves');
   moveRow(moves, 'best', 'engine move', data.best);
   moveRow(moves, 'compared', 'compared', data.compared);
   // every line that starts at the explained position (prepares.follow_up_fails starts mid-line, so it is left out)
   answerCard(data.text, [data.best, data.compared].flatMap(m => [m.line, m.threat_line]).concat(data.facts.prepares?.line_if_played_at_once), b);
-  if (data.concepts) ideasCard('Checked positional ideas', data.concepts);
 }
 
 function renderPlan(data, b) {
@@ -235,10 +203,7 @@ function renderPlan(data, b) {
   el('span', 'pill', { text: data.facts.plan_kind === 'tactical' ? 'Tactical' : 'Positional' }, head);
   moveRow(card, 'best', 'first move', data.best);
   answerCard(data.text, [data.best.line], b);
-  ideasCard('Checked plan ideas', data.ideas);
 }
-
-const esc = t => t.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`);
 
 const lichessTab = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
