@@ -7,6 +7,8 @@
 // Runs in the side panel (engines in Web Workers) and in node (engines as child processes):
 //   node extension/explain.js FEN MOVE [--vs MOVE] [--nodes N] [--no-llm] [--model ID] [--deep]
 // --deep runs the deeper read before the answer, as the panel's positional depth switch does.
+//   node extension/explain.js FEN --plan [--no-llm] [--model ID]
+// --plan finds a plan for the side to move instead, as the panel's Find plan button does (--no-llm: the plan sheet only).
 
 import {
   Chess, SquareSet, attacks, castlingSide, kingCastlesTo, makeFen, makeSan, makeSquare, makeUci, opposite, parseFen,
@@ -16,9 +18,9 @@ import {
   endNotes, hasBishopPair, imbalances, isOutpost, islandChange, key, leafDiff, orNull, outpostSquares, owner, passedPawns,
   pawnWeaknesses, rookFile, shieldHoles, word,
 } from './features.js';
-import { systemFor } from './prompt.js';
+import { PLAN_SYSTEM, systemFor } from './prompt.js';
 // concepts.js imports chess helpers from here: a cycle, safe because neither module uses the other's exports at load time
-import { withConcepts } from './concepts.js';
+import { planShapes, withConcepts, withPlan } from './concepts.js';
 
 export const NODES = 2_000_000;
 const THREADS = 1; // one search thread: a node-limited search then gives the same lines every run
@@ -453,14 +455,14 @@ function passed(pos) {
 }
 
 /** The opponent's best move if you could pass (null move), when it would gain at least `min` centipawns.
-    `scoreNow` is the current eval from the side to move. Returns [threat UCI, facts] or [null, null]. */
+    `scoreNow` is the current eval from the side to move. Returns [threat UCI, facts, centipawns it gains] or [null, null]. */
 async function opponentThreat(sf, pos, nodes, scoreNow, min = 100) {
   const p = !pos.isCheck() && passed(pos);
   if (!p) return [null, null];
   const { score, pv } = (await search(sf, p, nodes))[0];
   const threatScore = flip(score); // back to your side
   if (!pv.length || cpOf(scoreNow) - cpOf(threatScore) < min) return [null, null];
-  return [pv[0], { move: san(p, pv[0]), eval_if_you_could_pass_and_opp_played_it: scoreStr(threatScore) }];
+  return [pv[0], { move: san(p, pv[0]), eval_if_you_could_pass_and_opp_played_it: scoreStr(threatScore) }, cpOf(scoreNow) - cpOf(threatScore)];
 }
 
 /** Your move, then the opponent plays the threat at once, then the engine's best play: does your move stop it? */
@@ -691,6 +693,62 @@ export async function handle(engines, req, llm, opts) {
   return { ...a, best: line('alternative'), compared: line('played') };
 }
 
+// ---- a plan for the side to move ----
+
+/** "tactical" when the engine line mates, wins at least a pawn's worth of material by its quiet end, or has to meet a
+    threat worth a pawn or more (`threatGain`, centipawns; a smaller one is a plan, such as a pawn push); else "positional". */
+function planKind(pos, score, leaf, threatGain) {
+  if ('mate' in score || threatGain >= 100) return 'tactical';
+  return leaf && material(leaf, pos.turn) - material(pos, pos.turn) >= 1 ? 'tactical' : 'positional';
+}
+
+/** The plan sheet for the side to move in `fen`: the engine's best move and its line with labels (on sf only; the
+    lichess engine need not be on), what is on the board, the threat, and SF 15's terms where the line turns quiet. */
+export async function planFacts({ sf, sf15 }, fen, nodes = NODES) {
+  let pos;
+  try { pos = position(fen); } catch { throw new Error('invalid position'); }
+  if (pos.isEnd()) throw new Error('The game is over here: there is no plan to find.');
+  await sf.until(['ucinewgame', 'isready'], l => l === 'readyok');
+  const [{ score, pv }] = await search(sf, pos, nodes);
+  const [, threat, threatGain] = await opponentThreat(sf, pos, nodes, score, QUIET_THREAT);
+  const { leaf, leafSans } = lineToLeaf(pos, pv);
+  const terms = leaf ? (await sf15Terms(sf15, leaf, pos.turn)).terms : {};
+  return {
+    fen,
+    side_to_move: pos.turn === 'white' ? 'White' : 'Black',
+    plan_kind: planKind(pos, score, leaf, threatGain),
+    position_before_move: positionBefore(pos),
+    imbalances: imbalances(pos),
+    opponent_threat: threat,
+    material_before_any_move: material(pos, pos.turn),
+    values_are_from: "side to move's point of view, in pawns",
+    best: {
+      move: san(pos, pv[0]),
+      latest_sf_eval: scoreStr(score),
+      line_with_evals: await lineWithEvals(sf, pos, pv, Math.max(Math.floor(nodes / 10), 100_000)),
+      explained_at_position_after: leafSans.join(' '),
+      explained_fen: leaf ? fenOf(leaf) : null,
+      notes_at_that_position: leaf ? endNotes(leaf, pos.turn) : null,
+      sf15_terms: terms,
+    },
+    pawn_pushes_in_line: orNull(pawnPushes(pos, pv, pos.turn).filter(p => p.point).map(p => p.text)),
+  };
+}
+
+/** Find plan: the plan sheet, the strongest model's plan ideas checked on the board (withPlan), then `model` writes the
+    plan from the ideas that held. No idea held: throws, and the writer is never called. Returns {text, facts, ideas,
+    shapes (for the lichess board), best: {move, eval, line}}. */
+export async function findPlan(engines, fen, llm, { model = 'claude-haiku-5-5', onStep = () => {}, nodes = NODES } = {}) {
+  const sheet = await planFacts(engines, fen, nodes);
+  onStep('Looking for plan ideas');
+  const { facts, ideas } = await withPlan(sheet, llm);
+  if (!ideas) throw new Error('No clear plan found here.');
+  onStep('Asking Claude');
+  const text = await llm(PLAN_SYSTEM, facts, model);
+  const b = facts.best;
+  return { text, facts, ideas, shapes: planShapes(facts, ideas, text), best: { move: b.move, eval: b.latest_sf_eval, line: b.line_with_evals } };
+}
+
 // ---- node ----
 
 /** Node only: the WASM engines as child processes. Returns {sf, sf15, quit}. */
@@ -715,16 +773,17 @@ if (import.meta.main) { // node 24.2+; undefined in the browser
   const { values: o, positionals: [fen, move] } = parseArgs({
     allowPositionals: true,
     options: { vs: { type: 'string' }, nodes: { type: 'string', default: String(NODES) },
-      'no-llm': { type: 'boolean' }, model: { type: 'string' }, deep: { type: 'boolean' } },
+      'no-llm': { type: 'boolean' }, model: { type: 'string' }, deep: { type: 'boolean' }, plan: { type: 'boolean' } },
   });
   if (o.deep && o['no-llm']) throw new Error('--deep needs the LLM');
   const engines = await nodeEngines();
+  const key = process.env.ANTHROPIC_API_KEY, llm = (system, f, m) => ask(system, f, key, m);
   try {
-    const sheet = await factSheet(engines, fen, move, o.vs, Number(o.nodes));
-    if (o['no-llm']) console.log(JSON.stringify(sheet, null, 1));
+    const nodes = Number(o.nodes);
+    if (o['no-llm']) console.log(JSON.stringify(await (o.plan ? planFacts(engines, fen, nodes) : factSheet(engines, fen, move, o.vs, nodes)), null, 1));
     else {
-      const key = process.env.ANTHROPIC_API_KEY;
-      const { facts, text } = await answer(sheet, (system, f, m) => ask(system, f, key, m), { model: o.model, depth: o.deep });
+      const { facts, text } = o.plan ? await findPlan(engines, fen, llm, { model: o.model, nodes })
+        : await answer(await factSheet(engines, fen, move, o.vs, nodes), llm, { model: o.model, depth: o.deep });
       console.log(JSON.stringify(facts, null, 1));
       console.log('\n' + text);
     }

@@ -1,4 +1,4 @@
-import { ask, checkNotPlaying, handle, sanToUci, startEngines, uciEngine } from './explain.js';
+import { ask, checkNotPlaying, findPlan, handle, sanToUci, startEngines, uciEngine } from './explain.js';
 import { linkMoves, md } from './md.js';
 
 // Runs inside the lichess tab. The engine panel (.pv_box) only exists when lichess allows analysis,
@@ -62,7 +62,42 @@ async function playLine(fen, path, ucis) {
   }
 }
 
+/** Runs in the lichess tab's main world: the analysis board's position, from lichess's own analysis controller, so it
+    works with lichess's engine off. Null outside an analysis board or study. */
+function boardState() {
+  const ctrl = window.site?.analysis;
+  return ctrl?.node && { fen: ctrl.node.fen, path: ctrl.path, user: document.querySelector('#user_tag')?.textContent.trim() };
+}
+
+/** Runs in the lichess tab's main world: draws `shapes` (chessground arrows and circles) on lichess's auto-shape layer,
+    which studies never save, while the board shows `fen`'s position; no `fen` clears them. Lichess redraws that layer on
+    every move and engine update, so its chessground's setAutoShapes is wrapped to add ours each time, and so is the
+    chessground lichess swaps in when it rebuilds the board. */
+function showShapes(fen, shapes) {
+  const ctrl = window.site?.analysis;
+  window.chessExplainShapes = fen ? { board: fen.split(' ')[0], shapes } : null;
+  if (!ctrl?.chessground) return;
+  const wrap = cg => {
+    if (!cg || cg.chessExplainWrapped) return;
+    const own = cg.setAutoShapes.bind(cg);
+    cg.setAutoShapes = auto => {
+      const ours = window.chessExplainShapes;
+      own(ours && ctrl.node.fen.split(' ')[0] === ours.board ? [...auto, ...ours.shapes] : auto);
+    };
+    cg.chessExplainWrapped = true;
+  };
+  if (!ctrl.chessExplainWrapped) {
+    const set = ctrl.setChessground;
+    ctrl.setChessground = cg => { wrap(cg); set(cg); };
+    ctrl.chessExplainWrapped = true;
+  }
+  wrap(ctrl.chessground);
+  ctrl.setAutoShapes();
+}
+
 const out = document.getElementById('out');
+// the background clears the board's plan shapes when this port closes, i.e. when the panel closes
+chrome.runtime.connect({ name: 'panel' });
 
 // Both Stockfish builds run as Web Workers for as long as the panel is open. Their threads need
 // SharedArrayBuffer, so the panel must be cross-origin isolated (the manifest's COOP/COEP keys).
@@ -117,7 +152,7 @@ settings.onchange = e => e.target.name === 'model' && chrome.storage.local.set({
 const deep = document.getElementById('deep');
 chrome.storage.local.get('deep').then(({ deep: on }) => (deep.checked = !!on));
 deep.onchange = () => chrome.storage.local.set({ deep: deep.checked });
-const button = document.getElementById('go');
+const buttons = [document.getElementById('go'), document.getElementById('plan')];
 
 // Builds an element; `html` is only ever our own markup or md() output, which escapes the model's text.
 function el(tag, cls, { text, html } = {}, parent = out) {
@@ -149,21 +184,16 @@ function spinner(stage) {
   return { set: s => ((stage = s), tick()), done: () => { clearInterval(timer); status.remove(); }, gone: () => !status.isConnected };
 }
 
-function render(data, b, apiKey) {
-  const moves = el('div', 'card moves');
-  moveRow(moves, 'best', 'engine move', data.best);
-  moveRow(moves, 'compared', 'compared', data.compared);
-  // every line that starts at the explained position (prepares.follow_up_fails starts mid-line, so it is left out)
-  const lines = [data.best, data.compared].flatMap(m => [m.line, m.threat_line]).concat(data.facts.prepares?.line_if_played_at_once);
-  const answer = el('div', 'card answer', { html: linkMoves(md(data.text), lines) });
-  // a move link plays its line on the lichess board, up to that move
+/** The answer card; a move link in it plays its line (one of `lines`, from b's position) on the lichess board. */
+function answerCard(text, lines, b) {
+  const answer = el('div', 'card answer', { html: linkMoves(md(text), lines) });
   answer.onclick = async e => {
     const a = e.target.closest('a[data-line]');
     if (!a) return;
     e.preventDefault();
     try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.url?.startsWith('https://lichess.org/')) return error('Switch to the lichess tab to play the line.');
+      const tab = await lichessTab();
+      if (!tab) return error('Switch to the lichess tab to play the line.');
       const ucis = sanToUci(b.fen, a.dataset.line.split(' '));
       const [{ result }] = await chrome.scripting.executeScript({
         target: { tabId: tab.id }, world: 'MAIN', func: playLine, args: [b.fen, b.path, ucis],
@@ -174,24 +204,55 @@ function render(data, b, apiKey) {
       error(e.message);
     }
   };
-  if (data.concepts) {
-    const d = el('details', 'card', {});
-    el('summary', '', { text: 'Checked positional ideas' }, d);
-    for (const c of data.concepts) {
-      el('p', '', { html: `<strong>${esc(c.concept)}</strong>: ${esc(c.claim)}` }, d);
-      const ul = el('ul', '', {}, d);
-      for (const k of c.checked) el('li', '', { text: k }, ul);
-    }
+}
+
+/** The board-checked ideas, folded: [{concept, claim, checked}]. */
+function ideasCard(title, ideas) {
+  const d = el('details', 'card', {});
+  el('summary', '', { text: title }, d);
+  for (const c of ideas) {
+    el('p', '', { html: `<strong>${esc(c.concept)}</strong>: ${esc(c.claim)}` }, d);
+    const ul = el('ul', '', {}, d);
+    for (const k of c.checked) el('li', '', { text: k }, ul);
   }
+}
+
+function render(data, b) {
+  const moves = el('div', 'card moves');
+  moveRow(moves, 'best', 'engine move', data.best);
+  moveRow(moves, 'compared', 'compared', data.compared);
+  // every line that starts at the explained position (prepares.follow_up_fails starts mid-line, so it is left out)
+  answerCard(data.text, [data.best, data.compared].flatMap(m => [m.line, m.threat_line]).concat(data.facts.prepares?.line_if_played_at_once), b);
+  if (data.concepts) ideasCard('Checked positional ideas', data.concepts);
+}
+
+function renderPlan(data, b) {
+  const card = el('div', 'card moves');
+  const head = el('div', 'plan-head', {}, card);
+  el('span', 'label', { text: `Plan for ${data.facts.side_to_move}` }, head);
+  el('span', 'pill', { text: data.facts.plan_kind === 'tactical' ? 'Tactical' : 'Positional' }, head);
+  moveRow(card, 'best', 'first move', data.best);
+  answerCard(data.text, [data.best.line], b);
+  ideasCard('Checked plan ideas', data.ideas);
 }
 
 const esc = t => t.replace(/[&<>"]/g, c => `&#${c.charCodeAt(0)};`);
 
-async function explain() {
-  const apiKey = await showKeyStatus();
-  if (!apiKey) return error('Set your Anthropic API key first (above).');
+const lichessTab = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tab?.url?.startsWith('https://lichess.org/')) return error('Open a lichess analysis board.');
+  return tab?.url?.startsWith('https://lichess.org/') ? tab : null;
+};
+const inTab = async (tab, func, args = []) =>
+  (await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: 'MAIN', func, args }))[0].result;
+
+/** The engines once they have started; throws when they cannot. */
+async function ready() {
+  if (!engines) throw new Error('Stockfish cannot start: the panel is not cross-origin isolated. Reload the extension at chrome://extensions.');
+  return Promise.race([engines, crashed, new Promise((_, fail) =>
+    setTimeout(() => fail(new Error('Stockfish did not start within 30 s.')), 30_000))]);
+}
+
+async function explain(apiKey, tab) {
   const [{ result: b }] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: readBoard });
   if (!b.fen) return error(tab.url.startsWith('https://lichess.org/study/')
     ? "No engine panel found. Turn on lichess's engine, or, if this study has computer analysis disabled, copy the FEN from its share tab to lichess.org/analysis."
@@ -203,15 +264,13 @@ async function explain() {
   try {
     await checkNotPlaying(b.user);
     s.set('Starting Stockfish');
-    if (!engines) throw new Error('Stockfish cannot start: the panel is not cross-origin isolated. Reload the extension at chrome://extensions.');
-    const ready = await Promise.race([engines, crashed, new Promise((_, fail) =>
-      setTimeout(() => fail(new Error('Stockfish did not start within 30 s.')), 30_000))]);
+    const e = await ready();
     s.set(`Analysing ${move}`);
     const llm = (system, facts, m) => ask(system, facts, apiKey, m);
-    const data = await Promise.race([handle(ready, { fen: b.fen, move, best: b.best }, llm,
+    const data = await Promise.race([handle(e, { fen: b.fen, move, best: b.best }, llm,
       { model: model(), depth: deep.checked, onStep: s.set }), crashed]);
     out.replaceChildren();
-    render(data, b, apiKey);
+    render(data, b);
     if (data.read !== undefined && !data.concepts)
       el('div', 'card note', { text: data.read ? 'No positional idea passed the board checks.' : 'Could not read the positional ideas in the reply.' });
   } finally {
@@ -219,17 +278,47 @@ async function explain() {
   }
 }
 
-document.getElementById('form').onsubmit = async e => {
-  e.preventDefault();
-  button.disabled = true;
+async function plan(apiKey, tab) {
+  const b = await inTab(tab, boardState);
+  if (!b?.fen) return error('Open a lichess analysis board or study.');
+  const s = spinner('Checking you are not in a game');
+  try {
+    await checkNotPlaying(b.user);
+    s.set('Starting Stockfish');
+    const e = await ready();
+    s.set("Finding the engine's plan");
+    const llm = (system, facts, m) => ask(system, facts, apiKey, m);
+    const data = await Promise.race([findPlan(e, b.fen, llm, { model: model(), onStep: s.set }), crashed]);
+    out.replaceChildren();
+    renderPlan(data, b);
+    await inTab(tab, showShapes, [b.fen, data.shapes]);
+  } finally {
+    s.done();
+  }
+}
+
+/** One request at a time: Explain or Find plan. Clears the last answer and the board's plan shapes first. */
+async function run(task) {
+  buttons.forEach(b => (b.disabled = true));
   out.replaceChildren();
   try {
-    await explain();
+    const apiKey = await showKeyStatus();
+    if (!apiKey) return error('Set your Anthropic API key first (above).');
+    const tab = await lichessTab();
+    if (!tab) return error('Open a lichess analysis board.');
+    await inTab(tab, showShapes, [null, null]).catch(() => {});
+    await task(apiKey, tab);
   } catch (e) {
     console.error(e);
     out.replaceChildren();
     error(e.message);
   } finally {
-    button.disabled = false;
+    buttons.forEach(b => (b.disabled = false));
   }
+}
+
+document.getElementById('form').onsubmit = e => {
+  e.preventDefault();
+  run(explain);
 };
+document.getElementById('plan').onclick = () => run(plan);

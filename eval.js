@@ -19,6 +19,8 @@
 // their noise, overall and by the SF 15 gate; run it on two samples of the same arm first to see the noise floor.
 // --deep runs the deeper read before each answer (as the panel's positional depth switch does), and gives the judge, the
 // pairwise judge and --print the "verified_concepts" legend entry; to compare a deep run with a plain one, judge both with --deep.
+// --plan builds Find plan's plan sheets (with --no-llm) for each position's FEN instead, and --print planner|plan prints
+// the planner and plan-writer prompts, for subagent runs; the summary checks plans at 200 words.
 // --masked writes <name>.masked.txt per answer, with the two candidate moves hidden, for a reader (a Haiku subagent) to say
 // which move the text argues for in <name>.masked.json ({"better": "<SAN>"}); the summary counts how many it recovers.
 import { PgnParser, parseComment, startingPosition } from 'chessops/pgn';
@@ -31,7 +33,7 @@ import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
 import { NODES, aboutEqual, answer, ask, linePlies, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
-import { JUDGE, PAIR, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
+import { JUDGE, PAIR, PLANNER, PLAN_SYSTEM, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
 
 // ---- the judge (its prompts are in extension/prompt.js) ----
 
@@ -78,7 +80,7 @@ const str = { type: 'string' }, bool = { type: 'boolean' };
 const { values: o, positionals: [out = 'eval-out'] } = parseArgs({
   allowPositionals: true,
   options: { 'no-llm': bool, model: str, facts: str, set: str, summary: bool, judge: bool, pair: str, sample: str, month: str,
-    print: str, masked: bool, compare: str, deep: bool },
+    print: str, masked: bool, compare: str, deep: bool, plan: bool },
 });
 if (o.deep && o['no-llm']) throw new Error('--deep needs the LLM');
 // the judges get the "verified_concepts" legend entry on --deep runs
@@ -98,8 +100,10 @@ if (o.print) {
     explainer: () => systemFor(o.model ?? 'claude-haiku-5-5', o.deep),
     judge: () => withSchema(legend(JUDGE), ref ? WITH_REFERENCE : VERDICT),
     pair: () => withSchema(legend(PAIR), ref ? PAIR_WITH_REFERENCE : PAIR_VERDICT),
+    planner: () => PLANNER,
+    plan: () => PLAN_SYSTEM,
   };
-  if (!prompts[o.print]) throw new Error('--print takes explainer, judge or pair');
+  if (!prompts[o.print]) throw new Error('--print takes explainer, judge, pair, planner or plan');
   process.stdout.write(prompts[o.print]());
   process.exit(0);
 }
@@ -109,7 +113,7 @@ if (o.compare) {
 }
 const facts = o.facts ?? null;
 const pair = o.pair?.replace(/\/$/, '') ?? null;
-const flags = [...o['no-llm'] ? ['--no-llm'] : [], ...o.model ? ['--model', o.model] : [], ...o.deep ? ['--deep'] : []];
+const flags = [...o['no-llm'] ? ['--no-llm'] : [], ...o.model ? ['--model', o.model] : [], ...o.deep ? ['--deep'] : [], ...o.plan ? ['--plan'] : []];
 const cli = fileURLToPath(new URL('extension/explain.js', import.meta.url));
 const run = promisify(execFile);
 mkdirSync(out, { recursive: true });
@@ -126,7 +130,7 @@ await Promise.all(Array.from({ length: facts ? 16 : 4 }, async () => {
         const key = process.env.ANTHROPIC_API_KEY;
         const a = await answer(JSON.parse(sheet), (system, f, m) => ask(system, f, key, m), { model: o.model, depth: o.deep });
         text = `${JSON.stringify(a.facts, null, 1)}\n\n${a.text}\n`;
-      } else text = (await run(process.execPath, [cli, fen, played, '--vs', better, ...flags], { maxBuffer: 1 << 24 })).stdout;
+      } else text = (await run(process.execPath, [cli, fen, ...o.plan ? [] : [played, '--vs', better], ...flags], { maxBuffer: 1 << 24 })).stdout;
     } catch (e) {
       text = `ERROR: ${e.stderr || e.message}`;
     }
@@ -304,7 +308,7 @@ function pastLeaf({ sheet, answer }) {
   const s = JSON.parse(sheet);
   let rest = sheet;
   const deep = new Set();
-  for (const side of [s.played, s.alternative]) {
+  for (const side of [s.played, s.alternative, s.best].filter(Boolean)) {
     const cut = side.explained_at_position_after.split(' ').filter(t => !/^\d+\.+$/.test(t)).length;
     const plies = linePlies(side.line_with_evals).flat(); // all rows: a leaf at the main row's end still cuts the "Why" rows
     if (plies.length <= cut) continue;
@@ -319,7 +323,8 @@ function pastLeaf({ sheet, answer }) {
 
 /** The rule checks on one run's answer. */
 function problems({ sheet, answer }) {
-  return answer ? checkAnswer(answer, JSON.parse(sheet)).map(c => c.problem) : [];
+  const s = JSON.parse(sheet);
+  return answer ? checkAnswer(answer, s, { maxWords: s.best ? 200 : 120 }).map(c => c.problem) : [];
 }
 
 /** Writes <name>.masked.txt: the answer with the better move written "[better move]" and the played one "[played move]",

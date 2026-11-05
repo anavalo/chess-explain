@@ -4,7 +4,7 @@
 import { SquareSet, attacks, between, parseSquare, makeSquare, squareFile, squareRank } from './vendor/chessops.js';
 import { linePlies, position, play, sanToUci } from './explain.js';
 import { isOutpost } from './features.js';
-import { PROPOSER } from './prompt.js';
+import { PLANNER, PROPOSER } from './prompt.js';
 
 // the proposer is always the strongest model, whatever model writes the answer
 const PROPOSER_MODEL = 'claude-opus-5-5';
@@ -17,6 +17,9 @@ const pieceAt = (b, s) => { const p = b.get(s); if (!p) throw new Error(`no piec
 const attackersOf = (pos, s, color) => pos.kingAttackers(s, color, pos.board.occupied).size();
 // the plies of a line's main row: [{no: '1.', san: 'e4'}, {no: '1...', san: 'e5'}]
 const lineSans = l => linePlies(l.line_with_evals)[0];
+// a position name past "start": played_leaf, better:3, best_leaf (the plan sheet's line), ...
+const NAMED = /^(played|better|best)(?:_leaf|:(\d+))$/;
+const lineOf = (sheet, name) => ({ played: sheet.played, better: sheet.alternative, best: sheet.best })[name];
 
 /** The primitives: (board position, args) -> a value the check's `expect` is compared with. */
 const OPS = {
@@ -60,16 +63,16 @@ const OPS = {
   },
 };
 
-/** The positions a check may name: start, played_leaf, better_leaf, or played:N / better:N (after N plies of that line). */
+/** The positions a check may name: start, played_leaf, better_leaf, or played:N / better:N (after N plies of that line);
+    on a plan sheet best_leaf and best:N. */
 function positions(sheet) {
   const start = position(sheet.fen);
   const at = (l, n) => { const ucis = sanToUci(sheet.fen, lineSans(l).slice(0, n).map(m => m.san)); return ucis.reduce(play, start); };
   const leaf = l => { if (!l.explained_fen) throw new Error('this line has no explained position'); return position(l.explained_fen); };
   return name => {
     if (name === 'start') return start;
-    const m = /^(played|better)(?:_leaf|:(\d+))$/.exec(name);
-    if (!m) throw new Error(`bad position ${name}`);
-    const l = m[1] === 'played' ? sheet.played : sheet.alternative;
+    const m = NAMED.exec(name), l = m && lineOf(sheet, m[1]);
+    if (!l) throw new Error(`bad position ${name}`);
     return m[2] === undefined ? leaf(l) : at(l, Number(m[2]));
   };
 }
@@ -101,7 +104,7 @@ export function render(sheet, verified) {
   const yn = v => (v === true ? 'yes' : v === false ? 'no' : v);
   const where = p => {
     if (p === 'start') return 'now, before your move';
-    const m = /^(played|better)(?:_leaf|:(\d+))$/.exec(p), l = m[1] === 'played' ? sheet.played : sheet.alternative;
+    const m = NAMED.exec(p), l = lineOf(sheet, m[1]);
     const sans = m[2] === undefined ? l.explained_at_position_after : lineSans(l).slice(0, Number(m[2])).map(m => m.no + m.san).join(' ');
     return `after ${sans}`;
   };
@@ -152,3 +155,35 @@ export async function withConcepts(facts, llm) {
   return { facts: out, concepts, read: claims !== null };
 }
 const ANCHOR = 'pawn_plan_only_in_better_line';
+
+/** Find plan's deeper read: the strongest model proposes plan ideas for the plan sheet `facts` (PLANNER), verify() keeps
+    those whose checks all hold, and they go in as "verified_plan_ideas" before "pawn_pushes_in_line". An idea's targets
+    ({square, kind: attack|occupy}, for the board) are kept only when one of its checks names the square. Returns
+    {facts, ideas}; ideas is null when no idea held or the reply held no claim list. */
+export async function withPlan(facts, llm) {
+  const claims = claimsIn(await llm(PLANNER, facts, PROPOSER_MODEL)) ?? [];
+  const checked = verify(facts, claims), kept = checked.filter(c => c.verified);
+  const ideas = render(facts, checked)?.map((idea, i) => {
+    const named = new Set(kept[i].checks.flatMap(k => Object.values(k.args ?? {})).map(String));
+    const targets = (Array.isArray(kept[i].targets) ? kept[i].targets : [])
+      .filter(t => /^[a-h][1-8]$/.test(t?.square) && named.has(t.square) && (t.kind === 'attack' || t.kind === 'occupy'))
+      .map(({ square, kind }) => ({ square, kind }));
+    return { ...idea, targets };
+  }) ?? null;
+  const out = {};
+  for (const [k, v] of Object.entries(facts)) { if (k === 'pawn_pushes_in_line') out.verified_plan_ideas = ideas; out[k] = v; }
+  return { facts: out, ideas };
+}
+
+/** The shapes Find plan draws on the lichess board: a green arrow for the plan's first move, and a circle on each idea
+    target the plan's text names (the first 4, in idea order): red to attack, green to occupy. */
+export function planShapes(sheet, ideas, text) {
+  const [uci] = sanToUci(sheet.fen, [sheet.best.move]);
+  const shapes = [{ orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush: 'green' }], seen = new Set();
+  for (const { square, kind } of (ideas ?? []).flatMap(i => i.targets)) {
+    if (seen.size === 4 || seen.has(square) || !new RegExp(`(?<![a-h])${square}(?![0-9])`).test(text)) continue;
+    seen.add(square);
+    shapes.push({ orig: square, brush: kind === 'attack' ? 'red' : 'green' });
+  }
+  return shapes;
+}

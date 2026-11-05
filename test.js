@@ -8,12 +8,12 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  Refused, ask as anthropic, checkNotPlaying, handle, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
+  Refused, ask as anthropic, checkNotPlaying, findPlan, handle, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
 } from './extension/explain.js';
 import { KINDS, endNotes, imbalances, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { linkMoves, md } from './extension/md.js';
-import { JUDGE, LEGEND, PAIR, PROPOSER, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
-import { claimsIn, render, verify, withConcepts } from './extension/concepts.js';
+import { JUDGE, LEGEND, PAIR, PLANNER, PLAN_SYSTEM, PROPOSER, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
+import { claimsIn, planShapes, render, verify, withConcepts, withPlan } from './extension/concepts.js';
 
 const pos = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
 
@@ -48,6 +48,7 @@ const sheet = { played: { line_with_evals: '12. you Nf3 [x] (+0.3) 12... opp Nc6
 const failed = answer => checkAnswer(answer, sheet).map(c => c.rule);
 assert.deepEqual(failed('After 12.Nf3 Nc6 your rook reaches the 7th rank.\nNext time: ask what Nf3 gives up.'), []);
 assert.deepEqual(failed('word '.repeat(121)), [5]);
+assert.deepEqual(checkAnswer('word '.repeat(150), sheet, { maxWords: 200 }), []); // a plan may run to 200 words
 assert.deepEqual(failed('12. Nf3 wins.'), [6]);
 assert.deepEqual(failed('12.Nf3 [takes] wins.'), [7]);
 assert.deepEqual(failed('12.Qh5 wins.'), [5]);
@@ -182,6 +183,30 @@ assert.deepEqual(render(cSheet, v), [{ concept: 'centre', claim: 'd4 takes the c
   'after 1.d4: d4: your pawn', 'after 1.e4: d4: empty', 'after 1.d4 d5: your pieces attacking e5: 1'] }]);
 // a sheet without the field the concepts go after fails loudly, before any LLM call
 await assert.rejects(withConcepts({ fen: start }, () => assert.fail('called the LLM')), /pawn_plan_only_in_better_line/);
+// Find plan's deeper read: best:N / best_leaf name the plan line's positions; an idea keeps only targets its checks name
+const pSheet = {
+  fen: start, side_to_move: 'White', plan_kind: 'positional',
+  best: { move: 'e4', line_with_evals: '1. you e4 (+0.30) 1... opp e5 (+0.30) 2. you Nf3 (+0.30)', explained_at_position_after: '1.e4 e5 2.Nf3',
+    explained_fen: 'rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2' },
+  pawn_pushes_in_line: null,
+};
+const planner = JSON.stringify([
+  { concept: 'centre', claim: 'e4 takes the centre and the knight hits e5.', targets: [{ square: 'e5', kind: 'attack' }, { square: 'h7', kind: 'attack' }, { square: 'e4', kind: 'occupy' }, { square: 'e', kind: 'occupy' }],
+    checks: [{ pos: 'best:1', op: 'piece_on', args: { square: 'e4' }, expect: 'white pawn' }, { pos: 'best_leaf', op: 'attacks', args: { from: 'f3', to: 'e5' }, expect: true },
+      { pos: 'best_leaf', op: 'file_state', args: { file: 'e' }, expect: 'closed' }] },
+  { concept: 'wrong', claim: 'x', targets: [{ square: 'd4', kind: 'occupy' }], checks: [{ pos: 'start', op: 'piece_on', args: { square: 'd4' }, expect: 'white pawn' }] }]);
+const pr = await withPlan(pSheet, (system, f, model) => (assert.deepEqual([system, model], [PLANNER, 'claude-opus-5-5']), planner));
+assert.deepEqual(pr.ideas, [{ concept: 'centre', claim: 'e4 takes the centre and the knight hits e5.',
+  checked: ['after 1.e4: e4: your pawn', 'after 1.e4 e5 2.Nf3: the piece on f3 attacks e5: yes', 'after 1.e4 e5 2.Nf3: e-file: closed'],
+  targets: [{ square: 'e5', kind: 'attack' }, { square: 'e4', kind: 'occupy' }] }]);
+assert.deepEqual(Object.keys(pr.facts).slice(-2), ['verified_plan_ideas', 'pawn_pushes_in_line']);
+assert.deepEqual((await withPlan(pSheet, async () => 'No plan.')).ideas, null);
+// the board: an arrow for the first move, circles only on targets the text names, red to attack, at most 4
+assert.deepEqual(planShapes(pSheet, pr.ideas, 'Play 1.e4, then hit **e5**.'),
+  [{ orig: 'e2', dest: 'e4', brush: 'green' }, { orig: 'e5', brush: 'red' }, { orig: 'e4', brush: 'green' }]);
+assert.deepEqual(planShapes(pSheet, pr.ideas, 'Nothing named; Ne55 is no square.'), [{ orig: 'e2', dest: 'e4', brush: 'green' }]);
+const many = [{ targets: ['a3', 'b3', 'c3', 'd3', 'f3'].map(square => ({ square, kind: 'occupy' })) }];
+assert.equal(planShapes(pSheet, many, 'a3 b3 c3 d3 f3').length, 5);
 // one Messages API call: the system prompt, the sheet as the user message, the reply's text
 let sent;
 globalThis.fetch = async (url, { body }) => ((sent = JSON.parse(body)),
@@ -309,12 +334,28 @@ try {
   assert.match(facts.prepares.follow_up_fails, /^Why 25\.Qxh6 fails: 25\. you Qxh6 .* 25\.\.\. opp Qxf2\+ /);
   assert.equal(facts.prepares.better_move_guards, 'f2');
 
+  // Find plan on a quiet position: our own engine picks f4, the planner's checks run on its line, the writer gets PLAN_SYSTEM
+  const quiet = 'r1br2k1/1pq1nppp/p1n1p3/8/2B1P3/1NQ1B3/PP3PPP/2R2RK1 w - - 0 1', planCalls = [], planSteps = [];
+  const kingside = JSON.stringify([{ concept: 'kingside space', claim: 'f4 grabs space.', targets: [{ square: 'f4', kind: 'occupy' }],
+    checks: [{ pos: 'start', op: 'piece_on', args: { square: 'f4' }, expect: 'empty' }, { pos: 'best:1', op: 'piece_on', args: { square: 'f4' }, expect: 'white pawn' }] }]);
+  const planStub = (system, f, model) => (planCalls.push([system, model]), system === PLANNER ? kingside : (sheets.push(f), 'Push to **f4** with 1.f4.'));
+  const plan = await findPlan(engines, quiet, planStub, { onStep: t => planSteps.push(t) });
+  assert.deepEqual(planCalls, [[PLANNER, 'claude-opus-5-5'], [PLAN_SYSTEM, 'claude-haiku-5-5']]);
+  assert.deepEqual(planSteps, ['Looking for plan ideas', 'Asking Claude']);
+  assert.deepEqual([plan.best.move, plan.facts.plan_kind, plan.facts.side_to_move], ['f4', 'positional', 'White']);
+  assert.match(plan.best.line, /^1\. you f4 \[pawn gains space/);
+  assert.deepEqual(plan.shapes, [{ orig: 'f2', dest: 'f4', brush: 'green' }, { orig: 'f4', brush: 'green' }]);
+  // no idea holds: an error, and the writer is never called
+  planCalls.length = 0;
+  await assert.rejects(findPlan(engines, quiet, (system, f, m) => (planCalls.push(system), '[]')), /No clear plan found here/);
+  assert.deepEqual(planCalls, [PLANNER]);
+
   // every field the explainer and judge prompts quote is on a fact sheet built above, so a renamed field fails here
   const keys = new Set();
   const walk = v => { if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) { if (!Array.isArray(v)) keys.add(k); walk(x); } };
   sheets.forEach(walk);
-  const notFields = ['you', 'opp', 'check', 'yes', 'partly', 'no', 'tie', 'labelled', 'line', 'term', 'none']; // quoted labels and verdict values
-  const quoted = new Set([...(LEGEND + JUDGE + PAIR).matchAll(/"([a-z][a-z0-9_]*)"/g)].map(m => m[1]));
+  const notFields = ['you', 'opp', 'check', 'yes', 'partly', 'no', 'tie', 'labelled', 'line', 'term', 'none', 'tactical', 'positional', 'must', 'forced']; // quoted labels and verdict values
+  const quoted = new Set([...(LEGEND + JUDGE + PAIR + PLAN_SYSTEM).matchAll(/"([a-z][a-z0-9_]*)"/g)].map(m => m[1]));
   assert.deepEqual([...quoted].filter(k => !keys.has(k) && !notFields.includes(k)), []);
   engines.save?.(); // a full run only: a failed one would leave out the searches after the failure
   console.log('ok');

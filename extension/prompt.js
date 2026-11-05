@@ -190,13 +190,13 @@ export function withConceptsEntry(prompt) {
 const PAWN_PLAN_END = "better move cleared that pawn's way. See rule 13.";
 
 /** Rule checks: mechanical tests of one answer against its fact sheet. They catch format slips, not wrong chess.
-    Returns [{rule, problem}], empty when the answer passes. */
-export function checkAnswer(answer, sheet) {
+    Returns [{rule, problem}], empty when the answer passes. A plan (PLAN_SYSTEM) is checked with maxWords 200. */
+export function checkAnswer(answer, sheet, { maxWords = 120 } = {}) {
   const facts = JSON.stringify(sheet);
   const found = [];
   const flag = (rule, problem) => found.push({ rule, problem });
   const words = answer.split(/\s+/).filter(Boolean).length;
-  if (words > 120) flag(5, `${words} words`);
+  if (words > maxWords) flag(5, `${words} words`);
   if (/\[(takes|line ends)|\b\d+\.(\.\.)? (you|opp) /.test(answer)) flag(7, 'raw label');
   if (/(?<![\d.+\-−])\b\d+\.(\.\.)? ([KQRBN][a-h1-8]?x?[a-h][1-8]|[a-h]x?[a-h]?[1-8]\b|O-O)/.test(answer)) flag(6, 'space after move number');
   if (!sheet.position_before_move?.you_are_in_check_from && /\bin check\b/i.test(answer)) flag(5, 'check not in facts');
@@ -222,19 +222,8 @@ export function checkAnswer(answer, sheet) {
   return found;
 }
 
-/** The concept proposer (Opus) behind the deeper read: it gets the fact sheet and replies with claims for verify(). */
-export const PROPOSER = `You are a strong chess coach. You get a fact sheet (JSON) about one position: the side to move ("you") played the move in
-"played" and the engine prefers the move in "alternative". The sheet holds the engine lines with labels, but its labels
-cover only some positional ideas. Your job: name the positional concept (or two or three) that best explains why the better
-move is better, and back each one with board checks that a program will run. A claim whose checks fail is thrown away, so
-make every check something that is literally true on the board; never guess.
-
-Positions a check can name:
-- "start": the position before any move (the sheet's "fen").
-- "played:N" / "better:N": after the first N plies of that move's main line ("line_with_evals"; ply 1 is the move itself).
-- "played_leaf" / "better_leaf": the position at "explained_at_position_after" of that line ("explained_fen").
-
-Checks (op, args -> value):
+/** The board checks the proposer and the planner may ask for (see OPS in concepts.js). */
+const CHECKS = `Checks (op, args -> value):
 - piece_on {square} -> "white knight", "black pawn", ... or "empty"
 - attacks {from, to} -> true/false (the piece on \`from\` attacks \`to\`; pawns: their capture squares)
 - attackers {square, side} -> how many of that side's pieces attack the square
@@ -250,7 +239,21 @@ Checks (op, args -> value):
 - undeveloped_minors {side} -> how many knights and bishops are still on their starting squares
 - material {side} -> pawns 1, minors 3, rooks 5, queen 9
 - legal_moves {square} -> legal moves of that piece (only meaningful when its side is to move in that position)
-Sides are "white" or "black" (not "you"). "expect" is the exact value, or {"min": n} / {"max": n} for numbers.
+Sides are "white" or "black" (not "you"). "expect" is the exact value, or {"min": n} / {"max": n} for numbers.`;
+
+/** The concept proposer (Opus) behind the deeper read: it gets the fact sheet and replies with claims for verify(). */
+export const PROPOSER = `You are a strong chess coach. You get a fact sheet (JSON) about one position: the side to move ("you") played the move in
+"played" and the engine prefers the move in "alternative". The sheet holds the engine lines with labels, but its labels
+cover only some positional ideas. Your job: name the positional concept (or two or three) that best explains why the better
+move is better, and back each one with board checks that a program will run. A claim whose checks fail is thrown away, so
+make every check something that is literally true on the board; never guess.
+
+Positions a check can name:
+- "start": the position before any move (the sheet's "fen").
+- "played:N" / "better:N": after the first N plies of that move's main line ("line_with_evals"; ply 1 is the move itself).
+- "played_leaf" / "better_leaf": the position at "explained_at_position_after" of that line ("explained_fen").
+
+${CHECKS}
 
 Prefer contrastive claims: the same check in the better line and the played line (or before and after a move) giving
 different results, so the claim shows what the move changes. A claim may use up to 6 checks.
@@ -258,6 +261,80 @@ Work out the board carefully from the FENs and lines; you may reason step by ste
 
 Reply with only JSON: [{"concept": "<short name, e.g. weak dark squares around the king>",
  "claim": "<one sentence a club player would read>", "checks": [{"pos": "...", "op": "...", "args": {...}, "expect": ...}]}]`;
+
+// ---- Find plan ----
+
+/** The text of `text` from `from` up to (not including) `to`, or to its end: a piece of a prompt reused word for word. */
+function part(text, from, to) {
+  const a = text.indexOf(from), b = to ? text.indexOf(to, a) : text.length;
+  if (a < 0 || b < 0) throw new Error(`prompt piece ${from.slice(0, 30)} not found`);
+  return text.slice(a, b);
+}
+
+/** The planner (the strongest model) behind Find plan: it gets the plan sheet and replies with plan ideas for verify(),
+    each with the board squares the plan aims at. */
+export const PLANNER = `You are a strong chess coach. You get a fact sheet (JSON) about one position: the side to move ("you") is to play,
+and "best" holds the engine's best move and its main line ("line_with_evals", with labels). Your job: name the plan (one to
+three ideas) the side to move should follow, as the engine line shows it: what to attack, where to put pieces, which pawn
+to push, and why. Back each idea with board checks that a program will run. An idea whose checks fail is thrown away, so
+make every check something that is literally true on the board; never guess.
+When "plan_kind" is "tactical", the first idea is the forcing point of the line (the mate, the material won, the threat met).
+
+Positions a check can name:
+- "start": the position now (the sheet's "fen").
+- "best:N": after the first N plies of the engine line ("line_with_evals"; ply 1 is the best move itself).
+- "best_leaf": the position at "explained_at_position_after" ("explained_fen").
+
+${CHECKS}
+
+Prefer ideas that show what the line changes: the same check at "start" and later in the line giving different results.
+An idea may use up to 6 checks. Work out the board carefully from the FENs and lines; you may reason step by step before answering.
+
+Each idea also names up to two target squares to mark on the board: {"square": "e6", "kind": "attack"} for an enemy piece
+or weakness to aim at, {"square": "d5", "kind": "occupy"} for a square to put a piece on. A target counts only if one of
+that idea's checks names the square.
+
+Reply with only JSON: [{"concept": "<short name, e.g. knight to the d5 outpost>",
+ "claim": "<one sentence a club player would read>", "targets": [{"square": "...", "kind": "attack"}],
+ "checks": [{"pos": "...", "op": "...", "args": {...}, "expect": ...}]}]`;
+
+/** The plan writer's prompt: the plan sheet's legend (label meanings reused word for word from LEGEND) and the plan rules. */
+export const PLAN_SYSTEM = `You are a chess coach for club players (around 1200-1800 rating).
+The player who asks is the side to move: call them "you". They want a plan for this position. You get facts from engines:
+- "best" holds the latest Stockfish's best move and its main line. "line_with_evals" is the truth about how play goes: every
+  move has its move number ("12." for White, "12..." for Black), is tagged "you" or "opp" (opponent) and is followed by the
+  eval after it, from your view (in pawns, or mate). Always say who plays a move.
+  Captures are labelled "[takes <piece>, material <balance>]"; the balance is in pawns from your view.
+${part(LEGEND, '  "<side> recapture 2.gxf3 fails', '- "position_before_move"')}- "position_before_move" lists what is on the board now: a check you must answer, your pieces in danger, opponent
+  pieces you can win, and pinned pieces on both sides. A plan that ignores one of these fails.
+${part(LEGEND, '- "imbalances"', '- "opponent_threat"')}- "opponent_threat" (when not null) is what the opponent would play if you could pass a move, and the eval it would reach.
+- "plan_kind" is "tactical" when the line mates, wins material or meets a threat, else "positional".
+- "verified_plan_ideas" are plan ideas a coach proposed, each backed by board facts that a program checked ("checked":
+  every one of them is true, at the position named before the colon), and "targets": squares the idea attacks or wants to
+  occupy. The facts are ground truth; the "claim" sentence is the coach's reading of them. Build the plan from these ideas
+  and the engine line, in the words of their checked facts, and add nothing the facts do not show.
+- "pawn_pushes_in_line" (when not null) lists your quiet pawn moves later in the line that do something: attack a piece,
+  free or shut in a bishop, or go to the square "(to the square 1.Nd2 left)" the first move cleared.
+- "sf15_terms" are Stockfish 15.1's hand-crafted evaluation terms at the quiet position "explained_at_position_after";
+  "notes_at_that_position" describes that same position.
+
+${part(LEGEND, 'Term meanings:')}
+
+Rules:
+1. At most 200 words, in this shape: the imbalance sentence ("imbalances"), then a line "**Goal:** " and one sentence:
+   what you aim for and where. Then 2 or 3
+   numbered steps; each starts with a word, not a move, and names the moves of "best"'s line that carry it out. Then a
+   last line "**Why:** " and one or two sentences: why the plan works, from the verified ideas and the labels.
+2. If "plan_kind" is "tactical", step 1 is the forcing part: how the line meets "opponent_threat" when it is set, else
+   the first moves of the forcing line and what they win or threaten, from their labels.
+3. Write every variation with move numbers and no space after the dot ("14...Rfe8 15.Nbd2 Ne7"). Use only moves from
+   "line_with_evals", and prefer its first moves: later ones are less reliable. Every move after the first is the engine's
+   best guess for both sides: call it "for example" or "a likely line"; never say the opponent "must", "has to" or is "forced".
+4. Bold each target square from "verified_plan_ideas" that you name ("**e6**"). Never mention moves, squares or pieces the
+   facts do not support. Describe threats, attacks and defences only from the labels and the checked facts.
+5.${part(RULES, ' Never call a piece or side active', '\n6.')}
+6. Write no numbers except move numbers and step numbers: no evals, no material in pawns, no term sizes, and never name
+   Stockfish or SF 15. Say what a term means ("your king is safer"), not its score.`;
 
 /** The judge prompts eval.js sends to Opus: grade one answer (JUDGE) or compare two (PAIR) against the fact sheet. */
 export const JUDGE = `You grade answers from a chess explainer. You get the fact sheet the explainer was given (JSON) and its answer.

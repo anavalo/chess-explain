@@ -12,3 +12,11 @@ const sync = (tabId, url) => url?.startsWith(LICHESS)
 chrome.tabs.onUpdated.addListener((tabId, _, tab) => sync(tabId, tab.url));
 // lichess tabs that were open before the extension was installed or the browser restarted
 chrome.tabs.query({ url: `${LICHESS}*` }).then(tabs => tabs.forEach(t => sync(t.id, t.url)));
+
+// Find plan draws on lichess's board (panel.js showShapes); when the panel closes, its port drops: clear the shapes.
+// Runs in each lichess tab's main world, where showShapes keeps them.
+const clearShapes = () => { window.chessExplainShapes = null; window.site?.analysis?.setAutoShapes?.(); };
+chrome.runtime.onConnect.addListener(port => port.name === 'panel' && port.onDisconnect.addListener(async () => {
+  for (const t of await chrome.tabs.query({ url: `${LICHESS}*` }))
+    chrome.scripting.executeScript({ target: { tabId: t.id }, world: 'MAIN', func: clearShapes }).catch(() => {});
+}));

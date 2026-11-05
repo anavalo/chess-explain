@@ -74,6 +74,12 @@
   .toggle input:checked::before { transform: translateX(14px); }
   .toggle input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .toggle input:disabled { opacity: .6; cursor: wait; }
+  .or { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; font-size: 12px; color: var(--muted); }
+  .or::before, .or::after { content: ''; flex: 1; border-top: 1px solid var(--border); }
+  .outline { width: 100%; background: transparent; color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent); }
+  .outline:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  .center { text-align: center; margin: 6px 0 16px; }
+  .plan-head { display: flex; align-items: center; justify-content: space-between; }
   .error { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
 </style>
 <header>
@@ -84,7 +90,7 @@
     </svg>
   </button>
 </header>
-<p class="hint">Why lichess's top move beats the next game move, or a move you type. Turn on lichess's engine first.</p>
+<p class="hint">Why lichess's top move beats the next game move, or a move you type. Turn on lichess's engine first. Find plan works without it.</p>
 <section id="settings" class="card settings" hidden>
   <div class="field">
     <div class="field-head"><span class="label">Anthropic API key</span><span id="key-status" class="pill">not set</span></div>
@@ -107,5 +113,8 @@
   <button id="go">Explain</button>
 </form>
 <label class="toggle"><span><b>Positional depth</b><small>Board-checked positional ideas · one more call</small></span><input id="deep" type="checkbox" role="switch"></label>
+<div class="or">or</div>
+<button id="plan" class="outline" type="button">◎ Find plan</button>
+<p class="note center">Best plan for the side to move · uses the strongest model</p>
 <div id="out" aria-live="polite"></div>
 <script type="module" src="panel.js"></script>
