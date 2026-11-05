@@ -33,7 +33,7 @@ import { basename } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
-import { NODES, aboutEqual, answer, ask, linePlies, nodeEngines, planAnswer, play, position, san, sanToUci, search } from './extension/explain.js';
+import { NODES, aboutEqual, answer, linePlies, llmWith, nodeEngines, planAnswer, play, position, san, sanToUci, search } from './extension/explain.js';
 import { JUDGE, PAIR, PLANNER, PLAN_SYSTEM, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
 
 // ---- the judge (its prompts are in extension/prompt.js) ----
@@ -128,7 +128,7 @@ await Promise.all(Array.from({ length: facts ? 16 : 4 }, async () => {
     try {
       if (facts) {
         const s = JSON.parse(readRun(facts, name)?.sheet);
-        const key = process.env.ANTHROPIC_API_KEY, llm = (system, f, m) => ask(system, f, key, m);
+        const llm = llmWith(process.env.ANTHROPIC_API_KEY);
         // a plan sheet (it has "best") gets its plan, not an explanation
         const a = await (s.best ? planAnswer(s, llm, { model: o.model }) : answer(s, llm, { model: o.model, depth: o.deep }));
         text = `${JSON.stringify(a.facts, null, 1)}\n\n${a.text}\n`;

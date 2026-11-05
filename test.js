@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  Refused, ask as anthropic, checkNotPlaying, findPlan, handle, planAnswer, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
+  Refused, ask as anthropic, checkNotPlaying, explainMove, findPlan, planAnswer, request, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
 } from './extension/explain.js';
 import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { lichessBoard } from './extension/lichess.js';
@@ -312,6 +312,33 @@ globalThis.fetch = async url => {
 };
 await checkNotPlaying('fable6');
 for (const user of [undefined, 'zz_no_such_user_zz', 'in_a_game']) await assert.rejects(checkNotPlaying(user), Refused);
+// one panel request: a refused one never asks for the engines and never runs its task (so no LLM either)
+for (const user of [undefined, 'in_a_game'])
+  await assert.rejects(request({ user, engines: () => assert.fail('asked for the engines'), llm: 'the llm' }, () => assert.fail('ran the task')), Refused);
+// a free user: lichess is asked, then the engines are, then the task runs with them and the LLM; each stage is named
+{
+  const order = [], status = globalThis.fetch;
+  globalThis.fetch = (...args) => (order.push('lichess asked'), status(...args));
+  const got = await request({ user: 'fable6', engines: async () => (order.push('engines asked for'), 'the engines'), llm: 'the llm', onStep: s => order.push(s) },
+    (e, llm) => (order.push('task'), [e, llm]));
+  assert.deepEqual(got, ['the engines', 'the llm']);
+  assert.deepEqual(order, ['Checking you are not in a game', 'lichess asked', 'Starting Stockfish', 'engines asked for', 'task']);
+}
+// a dead engine: the request it is on rejects, and so does every later one; one that died idle rejects the next request
+{
+  const sent = [], dead = uciEngine(l => sent.push(l));
+  const on = dead.until(['go nodes 1'], l => l.startsWith('bestmove')), queued = dead.until(['isready'], l => l === 'readyok');
+  await new Promise(setImmediate);
+  assert.deepEqual(sent, ['go nodes 1']); // the first request is with the engine, the second waits its turn
+  dead.fail(new Error('Stockfish crashed'));
+  const idle = uciEngine(() => {});
+  idle.fail(new Error('Stockfish crashed'));
+  for (const r of await Promise.allSettled([on, queued, dead.until(['isready'], () => true), idle.until(['isready'], () => true)]))
+    assert.equal(r.reason?.message, 'Stockfish crashed');
+  // a live one still answers
+  const live = uciEngine(l => queueMicrotask(() => live.onLine(l === 'isready' ? 'readyok' : l)));
+  assert.deepEqual(await live.until(['isready'], l => l === 'readyok'), ['readyok']);
+}
 delete globalThis.fetch; // nothing past here may call out
 
 const RECORDED = new URL('test-engines.json', import.meta.url);
@@ -354,7 +381,7 @@ const sheets = [];
 // the LLM stub: logs each call; the proposer gets `proposer`, the explainer's sheet is kept in `facts`
 let calls = [], proposer = null;
 const stub = (system, f, model) => (calls.push([system, model]), system === PROPOSER ? proposer : (sheets.push(facts = f), '(stub)'));
-const ask = (fen, move, best, opts) => handle(engines, { fen, move, best }, stub, opts);
+const ask = (fen, move, best, opts) => explainMove(engines, { fen, move, best }, stub, opts);
 try {
   const fen = 'r3k2r/1p1bbpp1/pqn1p2p/2ppP3/3P4/2PB1N2/PP1N1PPP/R2Q1RK1 w kq - 2 11';
   let r = await ask(fen, 'dxc5', 'c3c4');

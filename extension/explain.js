@@ -42,18 +42,27 @@ export class Refused extends Error {}
 // ---- engines ----
 
 /** Talks UCI to one Stockfish. `send(line)` writes a command; feed every output line to the returned `onLine`.
-    Commands run one at a time, in call order. */
+    Commands run one at a time, in call order. A dead engine never answers again: tell it with `fail(error)`, and the
+    request it is on and every later one reject with that error instead of waiting for ever. */
 export function uciEngine(send) {
-  let waiting = null, queue = Promise.resolve();
-  const until = (cmds, done) => (queue = queue.then(() => new Promise(resolve => {
+  let waiting = null, reject = null, dead = null, queue = Promise.resolve();
+  const until = (cmds, done) => (queue = queue.then(() => new Promise((resolve, no) => {
+    if (dead) return no(dead);
     const lines = [];
     waiting = l => {
       lines.push(l);
-      if (done(l)) { waiting = null; resolve(lines); }
+      if (done(l)) { waiting = reject = null; resolve(lines); }
     };
+    reject = no;
     cmds.forEach(send);
   })));
-  return { onLine: l => waiting?.(l), until };
+  const fail = error => {
+    dead = error;
+    waiting = null;
+    reject?.(error);
+    queue.catch(() => {}); // requests still in the queue reject after this one; nobody may be waiting for the last
+  };
+  return { onLine: l => waiting?.(l), until, fail };
 }
 
 /** Starts the engines with `start(path)` (path relative to this file), which returns a uciEngine: two copies of the
@@ -627,9 +636,12 @@ export async function ask(system, facts, apiKey, model) {
   return body.content.filter(b => b.type === 'text').map(b => b.text).join('');
 }
 
+/** The `llm(system, facts, model)` that answer(), planAnswer() and the tasks take: ask() with the user's key. */
+export const llmWith = apiKey => (system, facts, model) => ask(system, facts, apiKey, model);
+
 // ---- one panel request ----
 
-/** Fair play: fail closed unless lichess confirms `user` is not in a game. The panel asks before any engine runs. */
+/** Fair play: fail closed unless lichess confirms `user` is not in a game. request() asks before any engine runs. */
 export async function checkNotPlaying(user) {
   if (!/^[A-Za-z0-9_-]{2,30}$/.test(user ?? '')) throw new Refused('Log in to lichess so I can check you are not playing a game.');
   let status;
@@ -681,10 +693,21 @@ export async function answer(facts, llm, { model = 'claude-haiku-5-5', depth = f
   return { text: await llm(systemFor(model, !!facts.verified_concepts), facts, model), facts, concepts, read };
 }
 
-/** {fen, move, best} -> answer()'s {text, facts, concepts, read} plus the two moves' {move, eval, line, threat_line} as best
-    and compared. move: the move to compare against (SAN or UCI), best: lichess's top move (UCI, optional). `llm` and
-    `opts` go to answer(). */
-export async function handle(engines, req, llm, opts) {
+/** One request from the panel: fair play first, then the engines, then `task(engines, llm)`, whose result it resolves
+    to. `engines()` resolves to the started engines. It is not called, and neither is the task, unless lichess confirms
+    `user` is not in a game: a refused request reaches no engine and no LLM. `onStep` gets each stage's name.
+    The two tasks are explainMove() and findPlan(). */
+export async function request({ user, engines, llm, onStep = () => {} }, task) {
+  onStep('Checking you are not in a game');
+  await checkNotPlaying(user);
+  onStep('Starting Stockfish');
+  return task(await engines(), llm);
+}
+
+/** The Explain task. {fen, move, best} -> answer()'s {text, facts, concepts, read} plus the two moves' {move, eval, line,
+    threat_line} as best and compared. move: the move to compare against (SAN or UCI), best: lichess's top move (UCI,
+    optional). `llm` and `opts` go to answer(). */
+export async function explainMove(engines, req, llm, opts) {
   const a = await answer(await factSheet(engines, req.fen, req.move, req.best, NODES), llm, opts);
   const line = k => ({
     move: a.facts[k].move, eval: a.facts[k].latest_sf_eval, line: a.facts[k].line_with_evals,
@@ -746,7 +769,7 @@ export async function planAnswer(sheet, llm, { model = 'claude-haiku-5-5', onSte
   return { text: await llm(PLAN_SYSTEM, facts, model), facts, ideas };
 }
 
-/** Find plan: the plan sheet and its planAnswer(), plus shapes (for the lichess board) and best: {move, eval, line}.
+/** The Find plan task: the plan sheet and its planAnswer(), plus shapes (for the lichess board) and best: {move, eval, line}.
     `opts` go to planAnswer(). */
 export async function findPlan(engines, fen, llm, { nodes = NODES, ...opts } = {}) {
   const a = await planAnswer(await planFacts(engines, fen, nodes), llm, opts);
@@ -782,12 +805,12 @@ if (import.meta.main) { // node 24.2+; undefined in the browser
   });
   if (o.deep && o['no-llm']) throw new Error('--deep needs the LLM');
   const engines = await nodeEngines();
-  const key = process.env.ANTHROPIC_API_KEY, llm = (system, f, m) => ask(system, f, key, m);
+  const llm = llmWith(process.env.ANTHROPIC_API_KEY);
   try {
     const nodes = Number(o.nodes);
     if (o['no-llm']) console.log(JSON.stringify(await (o.plan ? planFacts(engines, fen, nodes) : factSheet(engines, fen, move, o.vs, nodes)), null, 1));
     else {
-      const { facts, text } = o.plan ? await findPlan(engines, fen, llm, { model: o.model, nodes })
+      const { facts, text } = o.plan ? await planAnswer(await planFacts(engines, fen, nodes), llm, { model: o.model })
         : await answer(await factSheet(engines, fen, move, o.vs, nodes), llm, { model: o.model, depth: o.deep });
       console.log(JSON.stringify(facts, null, 1));
       console.log('\n' + text);

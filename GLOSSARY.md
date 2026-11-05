@@ -37,7 +37,7 @@ Two moves whose engine gap is too small to explain: the fact sheet stops at the 
 _Avoid_: draw, equal position
 
 **Deeper read**:
-An optional step before the explainer writes: the concept proposer suggests positional ideas for the fact sheet, the board checks them, and the verified concepts go on the sheet. It runs when depth is on.
+An optional step before the explainer writes: the concept proposer suggests positional ideas for the fact sheet, the board checks them, and the verified concepts go on the sheet. It runs when depth is on. Find plan always runs one, with the planner in the concept proposer's place.
 _Avoid_: deep mode, concept mode, second pass
 
 **Concept proposer**:
@@ -47,6 +47,30 @@ _Avoid_: coach, concept LLM
 **Verified concept**:
 A proposed idea whose board checks all held, shown on the fact sheet in `verified_concepts` with its checks in words.
 _Avoid_: concept (when an unchecked proposal is meant)
+
+## Planning
+
+**Plan sheet**:
+The engine facts about one position and the engine's best line from it, which the plan is written from.
+_Avoid_: plan facts, fact sheet (that one compares two moves)
+
+**Planner**:
+The strongest-model call that proposes plan ideas for a plan sheet, each as a claim sentence plus board checks.
+_Avoid_: coach, plan LLM
+
+**Plan idea**:
+A proposed idea whose board checks all held, shown on the plan sheet with its checks in words and the squares it aims at.
+_Avoid_: concept, verified concept (those belong to a fact sheet)
+
+**Plan**:
+What the user gets for one plan sheet: a goal, two or three steps and a reason, written from the plan ideas.
+_Avoid_: answer (that one explains two moves)
+
+## Panel
+
+**Request**:
+One Explain or Find plan run from the panel: the fair-play check, then the engines, then the task.
+_Avoid_: handler, flow
 
 ## Lichess
 

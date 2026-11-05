@@ -1,4 +1,4 @@
-import { ask, checkNotPlaying, findPlan, handle, sanToUci, startEngines, uciEngine } from './explain.js';
+import { explainMove, findPlan, llmWith, request, sanToUci, startEngines, uciEngine } from './explain.js';
 import { inTab, lichessBoard } from './lichess.js';
 import { linkMoves, md } from './md.js';
 
@@ -11,17 +11,15 @@ chrome.runtime.connect({ name: 'panel' });
 // Both Stockfish builds run as Web Workers for as long as the panel is open. Their threads need
 // SharedArrayBuffer, so the panel must be cross-origin isolated (the manifest's COOP/COEP keys).
 // Without it the engines hang without any error, so they are not started at all.
-// A crashed worker never answers again, so `crashed` rejects every request from then on.
-let crash;
-const crashed = new Promise((_, fail) => (crash = fail));
-crashed.catch(() => {});
+// A crashed worker never answers again: its engine is told, and rejects every request from then on.
 const engines = crossOriginIsolated && startEngines(path => {
   const w = new Worker(path);
   const e = uciEngine(line => w.postMessage(line));
   w.onmessage = m => e.onLine(m.data);
-  w.onerror = m => crash(new Error(`Stockfish crashed (${m.message}). Close and reopen the panel.`));
+  w.onerror = m => e.fail(new Error(`Stockfish crashed (${m.message}). Close and reopen the panel.`));
   return e;
 });
+if (engines) engines.catch(() => {}); // a crash while starting is reported by the request that needs the engines
 const keyInput = document.getElementById('key');
 const settings = document.getElementById('settings'), gear = document.getElementById('gear');
 const showSettings = open => {
@@ -82,15 +80,15 @@ function moveRow(parent, cls, label, m) {
   el('span', 'eval', { text: m.eval }, row);
 }
 
-// a spinner card whose label counts the seconds; returns {set(stage), done(), gone()}; gone: a new Explain cleared it
-function spinner(stage) {
+// a spinner card whose label counts the seconds; returns {set(stage), done()}
+function spinner(stage = '') {
   const status = el('div', 'card status');
   el('div', 'spinner', {}, status);
   const label = el('span', '', { text: `${stage}…` }, status);
   const started = Date.now();
   const tick = () => (label.textContent = `${stage}… ${Math.round((Date.now() - started) / 1000)} s`);
   const timer = setInterval(tick, 1000);
-  return { set: s => ((stage = s), tick()), done: () => { clearInterval(timer); status.remove(); }, gone: () => !status.isConnected };
+  return { set: s => ((stage = s), tick()), done: () => { clearInterval(timer); status.remove(); } };
 }
 
 /** The answer card; a move link in it plays its line (one of `lines`, from b's position) on the lichess board. */
@@ -149,50 +147,45 @@ document.getElementById('view').onchange = () => {
 /** The engines once they have started; throws when they cannot. */
 async function ready() {
   if (!engines) throw new Error('Stockfish cannot start: the panel is not cross-origin isolated. Reload the extension at chrome://extensions.');
-  return Promise.race([engines, crashed, new Promise((_, fail) =>
+  return Promise.race([engines, new Promise((_, fail) =>
     setTimeout(() => fail(new Error('Stockfish did not start within 30 s.')), 30_000))]);
+}
+
+/** One request for the position `b` the board gave, under a spinner: `task(engines, llm, step)` runs once fair play
+    has passed and the engines have started, and `step` names its stages on the spinner. */
+async function requested(b, apiKey, task) {
+  const s = spinner();
+  try {
+    return await request({ user: b.user, engines: ready, llm: llmWith(apiKey), onStep: s.set }, (e, llm) => task(e, llm, s.set));
+  } finally {
+    s.done();
+  }
 }
 
 async function explain(apiKey, board) {
   const b = await board.read();
   const move = document.getElementById('move').value.trim() || b.next;
   if (!move) return error('No next game move here. Type a move to compare with.');
-
-  const s = spinner('Checking you are not in a game');
-  try {
-    await checkNotPlaying(b.user);
-    s.set('Starting Stockfish');
-    const e = await ready();
-    s.set(`Analysing ${move}`);
-    const llm = (system, facts, m) => ask(system, facts, apiKey, m);
-    const data = await Promise.race([handle(e, { fen: b.fen, move, best: b.best }, llm,
-      { model: model(), depth: deep.checked, onStep: s.set }), crashed]);
-    out.replaceChildren();
-    render(data, b);
-    if (data.read !== undefined && !data.concepts)
-      el('div', 'card note', { text: data.read ? 'No positional idea passed the board checks.' : 'Could not read the positional ideas in the reply.' });
-  } finally {
-    s.done();
-  }
+  const data = await requested(b, apiKey, (e, llm, step) => {
+    step(`Analysing ${move}`);
+    return explainMove(e, { fen: b.fen, move, best: b.best }, llm, { model: model(), depth: deep.checked, onStep: step });
+  });
+  out.replaceChildren();
+  render(data, b);
+  if (data.read !== undefined && !data.concepts)
+    el('div', 'card note', { text: data.read ? 'No positional idea passed the board checks.' : 'Could not read the positional ideas in the reply.' });
 }
 
 async function plan(apiKey, board) {
   const b = await board.read();
-  const s = spinner('Checking you are not in a game');
-  try {
-    await checkNotPlaying(b.user);
-    s.set('Starting Stockfish');
-    const e = await ready();
-    s.set("Finding the engine's plan");
-    const llm = (system, facts, m) => ask(system, facts, apiKey, m);
-    const data = await Promise.race([findPlan(e, b.fen, llm, { model: model(), onStep: s.set }), crashed]);
-    out.replaceChildren();
-    renderPlan(data, b);
-    shapes = [b.fen, data.shapes];
-    await syncShapes();
-  } finally {
-    s.done();
-  }
+  const data = await requested(b, apiKey, (e, llm, step) => {
+    step("Finding the engine's plan");
+    return findPlan(e, b.fen, llm, { model: model(), onStep: step });
+  });
+  out.replaceChildren();
+  renderPlan(data, b);
+  shapes = [b.fen, data.shapes];
+  await syncShapes();
 }
 
 /** One request at a time: Explain or Find plan, each in its own view (`name`). Clears that view's last answer first,
