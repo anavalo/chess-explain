@@ -44,6 +44,10 @@ _Avoid_: deep mode, concept mode, second pass
 The strongest-model call in a deeper read that names positional ideas for a fact sheet, each as a claim sentence plus board checks.
 _Avoid_: coach, concept LLM
 
+**Board check**:
+One question a program asks the board at a named position (is e5 an outpost, how many pieces attack f7), with the value expected. One row of the checks table in `concepts.js`: how the board answers and how the sheet words the answer.
+_Avoid_: op, primitive, tool
+
 **Verified concept**:
 A proposed idea whose board checks all held, shown on the fact sheet in `verified_concepts` with its checks in words.
 _Avoid_: concept (when an unchecked proposal is meant)

@@ -14,7 +14,7 @@ import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWea
 import { lichessBoard } from './extension/lichess.js';
 import { linkMoves, md } from './extension/md.js';
 import { JUDGE, LEGEND, PAIR, PLANNER, PLAN_SYSTEM, PROPOSER, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
-import { claimsIn, planShapes, render, verify, withConcepts, withPlan } from './extension/concepts.js';
+import { CHECKS, claimsIn, planShapes, render, verify, withConcepts, withPlan } from './extension/concepts.js';
 
 const pos = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
 
@@ -188,6 +188,36 @@ assert.ok(verify(cSheet, [{ concept: 'c', claim: 'c', checks: [{ pos: 'played_le
 assert.deepEqual(verify(cSheet, [null, { concept: 'c', checks: 'x' }]).map(c => c.verified), [false, false]);
 // sides render the same whatever their case
 assert.deepEqual(render(cSheet, verify(cSheet, [{ concept: 'k', claim: 'k', checks: [{ pos: 'start', op: 'king_square', args: { side: 'White' }, expect: 'e1' }] }]))[0].checked, ['now, before your move: your king on e1']);
+// every board check, once: its value on a board and its wording on the sheet. A row with no case here fails.
+const rows = {
+  piece_on: [start, { square: 'e7' }, 'black pawn', "e7: opp's pawn"],
+  attacks: [start, { from: 'g1', to: 'f3' }, true, 'the piece on g1 attacks f3: yes'],
+  attackers: [start, { square: 'f6', side: 'black' }, 3, "opp's pieces attacking f6: 3"], // the g8 knight and two pawns
+  defenders: [start, { square: 'e2' }, 4, 'defenders of the piece on e2: 4'],
+  piece_squares: [start, { square: 'g1' }, 2, 'the piece on g1 reaches 2 squares'], // f3 and h3; e2 is its own pawn's
+  pawn_can_ever_attack: [start, { square: 'e5', side: 'black' }, true, "a pawn of the opponent's can still ever attack e5: yes"],
+  outpost: [start, { square: 'e5', side: 'white' }, false, 'e5 is an outpost for you: no'],
+  pawns_on_colour: [start, { side: 'black', colour: 'light' }, 4, "opp's pawns on light squares: 4"],
+  file_state: [doubled, { file: 'e' }, 'semi-open for black', "e-file: semi-open for opp's rooks"],
+  ray_clear: [start, { from: 'a1', to: 'a8' }, false, 'nothing stands between a1 and a8: no'],
+  passed: [doubled, { square: 'e5' }, true, 'the pawn on e5 is passed: yes'],
+  king_square: [start, { side: 'black' }, 'e8', "opp's king on e8"],
+  undeveloped_minors: [start, { side: 'white' }, 4, 'your knights and bishops still on their starting squares: 4'],
+  material: [start, { side: 'white' }, 39, 'your material: 39'],
+  route: [start, { from: 'g1', to: 'e5' }, 2, 'the piece on g1 can reach e5 in 2 moves, the other pieces standing still'],
+  legal_moves: [start, { square: 'g1' }, 2, 'the piece on g1 has 2 legal moves'],
+};
+assert.deepEqual(Object.keys(rows).sort(), Object.keys(CHECKS).sort());
+for (const [op, [fen, args, value, words]] of Object.entries(rows)) {
+  const k = one(fen, { op, args, expect: value });
+  assert.ok(k.ok, `${op}: ${k.error ?? JSON.stringify(k.value)}`);
+  assert.equal(render({ ...cSheet, fen }, [{ verified: true, checks: [k] }])[0].checked[0], `now, before your move: ${words}`);
+}
+assert.match(one(start, { op: 'toString', args: {}, expect: 'x' }).error, /unknown op/);
+// the proposer and the planner are told of every row, and of nothing that is not a row; route is the planner's alone
+const told = prompt => [...prompt.matchAll(/^- ([a-z_]+) \{/gm)].map(m => m[1]).sort();
+assert.deepEqual(told(PLANNER), Object.keys(CHECKS).sort());
+assert.deepEqual(told(PROPOSER), Object.keys(CHECKS).filter(op => op !== 'route').sort());
 // the claim list is found past brackets in the reasoning; no list at all is told apart from an empty one
 assert.deepEqual(claimsIn('The sheet says [takes pawn]. Claims:\n[{"concept": "a"}]\nDone [ok].'), [{ concept: 'a' }]);
 assert.deepEqual([claimsIn('none [here]'), claimsIn('[]')], [null, []]);

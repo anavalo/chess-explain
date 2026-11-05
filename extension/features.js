@@ -61,7 +61,7 @@ export function isOutpost(board, sq, color) {
 
 /** Can an enemy pawn of `color`'s opponent ever attack `sq`: one on a neighbouring file that has not gone past it.
     ponytail: an enemy pawn that is blocked still counts as able to attack it. */
-function enemyPawnCanAttack(board, sq, color) {
+export function enemyPawnCanAttack(board, sq, color) {
   const r = squareRank(sq);
   for (const p of board.pawn.intersect(board[opposite(color)]))
     if (Math.abs(squareFile(p) - squareFile(sq)) === 1 && (color === 'white' ? squareRank(p) > r : squareRank(p) < r)) return true;

@@ -1,9 +1,9 @@
 // The deeper read, run before the answer when the panel's positional depth switch is on: the strongest model proposes
 // concepts for a fact sheet, each backed by board checks; verify() runs the checks and drops a claim unless every one
 // holds; render() turns the survivors into the sheet field "verified_concepts" (checks in words, sides as your/opp's).
-import { SquareSet, attacks, between, parseSquare, makeSquare, squareFile, squareRank } from './vendor/chessops.js';
+import { SquareSet, attacks, between, opposite, parseSquare, makeSquare, squareFile, squareRank } from './vendor/chessops.js';
 import { linePlies, position, play, sanToUci } from './explain.js';
-import { isOutpost, route } from './features.js';
+import { enemyPawnCanAttack, isOutpost, route } from './features.js';
 import { PLANNER, PROPOSER } from './prompt.js';
 
 // the proposer is always the strongest model, whatever model writes the answer
@@ -21,47 +21,95 @@ const lineSans = l => linePlies(l.line_with_evals)[0];
 const NAMED = /^(played|better|best)(?:_leaf|:(\d+))$/;
 const lineOf = (sheet, name) => ({ played: sheet.played, better: sheet.alternative, best: sheet.best })[name];
 
-/** The primitives: (board position, args) -> a value the check's `expect` is compared with. */
-const OPS = {
-  piece_on: (pos, { square }) => { const p = pos.board.get(sq(square)); return p ? `${p.color} ${p.role}` : 'empty'; },
-  attacks: (pos, { from, to }) => { const f = sq(from); return attacks(pieceAt(pos.board, f), f, pos.board.occupied).has(sq(to)); },
-  attackers: (pos, { square, side: c }) => attackersOf(pos, sq(square), side(c)),
-  defenders: (pos, { square }) => { const s = sq(square); return attackersOf(pos, s, pieceAt(pos.board, s).color); },
+const yn = v => (v === true ? 'yes' : v === false ? 'no' : v);
+
+/** The board checks, one row each. `run(position, args)` is the value the check's `expect` is compared with;
+    `say(args, value, s)` words that value on the sheet, where `s(side)` is "your" or "opp's". The proposer and the
+    planner read of them in prompt.js: a test holds that every row has its line there, and a case of its own. */
+export const CHECKS = {
+  piece_on: {
+    run: (pos, { square }) => { const p = pos.board.get(sq(square)); return p ? `${p.color} ${p.role}` : 'empty'; },
+    say: (a, v, s) => `${a.square}: ${v === 'empty' ? 'empty' : `${s(v.split(' ')[0])} ${v.split(' ')[1]}`}`,
+  },
+  attacks: {
+    run: (pos, { from, to }) => { const f = sq(from); return attacks(pieceAt(pos.board, f), f, pos.board.occupied).has(sq(to)); },
+    say: (a, v) => `the piece on ${a.from} attacks ${a.to}: ${yn(v)}`,
+  },
+  attackers: {
+    run: (pos, { square, side: c }) => attackersOf(pos, sq(square), side(c)),
+    say: (a, v, s) => `${s(a.side)} pieces attacking ${a.square}: ${v}`,
+  },
+  defenders: {
+    run: (pos, { square }) => { const s = sq(square); return attackersOf(pos, s, pieceAt(pos.board, s).color); },
+    say: (a, v) => `defenders of the piece on ${a.square}: ${v}`,
+  },
   // squares the piece attacks that are not taken by its own pieces (pseudo-mobility; pawns: their capture squares)
-  piece_squares: (pos, { square }) => { const s = sq(square), p = pieceAt(pos.board, s); return attacks(p, s, pos.board.occupied).diff(pos.board[p.color]).size(); },
+  piece_squares: {
+    run: (pos, { square }) => { const s = sq(square), p = pieceAt(pos.board, s); return attacks(p, s, pos.board.occupied).diff(pos.board[p.color]).size(); },
+    say: (a, v) => `the piece on ${a.square} reaches ${v} squares`,
+  },
   // can any `side` pawn ever attack this square (a pawn on a neighbouring file that has not passed it yet)
-  pawn_can_ever_attack: (pos, { square, side: c }) => {
-    const s = sq(square), color = side(c), r = squareRank(s);
-    return [...pos.board.pawn.intersect(pos.board[color])].some(p => Math.abs(squareFile(p) - squareFile(s)) === 1
-      && (color === 'white' ? squareRank(p) < r : squareRank(p) > r));
+  pawn_can_ever_attack: {
+    run: (pos, { square, side: c }) => enemyPawnCanAttack(pos.board, sq(square), opposite(side(c))),
+    say: (a, v, s) => `a pawn of ${s(a.side) === 'your' ? 'yours' : "the opponent's"} can still ever attack ${a.square}: ${yn(v)}`,
   },
-  outpost: (pos, { square, side: c }) => isOutpost(pos.board, sq(square), side(c)),
-  pawns_on_colour: (pos, { side: c, colour }) => {
-    if (colour !== 'light' && colour !== 'dark') throw new Error(`colour must be light or dark, got ${colour}`);
-    const own = pos.board.pawn.intersect(pos.board[side(c)]); return (colour === 'light' ? own.intersect(LIGHT) : own.diff(LIGHT)).size(); },
-  file_state: (pos, { file }) => {
-    const i = 'abcdefgh'.indexOf(String(file).toLowerCase());
-    if (i < 0 || String(file).length !== 1) throw new Error(`bad file ${file}`);
-    const f = SquareSet.fromFile(i), w = pos.board.pawn.intersect(pos.board.white).intersects(f), b = pos.board.pawn.intersect(pos.board.black).intersects(f);
-    return !w && !b ? 'open' : !w ? 'semi-open for white' : !b ? 'semi-open for black' : 'closed';
+  outpost: {
+    run: (pos, { square, side: c }) => isOutpost(pos.board, sq(square), side(c)),
+    say: (a, v, s) => `${a.square} is an outpost for ${s(a.side) === 'your' ? 'you' : 'the opponent'}: ${yn(v)}`,
   },
-  ray_clear: (pos, { from, to }) => { const a = sq(from), z = sq(to), btw = between(a, z); if (btw.isEmpty() && !attacks({ role: 'queen', color: 'white' }, a, SquareSet.empty()).has(z)) throw new Error(`${from}-${to} is not a line`); return !btw.intersects(pos.board.occupied); },
+  pawns_on_colour: {
+    run: (pos, { side: c, colour }) => {
+      if (colour !== 'light' && colour !== 'dark') throw new Error(`colour must be light or dark, got ${colour}`);
+      const own = pos.board.pawn.intersect(pos.board[side(c)]); return (colour === 'light' ? own.intersect(LIGHT) : own.diff(LIGHT)).size(); },
+    say: (a, v, s) => `${s(a.side)} pawns on ${a.colour} squares: ${v}`,
+  },
+  file_state: {
+    run: (pos, { file }) => {
+      const i = 'abcdefgh'.indexOf(String(file).toLowerCase());
+      if (i < 0 || String(file).length !== 1) throw new Error(`bad file ${file}`);
+      const f = SquareSet.fromFile(i), w = pos.board.pawn.intersect(pos.board.white).intersects(f), b = pos.board.pawn.intersect(pos.board.black).intersects(f);
+      return !w && !b ? 'open' : !w ? 'semi-open for white' : !b ? 'semi-open for black' : 'closed';
+    },
+    say: (a, v, s) => `${a.file}-file: ${String(v).replace('for white', `for ${s('white')} rooks`).replace('for black', `for ${s('black')} rooks`)}`,
+  },
+  ray_clear: {
+    run: (pos, { from, to }) => { const a = sq(from), z = sq(to), btw = between(a, z); if (btw.isEmpty() && !attacks({ role: 'queen', color: 'white' }, a, SquareSet.empty()).has(z)) throw new Error(`${from}-${to} is not a line`); return !btw.intersects(pos.board.occupied); },
+    say: (a, v) => `nothing stands between ${a.from} and ${a.to}: ${yn(v)}`,
+  },
   // no enemy pawn ahead on this or a neighbouring file, and no own pawn ahead on this file (the rear doubled pawn is not passed)
-  passed: (pos, { square }) => {
-    const s = sq(square), p = pieceAt(pos.board, s), f = squareFile(s), r = squareRank(s);
-    if (p.role !== 'pawn') throw new Error(`no pawn on ${square}`);
-    const ahead = t => (p.color === 'white' ? squareRank(t) > r : squareRank(t) < r);
-    return ![...pos.board.pawn].some(t => ahead(t) && (pos.board.get(t).color === p.color ? squareFile(t) === f : Math.abs(squareFile(t) - f) <= 1));
+  passed: {
+    run: (pos, { square }) => {
+      const s = sq(square), p = pieceAt(pos.board, s), f = squareFile(s), r = squareRank(s);
+      if (p.role !== 'pawn') throw new Error(`no pawn on ${square}`);
+      const ahead = t => (p.color === 'white' ? squareRank(t) > r : squareRank(t) < r);
+      return ![...pos.board.pawn].some(t => ahead(t) && (pos.board.get(t).color === p.color ? squareFile(t) === f : Math.abs(squareFile(t) - f) <= 1));
+    },
+    say: (a, v) => `the pawn on ${a.square} is passed: ${yn(v)}`,
   },
-  king_square: (pos, { side: c }) => makeSquare(pos.board.kingOf(side(c))),
-  undeveloped_minors: (pos, { side: c }) => { const color = side(c); return Object.entries(START[color]).reduce((n, [role, ss]) => n + ss.filter(s => { const p = pos.board.get(sq(s)); return p && p.role === role && p.color === color; }).length, 0); },
-  material: (pos, { side: c }) => [...pos.board[side(c)]].reduce((n, s) => n + VALUE[pos.board.get(s).role], 0),
+  king_square: {
+    run: (pos, { side: c }) => makeSquare(pos.board.kingOf(side(c))),
+    say: (a, v, s) => `${s(a.side)} king on ${v}`,
+  },
+  undeveloped_minors: {
+    run: (pos, { side: c }) => { const color = side(c); return Object.entries(START[color]).reduce((n, [role, ss]) => n + ss.filter(s => { const p = pos.board.get(sq(s)); return p && p.role === role && p.color === color; }).length, 0); },
+    say: (a, v, s) => `${s(a.side)} knights and bishops still on their starting squares: ${v}`,
+  },
+  material: {
+    run: (pos, { side: c }) => [...pos.board[side(c)]].reduce((n, s) => n + VALUE[pos.board.get(s).role], 0),
+    say: (a, v, s) => `${s(a.side)} material: ${v}`,
+  },
   // moves the piece needs to get there, the rest of the board standing still (see route() in features.js)
-  route: (pos, { from, to }) => route(pos.board, sq(from), sq(to)) ?? 'more than 4',
-  legal_moves: (pos, { square }) => {
-    const s = sq(square);
-    if (pieceAt(pos.board, s).color !== pos.turn) throw new Error(`the piece on ${square} is not on the side to move`);
-    return pos.dests(s).size();
+  route: {
+    run: (pos, { from, to }) => route(pos.board, sq(from), sq(to)) ?? 'more than 4',
+    say: (a, v) => `the piece on ${a.from} can reach ${a.to} in ${v} moves, the other pieces standing still`,
+  },
+  legal_moves: {
+    run: (pos, { square }) => {
+      const s = sq(square);
+      if (pieceAt(pos.board, s).color !== pos.turn) throw new Error(`the piece on ${square} is not on the side to move`);
+      return pos.dests(s).size();
+    },
+    say: (a, v) => `the piece on ${a.square} has ${v} legal moves`,
   },
 };
 
@@ -89,8 +137,8 @@ export function verify(sheet, claims) {
   return claims.map(c => {
     const checks = (Array.isArray(c?.checks) ? c.checks : []).map(k => {
       try {
-        if (!OPS[k.op]) throw new Error(`unknown op ${k.op}`);
-        const value = OPS[k.op](posOf(k.pos), k.args ?? {});
+        if (!Object.hasOwn(CHECKS, k.op)) throw new Error(`unknown op ${k.op}`);
+        const value = CHECKS[k.op].run(posOf(k.pos), k.args ?? {});
         return { ...k, value, ok: matches(value, k.expect) };
       } catch (e) { return { ...k, ok: false, error: e.message }; }
     });
@@ -103,33 +151,14 @@ export function verify(sheet, claims) {
 export function render(sheet, verified) {
   const you = sheet.side_to_move.toLowerCase();
   const s = c => (side(c) === you ? 'your' : "opp's");
-  const yn = v => (v === true ? 'yes' : v === false ? 'no' : v);
   const where = p => {
     if (p === 'start') return 'now, before your move';
     const m = NAMED.exec(p), l = lineOf(sheet, m[1]);
     const sans = m[2] === undefined ? l.explained_at_position_after : lineSans(l).slice(0, Number(m[2])).map(m => m.no + m.san).join(' ');
     return `after ${sans}`;
   };
-  const say = ({ op, args: a, value: v }) => ({
-    piece_on: () => `${a.square}: ${v === 'empty' ? 'empty' : `${s(v.split(' ')[0])} ${v.split(' ')[1]}`}`,
-    attacks: () => `the piece on ${a.from} attacks ${a.to}: ${yn(v)}`,
-    attackers: () => `${s(a.side)} pieces attacking ${a.square}: ${v}`,
-    defenders: () => `defenders of the piece on ${a.square}: ${v}`,
-    piece_squares: () => `the piece on ${a.square} reaches ${v} squares`,
-    pawn_can_ever_attack: () => `a pawn of ${s(a.side) === 'your' ? 'yours' : "the opponent's"} can still ever attack ${a.square}: ${yn(v)}`,
-    outpost: () => `${a.square} is an outpost for ${s(a.side) === 'your' ? 'you' : 'the opponent'}: ${yn(v)}`,
-    pawns_on_colour: () => `${s(a.side)} pawns on ${a.colour} squares: ${v}`,
-    file_state: () => `${a.file}-file: ${String(v).replace('for white', `for ${s('white')} rooks`).replace('for black', `for ${s('black')} rooks`)}`,
-    ray_clear: () => `nothing stands between ${a.from} and ${a.to}: ${yn(v)}`,
-    passed: () => `the pawn on ${a.square} is passed: ${yn(v)}`,
-    king_square: () => `${s(a.side)} king on ${v}`,
-    undeveloped_minors: () => `${s(a.side)} knights and bishops still on their starting squares: ${v}`,
-    material: () => `${s(a.side)} material: ${v}`,
-    legal_moves: () => `the piece on ${a.square} has ${v} legal moves`,
-    route: () => `the piece on ${a.from} can reach ${a.to} in ${v} moves, the other pieces standing still`,
-  })[op]();
   const out = verified.filter(c => c.verified).map(c => ({ concept: c.concept, claim: c.claim,
-    checked: c.checks.map(k => `${where(k.pos)}: ${say(k)}`) }));
+    checked: c.checks.map(k => `${where(k.pos)}: ${CHECKS[k.op].say(k.args ?? {}, k.value, s)}`) }));
   return out.length ? out : null;
 }
 

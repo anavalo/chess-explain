@@ -226,8 +226,9 @@ export function checkAnswer(answer, sheet, { maxWords = 120 } = {}) {
   return found;
 }
 
-/** The board checks the proposer and the planner may ask for (see OPS in concepts.js). */
-const CHECKS = `Checks (op, args -> value):
+/** The board checks the proposer and the planner may ask for: one line for each row of CHECKS in concepts.js (the
+    planner's own, route, is in PLANNER). A test holds the lines and the rows in step. */
+const CHECK_LINES = `Checks (op, args -> value):
 - piece_on {square} -> "white knight", "black pawn", ... or "empty"
 - attacks {from, to} -> true/false (the piece on \`from\` attacks \`to\`; pawns: their capture squares)
 - attackers {square, side} -> how many of that side's pieces attack the square
@@ -257,7 +258,7 @@ Positions a check can name:
 - "played:N" / "better:N": after the first N plies of that move's main line ("line_with_evals"; ply 1 is the move itself).
 - "played_leaf" / "better_leaf": the position at "explained_at_position_after" of that line ("explained_fen").
 
-${CHECKS}
+${CHECK_LINES}
 
 Prefer contrastive claims: the same check in the better line and the played line (or before and after a move) giving
 different results, so the claim shows what the move changes. A claim may use up to 6 checks.
@@ -289,7 +290,7 @@ Positions a check can name:
 - "best:N": after the first N plies of the engine line ("line_with_evals"; ply 1 is the best move itself).
 - "best_leaf": the position at "explained_at_position_after" ("explained_fen").
 
-${CHECKS}
+${CHECK_LINES}
 
 Prefer ideas that show what the line changes: the same check at "start" and later in the line giving different results.
 An idea may use up to 6 checks. Work out the board carefully from the FENs and lines; you may reason step by step before answering.
