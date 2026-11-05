@@ -74,11 +74,11 @@
   .toggle input:checked::before { transform: translateX(14px); }
   .toggle input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .toggle input:disabled { opacity: .6; cursor: wait; }
-  .or { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; font-size: 12px; color: var(--muted); }
-  .or::before, .or::after { content: ''; flex: 1; border-top: 1px solid var(--border); }
-  .outline { width: 100%; background: transparent; color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent); }
-  .outline:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 10%, transparent); }
-  .center { text-align: center; margin: 6px 0 16px; }
+  #view { margin: 8px 0 12px; }
+  #view b { display: flex; align-items: center; justify-content: center; gap: 7px; }
+  #view .busy b::after { content: ''; width: 10px; height: 10px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+  #plan { width: 100%; }
+  #plan + .note { margin: 6px 2px 16px; }
   .plan-head { display: flex; align-items: center; justify-content: space-between; }
   .error { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
 </style>
@@ -90,7 +90,6 @@
     </svg>
   </button>
 </header>
-<p class="hint">Why lichess's top move beats the next game move, or a move you type. Turn on lichess's engine first. Find plan works without it.</p>
 <section id="settings" class="card settings" hidden>
   <div class="field">
     <div class="field-head"><span class="label">Anthropic API key</span><span id="key-status" class="pill">not set</span></div>
@@ -108,13 +107,23 @@
     </div>
   </div>
 </section>
-<form id="form">
-  <input id="move" placeholder="Compare with (default: next game move)" autocomplete="off">
-  <button id="go">Explain</button>
-</form>
-<label class="toggle"><span><b>Positional depth</b><small>Board-checked positional ideas · one more call</small></span><input id="deep" type="checkbox" role="switch"></label>
-<div class="or">or</div>
-<button id="plan" class="outline" type="button">◎ Find plan</button>
-<p class="note center">Best plan for the side to move · uses the strongest model</p>
-<div id="out" aria-live="polite"></div>
+<div id="view" class="seg" role="radiogroup" aria-label="View">
+  <label><input type="radio" name="view" value="explain" autocomplete="off" checked><span><b>Explain</b></span></label>
+  <label><input type="radio" name="view" value="plan" autocomplete="off"><span><b>Plan</b></span></label>
+</div>
+<section data-view="explain">
+  <p class="hint">Why lichess's top move beats the next game move, or a move you type. Turn on lichess's engine first.</p>
+  <form id="form">
+    <input id="move" placeholder="Compare with (default: next game move)" autocomplete="off">
+    <button id="go">Explain</button>
+  </form>
+  <label class="toggle"><span><b>Positional depth</b><small>Board-checked positional ideas · one more call</small></span><input id="deep" type="checkbox" role="switch"></label>
+  <div id="out-explain" aria-live="polite"></div>
+</section>
+<section data-view="plan" hidden>
+  <p class="hint">The best plan for the side to move. Works with lichess's engine off.</p>
+  <button id="plan" type="button">Find plan</button>
+  <p class="note">Uses the strongest model</p>
+  <div id="out-plan" aria-live="polite"></div>
+</section>
 <script type="module" src="panel.js"></script>

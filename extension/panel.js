@@ -95,7 +95,9 @@ function showShapes(fen, shapes) {
   ctrl.setAutoShapes();
 }
 
-const out = document.getElementById('out');
+// Each view (Explain, Plan) keeps its own answer; `out` is the one the running request writes to.
+const outs = { explain: document.getElementById('out-explain'), plan: document.getElementById('out-plan') };
+let out = outs.explain;
 // the background clears the board's plan shapes when this port closes, i.e. when the panel closes
 chrome.runtime.connect({ name: 'panel' });
 
@@ -164,7 +166,7 @@ function el(tag, cls, { text, html } = {}, parent = out) {
   return e;
 }
 
-const error = text => el('div', 'card error', { text });
+const error = (text, parent = out) => el('div', 'card error', { text }, parent);
 
 function moveRow(parent, cls, label, m) {
   const row = el('div', `move ${cls}`, {}, parent);
@@ -186,22 +188,22 @@ function spinner(stage) {
 
 /** The answer card; a move link in it plays its line (one of `lines`, from b's position) on the lichess board. */
 function answerCard(text, lines, b) {
-  const answer = el('div', 'card answer', { html: linkMoves(md(text), lines) });
+  const area = out, answer = el('div', 'card answer', { html: linkMoves(md(text), lines) });
   answer.onclick = async e => {
     const a = e.target.closest('a[data-line]');
     if (!a) return;
     e.preventDefault();
     try {
       const tab = await lichessTab();
-      if (!tab) return error('Switch to the lichess tab to play the line.');
+      if (!tab) return error('Switch to the lichess tab to play the line.', area);
       const ucis = sanToUci(b.fen, a.dataset.line.split(' '));
       const [{ result }] = await chrome.scripting.executeScript({
         target: { tabId: tab.id }, world: 'MAIN', func: playLine, args: [b.fen, b.path, ucis],
       });
-      if (result) error(result);
+      if (result) error(result, area);
     } catch (e) {
       console.error(e);
-      error(e.message);
+      error(e.message, area);
     }
   };
 }
@@ -244,6 +246,18 @@ const lichessTab = async () => {
 };
 const inTab = async (tab, func, args = []) =>
   (await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: 'MAIN', func, args }))[0].result;
+
+// The views: Explain and Plan. The plan's board shapes ([fen, shapes]) are drawn only while the Plan view shows.
+const view = () => document.querySelector('input[name="view"]:checked').value;
+let shapes = null;
+async function syncShapes() {
+  const tab = await lichessTab();
+  if (tab) await inTab(tab, showShapes, view() === 'plan' && shapes ? shapes : [null, null]).catch(() => {});
+}
+document.getElementById('view').onchange = () => {
+  for (const s of document.querySelectorAll('[data-view]')) s.hidden = s.dataset.view !== view();
+  syncShapes();
+};
 
 /** The engines once they have started; throws when they cannot. */
 async function ready() {
@@ -291,22 +305,28 @@ async function plan(apiKey, tab) {
     const data = await Promise.race([findPlan(e, b.fen, llm, { model: model(), onStep: s.set }), crashed]);
     out.replaceChildren();
     renderPlan(data, b);
-    await inTab(tab, showShapes, [b.fen, data.shapes]);
+    shapes = [b.fen, data.shapes];
+    await syncShapes();
   } finally {
     s.done();
   }
 }
 
-/** One request at a time: Explain or Find plan. Clears the last answer and the board's plan shapes first. */
-async function run(task) {
+/** One request at a time: Explain or Find plan, each in its own view (`name`). Clears that view's last answer first,
+    and for a new plan the board's shapes; the view's tab shows a spinner, for when the other view is open. */
+async function run(task, name) {
+  const label = document.querySelector(`input[name="view"][value="${name}"]`).parentNode;
   buttons.forEach(b => (b.disabled = true));
+  label.classList.add('busy');
+  out = outs[name];
   out.replaceChildren();
+  if (name === 'plan') shapes = null;
   try {
     const apiKey = await showKeyStatus();
     if (!apiKey) return error('Set your Anthropic API key first (above).');
     const tab = await lichessTab();
     if (!tab) return error('Open a lichess analysis board.');
-    await inTab(tab, showShapes, [null, null]).catch(() => {});
+    await syncShapes();
     await task(apiKey, tab);
   } catch (e) {
     console.error(e);
@@ -314,11 +334,12 @@ async function run(task) {
     error(e.message);
   } finally {
     buttons.forEach(b => (b.disabled = false));
+    label.classList.remove('busy');
   }
 }
 
 document.getElementById('form').onsubmit = e => {
   e.preventDefault();
-  run(explain);
+  run(explain, 'explain');
 };
-document.getElementById('plan').onclick = () => run(plan);
+document.getElementById('plan').onclick = () => run(plan, 'plan');
