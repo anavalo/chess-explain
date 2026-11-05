@@ -25,6 +25,7 @@ import { planShapes, withConcepts, withPlan } from './concepts.js';
 export const NODES = 2_000_000;
 const THREADS = 1; // one search thread: a node-limited search then gives the same lines every run
 const EQUAL_GAP = 0.3; // pawns; below this both moves are called equal and the LLM is skipped
+const ALSO_GAP = 0.1; // pawns; a plan names the engine's second move as "about as good" below this
 const LEAF_PLIES = 6; // SF 15 terms are measured within this many plies of each line
 // centipawns the opponent must gain with a free move before the position's threat is reported. A free move is worth
 // a tempo (up to ~0.5) anyway; above that it is a plan, such as a g4-g5 pawn storm.
@@ -740,15 +741,19 @@ function planKind(pos, score, leaf, threatGain) {
 
 /** The plan sheet for the side to move in `fen`: the engine's best move and its line with labels (on sf only; the
     lichess engine need not be on), what is on the board, the threat, and SF 15's terms where the line turns quiet. */
-export async function planFacts({ sf, sf15 }, fen, nodes = NODES) {
+export async function planFacts({ sf, sf2, sf15 }, fen, nodes = NODES) {
   let pos;
   try { pos = position(fen); } catch { throw new Error('invalid position'); }
   if (pos.isEnd()) throw new Error('The game is over here: there is no plan to find.');
-  await sf.until(['ucinewgame', 'isready'], l => l === 'readyok');
-  const [{ score, pv }] = await search(sf, pos, nodes);
+  await Promise.all([sf, sf2].map(e => e.until(['ucinewgame', 'isready'], l => l === 'readyok')));
+  // the top two moves on sf2, at the same time as the main search: both scores come from one search, so they compare
+  const [[{ score, pv }], two] = await Promise.all([search(sf, pos, nodes), search(sf2, pos, nodes, { multipv: 2 })]);
   const [, threat, threatGain] = await opponentThreat(sf, pos, nodes, score, QUIET_THREAT);
   const { leaf, leafSans } = lineToLeaf(pos, pv);
   const terms = leaf ? (await sf15Terms(sf15, leaf, pos.turn)).terms : {};
+  // on the two evals the panel shows side by side; at 0.3 (EQUAL_GAP) it fired on 43% of book positions
+  const other = two.find(i => i.pv[0] && i.pv[0] !== pv[0]);
+  const close = other && !('mate' in score) && !('mate' in other.score) && Math.abs(score.cp - other.score.cp) / 100 < ALSO_GAP;
   return {
     fen,
     side_to_move: pos.turn === 'white' ? 'White' : 'Black',
@@ -767,6 +772,12 @@ export async function planFacts({ sf, sf15 }, fen, nodes = NODES) {
       notes_at_that_position: leaf ? endNotes(leaf, pos.turn) : null,
       sf15_terms: terms,
     },
+    // ponytail: 8 plies, enough for one sentence on what the move does; longer lines invite claims
+    also_good: close ? {
+      move: san(pos, other.pv[0]),
+      latest_sf_eval: scoreStr(other.score),
+      line_with_evals: await lineWithEvals(sf, pos, other.pv, Math.max(Math.floor(nodes / 10), 100_000), 8),
+    } : null,
     pawn_pushes_in_line: orNull(pawnPushes(pos, pv, pos.turn).filter(p => p.point).map(p => p.text)),
   };
 }
@@ -777,8 +788,11 @@ export async function planFacts({ sf, sf15 }, fen, nodes = NODES) {
     from a saved sheet. */
 export async function planAnswer(sheet, llm, { model = 'claude-haiku-5-5', onStep = () => {} } = {}) {
   onStep('Looking for plan ideas');
-  const { facts, ideas, read } = await withPlan(sheet, llm);
+  // the planner plans the best line only; the writer gets the about-as-good move for one sentence
+  const { also_good = null, ...rest } = sheet;
+  const { facts: planned, ideas, read } = await withPlan(rest, llm);
   if (!ideas) throw new Error(read ? 'No clear plan found here.' : 'Could not read the plan ideas in the reply.');
+  const facts = { ...planned, also_good };
   onStep('Asking Claude');
   return { text: await llm(PLAN_SYSTEM, facts, model), facts, ideas };
 }
@@ -787,12 +801,12 @@ export async function planAnswer(sheet, llm, { model = 'claude-haiku-5-5', onSte
     planShapes(). `opts` go to planAnswer(). */
 export async function findPlan(engines, fen, llm, { nodes = NODES, ...opts } = {}) {
   const a = await planAnswer(await planFacts(engines, fen, nodes), llm, opts);
-  const { best, side_to_move, plan_kind } = a.facts;
+  const { best, also_good, side_to_move, plan_kind } = a.facts;
   return { ...a, result: {
     head: { label: `Plan for ${side_to_move}`, pill: plan_kind === 'tactical' ? 'Tactical' : 'Positional' },
-    rows: [row('best', 'first move', best)],
+    rows: [row('best', 'first move', best), ...also_good ? [row('also', 'about as good', also_good)] : []],
     text: a.text,
-    lines: [best.line_with_evals],
+    lines: [best.line_with_evals, also_good?.line_with_evals].filter(Boolean),
     note: null,
     shapes: planShapes(a.facts, a.ideas, a.text),
   } };

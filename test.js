@@ -531,6 +531,18 @@ try {
   assert.deepEqual(plan.ideas[1].checked, ['now, before your move: the piece on b3 can reach b6 in 3 moves, the other pieces standing still',
     "now, before your move: a pawn of the opponent's can still ever attack b6: no"]);
   assert.match(plan.facts.imbalances.yours.join(), /hole b6/);
+  assert.equal(plan.facts.also_good, null); // h3 is the engine's second move, but too far behind f4 to call about as good
+  // Stein-Ljubojevic 1971 (Marovic p16): Nf6, the book's move, is about as good as the engine's Bf8. The planner never
+  // sees it; the writer gets it with its labelled line, and the panel shows it as a second row whose line links
+  const seen = [];
+  const closeStub = (system, f) => (seen.push([system, 'also_good' in f]), system === PLANNER
+    ? JSON.stringify([{ concept: 'king', claim: 'Your king is on g8.', checks: [{ pos: 'start', op: 'king_square', args: { side: 'black' }, expect: 'g8' }] }])
+    : (sheets.push(f), '(stub)'));
+  const p16 = await findPlan(engines, '3r2k1/1pn2qbp/pN1p2p1/P1pP1p1n/2N5/3Q4/1PPB1PPP/4R1K1 b - - 2 21', closeStub);
+  assert.deepEqual(seen, [[PLANNER, false], [PLAN_SYSTEM, true]]);
+  assert.deepEqual(p16.result.rows.map(m => [m.kind, m.move]), [['best', 'Bf8'], ['also', 'Nf6']]);
+  assert.match(p16.facts.also_good.line_with_evals, /^21\.\.\. you Nf6 \[attacks opp's pawn on d5/);
+  assert.deepEqual(p16.result.lines, [p16.facts.best.line_with_evals, p16.facts.also_good.line_with_evals]);
   // no idea holds: an error, and the writer is never called
   planCalls.length = 0;
   await assert.rejects(findPlan(engines, quiet, (system, f, m) => (planCalls.push(system), '[]')), /No clear plan found here/);

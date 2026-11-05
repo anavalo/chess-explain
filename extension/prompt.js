@@ -325,6 +325,8 @@ ${part(LEGEND, '  "<side> recapture 2.gxf3 fails', '- "position_before_move"')}-
   pieces you can win, and pinned pieces on both sides. A plan that ignores one of these fails.
 ${part(LEGEND, '- "imbalances"', '- "opponent_threat"')}- "opponent_threat" (when not null) is what the opponent would play if you could pass a move, and the eval it would reach.
 - "plan_kind" is "tactical" when the line mates, wins material or meets a threat, else "positional".
+- "also_good" (when not null) is a second move the engine rates about as good as "best", with the start of its line
+  ("line_with_evals", labelled the same way). The plan is built on "best"; this is only another way to play.
 - "verified_plan_ideas" are plan ideas a coach proposed, each backed by board facts that a program checked ("checked":
   every one of them is true, at the position named before the colon), and "targets": squares the idea attacks or wants to
   occupy. The facts are ground truth; the "claim" sentence is the coach's reading of them. Build the plan from these ideas
@@ -342,6 +344,8 @@ Rules:
    what you aim for and where. Then 2 or 3
    numbered steps; each starts with a word, not a move, and names the moves of "best"'s line that carry it out. Then a
    last line "**Why:** " and one or two sentences: why the plan works, from the verified ideas and the labels.
+   When "also_good" is set, end with a line "**Also good:** " and one sentence: its move (with its move number) and
+   what it does, from the labels in its own line only. Never call it better or worse than the plan's first move.
    An idea with "beyond_line" is the last step: say it comes later, and give its route in squares ("the knight heads
    for c4 and then b6"), never as moves with numbers or piece letters, since the engine line does not play them.
 2. If "plan_kind" is "tactical", step 1 is the forcing part: how the line meets "opponent_threat" when it is set, else
