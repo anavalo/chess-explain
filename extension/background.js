@@ -1,3 +1,5 @@
+import { inTab, lichessBoard } from './lichess.js';
+
 // The panel belongs to lichess tabs only: off by default, switched on per lichess tab. Chrome keeps a
 // tab's panel when you switch away and hides it there, so other tabs never show it.
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -13,10 +15,7 @@ chrome.tabs.onUpdated.addListener((tabId, _, tab) => sync(tabId, tab.url));
 // lichess tabs that were open before the extension was installed or the browser restarted
 chrome.tabs.query({ url: `${LICHESS}*` }).then(tabs => tabs.forEach(t => sync(t.id, t.url)));
 
-// Find plan draws on lichess's board (panel.js showShapes); when the panel closes, its port drops: clear the shapes.
-// Runs in each lichess tab's main world, where showShapes keeps them.
-const clearShapes = () => { window.chessExplainShapes = null; window.site?.analysis?.setAutoShapes?.(); };
+// Find plan draws on the lichess board; when the panel closes, its port drops: clear the shapes in every lichess tab.
 chrome.runtime.onConnect.addListener(port => port.name === 'panel' && port.onDisconnect.addListener(async () => {
-  for (const t of await chrome.tabs.query({ url: `${LICHESS}*` }))
-    chrome.scripting.executeScript({ target: { tabId: t.id }, world: 'MAIN', func: clearShapes }).catch(() => {});
+  for (const t of await chrome.tabs.query({ url: `${LICHESS}*` })) lichessBoard(inTab(t.id)).clear().catch(() => {});
 }));

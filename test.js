@@ -11,6 +11,7 @@ import {
   Refused, ask as anthropic, checkNotPlaying, findPlan, handle, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
 } from './extension/explain.js';
 import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
+import { lichessBoard } from './extension/lichess.js';
 import { linkMoves, md } from './extension/md.js';
 import { JUDGE, LEGEND, PAIR, PLANNER, PLAN_SYSTEM, PROPOSER, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
 import { claimsIn, planShapes, render, verify, withConcepts, withPlan } from './extension/concepts.js';
@@ -219,6 +220,73 @@ assert.deepEqual(planShapes(pSheet, pr.ideas, 'Play 1.e4, then hit **e5**.'),
 assert.deepEqual(planShapes(pSheet, pr.ideas, 'Nothing named; Ne55 is no square.'), [{ orig: 'e2', dest: 'e4', brush: 'green' }]);
 const many = [{ targets: ['a3', 'b3', 'c3', 'd3', 'f3'].map(square => ({ square, kind: 'occupy' })) }];
 assert.equal(planShapes(pSheet, many, 'a3 b3 c3 d3 f3').length, 5);
+// the lichess board, on a fake of lichess's page: its analysis controller, its sounds and the user tag. Each page
+// function is re-parsed from its source text, as chrome.scripting sends it, so one that leans on a name from
+// lichess.js fails here too.
+{
+  const other = 'rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1';
+  const fakePage = ({ allowed = true, engineOn = true } = {}) => {
+    const cg = () => ({ drawn: null, setAutoShapes(shapes) { this.drawn = shapes; } });
+    const nodes = { '': { fen: start, children: [{ san: 'e4' }], ceval: { pvs: [{ moves: ['d2d4', 'd7d5'] }] } }, zz: { fen: other, children: [] } };
+    const sounds = [];
+    const ctrl = {
+      path: '', node: nodes[''], chessground: cg(),
+      isCevalAllowed: () => allowed, cevalEnabled: () => engineOn,
+      userJumpIfCan(path) { if (nodes[path]) [ctrl.path, ctrl.node] = [path, nodes[path]]; },
+      playUciList(ucis) {
+        for (const uci of ucis) {
+          ctrl.path += uci;
+          ctrl.node = nodes[ctrl.path] = { fen: `after ${ctrl.path}`, children: [] };
+          globalThis.window.site.sound.move(ctrl.node);
+        }
+      },
+      setChessground(c) { ctrl.chessground = c; },
+      setAutoShapes() { ctrl.chessground.setAutoShapes(['auto']); },
+    };
+    globalThis.window = { site: { analysis: ctrl, sound: { move: node => sounds.push(node.fen) } } };
+    globalThis.document = { querySelector: sel => sel === '#user_tag' && { textContent: ' fable6 ' } };
+    return { ctrl, sounds, cg };
+  };
+  const board = lichessBoard(async (func, args = []) => new Function(`return (${func})`)()(...args));
+  // one read for both flows; lichess's top move only while lichess shows its engine
+  let page = fakePage();
+  assert.deepEqual(await board.read(), { fen: start, path: '', best: 'd2d4', next: 'e4', user: 'fable6' });
+  fakePage({ engineOn: false });
+  assert.equal((await board.read()).best, undefined);
+  // the rule, decided in read(): only where lichess allows its engine, and it fails closed
+  fakePage({ allowed: false });
+  await assert.rejects(board.read(), /does not allow its engine here/);
+  delete fakePage().ctrl.isCevalAllowed;
+  await assert.rejects(board.read(), /does not allow its engine here/);
+  fakePage();
+  delete globalThis.window.site.analysis;
+  await assert.rejects(board.read(), /Open a lichess analysis board or study/);
+  // a line: back to the position that was read, the moves played from there, one sound for the last, sounds restored
+  page = fakePage();
+  page.ctrl.userJumpIfCan('zz');
+  const soundMove = globalThis.window.site.sound.move;
+  await board.play(start, '', ['e2e4', 'e7e5']);
+  assert.equal(page.ctrl.path, 'e2e4e7e5');
+  assert.deepEqual(page.sounds, ['after e2e4e7e5']);
+  assert.equal(globalThis.window.site.sound.move, soundMove);
+  await assert.rejects(board.play('8/8/8/8/8/8/8/8 w - - 0 1', '', ['e2e4']), /Could not go back to the explained position/);
+  // shapes: added to lichess's own on the position they belong to, kept when lichess rebuilds the board, then cleared
+  page = fakePage();
+  const arrow = { orig: 'e2', dest: 'e4', brush: 'green' };
+  await board.draw(start, [arrow]);
+  assert.deepEqual(page.ctrl.chessground.drawn, ['auto', arrow]);
+  page.ctrl.userJumpIfCan('zz');
+  page.ctrl.setAutoShapes();
+  assert.deepEqual(page.ctrl.chessground.drawn, ['auto']);
+  page.ctrl.userJumpIfCan('');
+  page.ctrl.setChessground(page.cg());
+  page.ctrl.setAutoShapes();
+  assert.deepEqual(page.ctrl.chessground.drawn, ['auto', arrow]);
+  await board.clear();
+  assert.deepEqual(page.ctrl.chessground.drawn, ['auto']);
+  delete globalThis.window;
+  delete globalThis.document;
+}
 // one Messages API call: the system prompt, the sheet as the user message, the reply's text
 let sent;
 globalThis.fetch = async (url, { body }) => ((sent = JSON.parse(body)),

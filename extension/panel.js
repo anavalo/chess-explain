@@ -1,79 +1,6 @@
 import { ask, checkNotPlaying, findPlan, handle, sanToUci, startEngines, uciEngine } from './explain.js';
+import { inTab, lichessBoard } from './lichess.js';
 import { linkMoves, md } from './md.js';
-
-// Runs inside the lichess tab. The engine panel (.pv_box) only exists when lichess allows analysis,
-// which it never does during a live game.
-function readBoard() {
-  const box = document.querySelector('.pv_box[data-fen]');
-  const path = document.querySelector('move.active[p]')?.getAttribute('p') ?? '';
-  // Tree paths are 2 characters per node; the first child of the current node is the game continuation.
-  const next = [...document.querySelectorAll('move[p]')].find(m => {
-    const p = m.getAttribute('p');
-    return p.length === path.length + 2 && p.startsWith(path);
-  });
-  return {
-    fen: box?.dataset.fen,
-    path,
-    best: box?.querySelector('.pv[data-uci]')?.dataset.uci,
-    next: next?.querySelector('san')?.textContent,
-    user: document.querySelector('#user_tag')?.textContent.trim(),
-  };
-}
-
-/** Runs in the lichess tab's main world: puts the board back on the explained position (tree path `path`, FEN `fen`)
-    and plays `ucis` from there with lichess's own analysis controller, as a click on a move of lichess's engine line
-    does, so it works with lichess's engine off. Lichess adds the moves all at once and sounds each one, so the sounds
-    are held back and only the last one plays. Returns an error message, or nothing. */
-function playLine(fen, path, ucis) {
-  const ctrl = window.site?.analysis;
-  if (!ctrl?.node) return 'Open a lichess analysis board or study to play the line on the board.';
-  if (ctrl.node.fen !== fen) ctrl.userJumpIfCan(path);
-  if (ctrl.node.fen !== fen) return 'Could not go back to the explained position. Go there and click the move again.';
-  const sound = window.site.sound, move = sound?.move;
-  let last;
-  if (move) sound.move = (...args) => (last = args);
-  try {
-    ctrl.playUciList([...ucis]);
-  } finally {
-    if (move) {
-      sound.move = move;
-      if (last) move.apply(sound, last);
-    }
-  }
-}
-
-/** Runs in the lichess tab's main world: the analysis board's position, from lichess's own analysis controller, so it
-    works with lichess's engine off. Null outside an analysis board or study. */
-function boardState() {
-  const ctrl = window.site?.analysis;
-  return ctrl?.node && { fen: ctrl.node.fen, path: ctrl.path, user: document.querySelector('#user_tag')?.textContent.trim() };
-}
-
-/** Runs in the lichess tab's main world: draws `shapes` (chessground arrows and circles) on lichess's auto-shape layer,
-    which studies never save, while the board shows `fen`'s position; no `fen` clears them. Lichess redraws that layer on
-    every move and engine update, so its chessground's setAutoShapes is wrapped to add ours each time, and so is the
-    chessground lichess swaps in when it rebuilds the board. */
-function showShapes(fen, shapes) {
-  const ctrl = window.site?.analysis;
-  window.chessExplainShapes = fen ? { board: fen.split(' ')[0], shapes } : null;
-  if (!ctrl?.chessground) return;
-  const wrap = cg => {
-    if (!cg || cg.chessExplainWrapped) return;
-    const own = cg.setAutoShapes.bind(cg);
-    cg.setAutoShapes = auto => {
-      const ours = window.chessExplainShapes;
-      own(ours && ctrl.node.fen.split(' ')[0] === ours.board ? [...auto, ...ours.shapes] : auto);
-    };
-    cg.chessExplainWrapped = true;
-  };
-  if (!ctrl.chessExplainWrapped) {
-    const set = ctrl.setChessground;
-    ctrl.setChessground = cg => { wrap(cg); set(cg); };
-    ctrl.chessExplainWrapped = true;
-  }
-  wrap(ctrl.chessground);
-  ctrl.setAutoShapes();
-}
 
 // Each view (Explain, Plan) keeps its own answer; `out` is the one the running request writes to.
 const outs = { explain: document.getElementById('out-explain'), plan: document.getElementById('out-plan') };
@@ -174,13 +101,9 @@ function answerCard(text, lines, b) {
     if (!a) return;
     e.preventDefault();
     try {
-      const tab = await lichessTab();
-      if (!tab) return error('Switch to the lichess tab to play the line.', area);
-      const ucis = sanToUci(b.fen, a.dataset.line.split(' '));
-      const [{ result }] = await chrome.scripting.executeScript({
-        target: { tabId: tab.id }, world: 'MAIN', func: playLine, args: [b.fen, b.path, ucis],
-      });
-      if (result) error(result, area);
+      const board = await activeBoard();
+      if (!board) return error('Switch to the lichess tab to play the line.', area);
+      await board.play(b.fen, b.path, sanToUci(b.fen, a.dataset.line.split(' ')));
     } catch (e) {
       console.error(e);
       error(e.message, area);
@@ -205,19 +128,18 @@ function renderPlan(data, b) {
   answerCard(data.text, [data.best.line], b);
 }
 
-const lichessTab = async () => {
+/** The lichess board of the active tab; null when that tab is not lichess. */
+const activeBoard = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tab?.url?.startsWith('https://lichess.org/') ? tab : null;
+  return tab?.url?.startsWith('https://lichess.org/') ? lichessBoard(inTab(tab.id)) : null;
 };
-const inTab = async (tab, func, args = []) =>
-  (await chrome.scripting.executeScript({ target: { tabId: tab.id }, world: 'MAIN', func, args }))[0].result;
 
 // The views: Explain and Plan. The plan's board shapes ([fen, shapes]) are drawn only while the Plan view shows.
 const view = () => document.querySelector('input[name="view"]:checked').value;
 let shapes = null;
 async function syncShapes() {
-  const tab = await lichessTab();
-  if (tab) await inTab(tab, showShapes, view() === 'plan' && shapes ? shapes : [null, null]).catch(() => {});
+  const board = await activeBoard();
+  if (board) await (view() === 'plan' && shapes ? board.draw(...shapes) : board.clear()).catch(() => {});
 }
 document.getElementById('view').onchange = () => {
   for (const s of document.querySelectorAll('[data-view]')) s.hidden = s.dataset.view !== view();
@@ -231,11 +153,8 @@ async function ready() {
     setTimeout(() => fail(new Error('Stockfish did not start within 30 s.')), 30_000))]);
 }
 
-async function explain(apiKey, tab) {
-  const [{ result: b }] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: readBoard });
-  if (!b.fen) return error(tab.url.startsWith('https://lichess.org/study/')
-    ? "No engine panel found. Turn on lichess's engine, or, if this study has computer analysis disabled, copy the FEN from its share tab to lichess.org/analysis."
-    : "No engine panel found. Open the analysis board and turn on lichess's engine.");
+async function explain(apiKey, board) {
+  const b = await board.read();
   const move = document.getElementById('move').value.trim() || b.next;
   if (!move) return error('No next game move here. Type a move to compare with.');
 
@@ -257,9 +176,8 @@ async function explain(apiKey, tab) {
   }
 }
 
-async function plan(apiKey, tab) {
-  const b = await inTab(tab, boardState);
-  if (!b?.fen) return error('Open a lichess analysis board or study.');
+async function plan(apiKey, board) {
+  const b = await board.read();
   const s = spinner('Checking you are not in a game');
   try {
     await checkNotPlaying(b.user);
@@ -289,10 +207,10 @@ async function run(task, name) {
   try {
     const apiKey = await showKeyStatus();
     if (!apiKey) return error('Set your Anthropic API key first (above).');
-    const tab = await lichessTab();
-    if (!tab) return error('Open a lichess analysis board.');
+    const board = await activeBoard();
+    if (!board) return error('Open a lichess analysis board.');
     await syncShapes();
-    await task(apiKey, tab);
+    await task(apiKey, board);
   } catch (e) {
     console.error(e);
     out.replaceChildren();
