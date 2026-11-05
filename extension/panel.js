@@ -126,12 +126,13 @@ const activeBoard = async () => {
   return tab?.url?.startsWith('https://lichess.org/') ? lichessBoard(inTab(tab.id)) : null;
 };
 
-// The views: Explain and Plan. The plan's board shapes ([fen, shapes]) are drawn only while the Plan view shows.
+// The views: Explain and Plan. The plan's board shapes ([fen, shapes]) are drawn only while the Plan view shows, on
+// the board the plan was asked for (`planBoard`): another tab may be the active one by the time the plan arrives.
 const view = () => document.querySelector('input[name="view"]:checked').value;
-let shapes = null;
+let shapes = null, planBoard = null;
 async function syncShapes() {
-  const board = await activeBoard();
-  if (board) await (view() === 'plan' && shapes ? board.draw(...shapes) : board.clear()).catch(() => {});
+  const board = planBoard ?? await activeBoard();
+  if (board) await (view() === 'plan' && shapes ? board.draw(...shapes) : board.clear()).catch(console.error);
 }
 document.getElementById('view').onchange = () => {
   for (const s of document.querySelectorAll('[data-view]')) s.hidden = s.dataset.view !== view();
@@ -177,6 +178,7 @@ async function plan(apiKey, board) {
   out.replaceChildren();
   render(result, b);
   shapes = [b.fen, result.shapes];
+  planBoard = board;
   await syncShapes();
 }
 
