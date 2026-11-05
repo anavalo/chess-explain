@@ -73,13 +73,6 @@ function el(tag, cls, { text, html } = {}, parent = out) {
 
 const error = (text, parent = out) => el('div', 'card error', { text }, parent);
 
-function moveRow(parent, cls, label, m) {
-  const row = el('div', `move ${cls}`, {}, parent);
-  el('span', '', { text: m.move }, row);
-  el('small', '', { text: label }, row);
-  el('span', 'eval', { text: m.eval }, row);
-}
-
 // a spinner card whose label counts the seconds; returns {set(stage), done()}
 function spinner(stage = '') {
   const status = el('div', 'card status');
@@ -109,21 +102,22 @@ function answerCard(text, lines, b) {
   };
 }
 
-function render(data, b) {
+/** Shows a task's result (see explainMove) for the position `b`: every word in it comes from the task. */
+function render(result, b) {
   const moves = el('div', 'card moves');
-  moveRow(moves, 'best', 'engine move', data.best);
-  moveRow(moves, 'compared', 'compared', data.compared);
-  // every line that starts at the explained position (prepares.follow_up_fails starts mid-line, so it is left out)
-  answerCard(data.text, [data.best, data.compared].flatMap(m => [m.line, m.threat_line]).concat(data.facts.prepares?.line_if_played_at_once), b);
-}
-
-function renderPlan(data, b) {
-  const card = el('div', 'card moves');
-  const head = el('div', 'plan-head', {}, card);
-  el('span', 'label', { text: `Plan for ${data.facts.side_to_move}` }, head);
-  el('span', 'pill', { text: data.facts.plan_kind === 'tactical' ? 'Tactical' : 'Positional' }, head);
-  moveRow(card, 'best', 'first move', data.best);
-  answerCard(data.text, [data.best.line], b);
+  if (result.head) {
+    const head = el('div', 'plan-head', {}, moves);
+    el('span', 'label', { text: result.head.label }, head);
+    el('span', 'pill', { text: result.head.pill }, head);
+  }
+  for (const m of result.rows) {
+    const row = el('div', `move ${m.kind}`, {}, moves);
+    el('span', '', { text: m.move }, row);
+    el('small', '', { text: m.label }, row);
+    el('span', 'eval', { text: m.eval }, row);
+  }
+  answerCard(result.text, result.lines, b);
+  if (result.note) el('div', 'card note', { text: result.note });
 }
 
 /** The lichess board of the active tab; null when that tab is not lichess. */
@@ -166,25 +160,23 @@ async function explain(apiKey, board) {
   const b = await board.read();
   const move = document.getElementById('move').value.trim() || b.next;
   if (!move) return error('No next game move here. Type a move to compare with.');
-  const data = await requested(b, apiKey, (e, llm, step) => {
+  const { result } = await requested(b, apiKey, (e, llm, step) => {
     step(`Analysing ${move}`);
     return explainMove(e, { fen: b.fen, move, best: b.best }, llm, { model: model(), depth: deep.checked, onStep: step });
   });
   out.replaceChildren();
-  render(data, b);
-  if (data.read !== undefined && !data.concepts)
-    el('div', 'card note', { text: data.read ? 'No positional idea passed the board checks.' : 'Could not read the positional ideas in the reply.' });
+  render(result, b);
 }
 
 async function plan(apiKey, board) {
   const b = await board.read();
-  const data = await requested(b, apiKey, (e, llm, step) => {
+  const { result } = await requested(b, apiKey, (e, llm, step) => {
     step("Finding the engine's plan");
     return findPlan(e, b.fen, llm, { model: model(), onStep: step });
   });
   out.replaceChildren();
-  renderPlan(data, b);
-  shapes = [b.fen, data.shapes];
+  render(result, b);
+  shapes = [b.fen, result.shapes];
   await syncShapes();
 }
 

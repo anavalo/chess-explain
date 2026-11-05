@@ -385,37 +385,48 @@ const ask = (fen, move, best, opts) => explainMove(engines, { fen, move, best },
 try {
   const fen = 'r3k2r/1p1bbpp1/pqn1p2p/2ppP3/3P4/2PB1N2/PP1N1PPP/R2Q1RK1 w kq - 2 11';
   let r = await ask(fen, 'dxc5', 'c3c4');
-  assert.deepEqual([r.best.move, r.compared.move], ['c4', 'dxc5']);
+  assert.deepEqual(r.result.rows.map(m => m.move), ['c4', 'dxc5']);
   // compared move == lichess's move: lichess's move is still the one explained, against the best other move
   r = await ask(fen, 'c4', 'c3c4');
-  assert.equal(r.best.move, 'c4');
-  assert.notEqual(r.compared.move, 'c4');
+  assert.equal(r.result.rows[0].move, 'c4');
+  assert.notEqual(r.result.rows[1].move, 'c4');
 
   // regression positions: the facts must carry the point a good answer makes
   r = await ask('1r3rk1/p1p2ppp/bb1q4/3p4/BP1Pn3/2P1B3/P4PPP/RN1QR1K1 b - - 4 16', 'Bc4', 'c7c6');
   assert.equal(facts.opponent_threat.move, 'f3'); // White threatens f3; c6 prepares Bc7 and Qxh2#
   assert.match(facts.alternative.if_opp_plays_the_threat_at_once, /you Bc7 \[threatens Qxh2#\]/);
+  assert.ok(r.result.lines.includes(facts.alternative.if_opp_plays_the_threat_at_once)); // a link may play the threat line too
   calls = [];
   r = await ask('r4rk1/p1p2pp1/1pnb1q1p/3p1b2/P2P4/1NP2N2/1P2BPPP/R2QR1K1 b - - 0 13', 'Rfe8', 'c6e7', { depth: true });
   assert.match(r.text, /about as good as/); // equal moves: no LLM call, plain verdict, even with depth on
   assert.deepEqual([calls, r.concepts, r.read], [[], null, undefined]);
+  assert.deepEqual([r.result.rows.map(m => m.move), r.result.lines, r.result.note], [['Ne7', 'Rfe8'], [], null]);
   assert.deepEqual(Object.keys(r.facts), ['fen', 'side_to_move', 'played', 'alternative', 'latest_sf_gap']); // stops at the scores
   r = await ask('rn3rk1/p1N2pbp/1p2p1p1/2p1n1B1/2P5/5b2/PP2BPPP/3R1RK1 w - - 0 15', 'Nxa8', 'g2f3');
-  assert.match(r.compared.line, /opp Bxe2 \[takes bishop, attacks your rook on d1, attacks your rook on f1/); // fork
+  assert.match(r.facts.played.line_with_evals, /opp Bxe2 \[takes bishop, attacks your rook on d1, attacks your rook on f1/); // fork
+  // the result: what the panel shows, row by row, and the lines a move link may play
+  assert.deepEqual(r.result.rows, [{ kind: 'best', label: 'engine move', move: 'gxf3', eval: r.facts.alternative.latest_sf_eval },
+    { kind: 'compared', label: 'compared', move: 'Nxa8', eval: r.facts.played.latest_sf_eval }]);
+  assert.notEqual(r.result.rows[0].eval, r.result.rows[1].eval);
+  assert.deepEqual([r.result.head, r.result.text, r.result.note, r.result.shapes], [null, '(stub)', null, null]);
+  assert.deepEqual(r.result.lines.slice(0, 1).concat(r.result.lines.includes(r.facts.played.line_with_evals)), [r.facts.alternative.line_with_evals, true]);
   r = await ask('r3k1nr/4pp1p/p1ppb1p1/q3b3/N1B1P3/1P6/P1P2PPP/R1BQ1RK1 w kq - 1 12', 'Bd5', 'c1d2');
-  assert.match(r.compared.line, /opp cxd5 \[takes bishop/);
+  assert.match(r.facts.played.line_with_evals, /opp cxd5 \[takes bishop/);
   assert.match(facts.alternative.if_opp_plays_the_threat_at_once, /opp Bxc4 .* you Bxa5 \[takes queen/);
   r = await ask('2bq4/r4kb1/n3pn1r/p2pB1Qp/P2P2p1/N1PB4/5PPP/R4RK1 w - - 12 25', 'Qg6+', 'f2f3');
-  assert.match(r.compared.line, /opp Rxg6 \[takes queen/);
+  assert.match(r.facts.played.line_with_evals, /opp Rxg6 \[takes queen/);
   r = await ask('r2q1rk1/pp1n1ppb/2p4p/b4p1P/3P4/2PBBN2/PP3PP1/R2QR1K1 w - - 0 16', 'Qd2', 'd1b3');
-  assert.match(r.best.line, /you Qb3 \[[^\]]*pins opp's pawn on f7 to king on g8/);
-  r = await ask('r1br2k1/1pq1nppp/p1n1p3/8/2B1P3/1NQ1B3/PP3PPP/2R2RK1 w - - 0 1', 'Rcd1', 'f2f4');
-  assert.match(r.best.line, /^1\. you f4 \[pawn gains space[,\]]/);
+  assert.match(r.facts.alternative.line_with_evals, /you Qb3 \[[^\]]*pins opp's pawn on f7 to king on g8/);
+  // with depth on and every idea failing its board checks: the result's note says so
+  proposer = JSON.stringify([{ concept: 'wrong', claim: 'x', checks: [{ pos: 'start', op: 'king_square', args: { side: 'white' }, expect: 'h1' }] }]);
+  r = await ask('r1br2k1/1pq1nppp/p1n1p3/8/2B1P3/1NQ1B3/PP3PPP/2R2RK1 w - - 0 1', 'Rcd1', 'f2f4', { depth: true });
+  assert.deepEqual([r.read, r.concepts, r.result.note], [true, null, 'No positional idea passed the board checks.']);
+  assert.match(r.facts.alternative.line_with_evals, /^1\. you f4 \[pawn gains space[,\]]/);
   // the knight on f3 is defended, but gxf3 opens the king: the line must say why White does not take back
   r = await ask('r2qr1k1/ppp2ppp/2bb1pn1/8/2PP4/4BN1P/PP1QNPP1/2R2RK1 w - - 0 1', 'b4', 'd4d5');
-  assert.match(r.compared.line, /opp Bxf3 \[takes knight, material -3, your recapture 2\.gxf3 fails \(line below\)\]/);
-  assert.match(r.compared.line, /\nWhy 2\.gxf3 fails: 2\. you gxf3 \[takes bishop/);
-  assert.match(linkMoves('2.gxf3', [r.compared.line]), /data-line="b4 Bxf3 gxf3"/);
+  assert.match(r.facts.played.line_with_evals, /opp Bxf3 \[takes knight, material -3, your recapture 2\.gxf3 fails \(line below\)\]/);
+  assert.match(r.facts.played.line_with_evals, /\nWhy 2\.gxf3 fails: 2\. you gxf3 \[takes bishop/);
+  assert.match(linkMoves('2.gxf3', r.result.lines), /data-line="b4 Bxf3 gxf3"/);
   // Kramnik-Leko 2001: Qa1 prepares Bxd5, which fails at once to Qb6 hitting the queen on b2.
   // With depth on: the proposer, then the explainer with the concepts entry and the verified concepts after the pawn plan
   calls = [];
@@ -428,14 +439,15 @@ try {
   assert.deepEqual(calls, [[PROPOSER, 'claude-opus-5-5'], [systemFor('claude-opus-5-5', true), 'claude-opus-5-5']]);
   assert.deepEqual(steps, ['Looking for positional ideas', 'Asking Claude']);
   assert.deepEqual([r.read, r.concepts], [true, [{ concept: 'king', claim: 'Your king is on g1.', checked: ['now, before your move: your king on g1'] }]]);
+  assert.equal(r.result.note, null);
   assert.equal(r.facts, facts);
   const order = Object.keys(facts);
   assert.equal(order[order.indexOf('pawn_plan_only_in_better_line') + 1], 'verified_concepts');
   assert.equal(facts.verified_concepts, r.concepts);
   assert.equal(facts.prepares.move, 'Bxd5');
   assert.match(facts.prepares.line_if_played_at_once, /opp Qb6 \[attacks your queen on b2/);
-  // the panel links the at-once line's moves too: it starts at the explained position
-  assert.match(linkMoves('21.Bxd5 exd5 22.Rxd5 Qb6', [facts.prepares.line_if_played_at_once]), /data-line="Bxd5 exd5 Rxd5 Qb6">Qb6</);
+  // the result's lines hold the at-once line too, so the panel links its moves: it starts at the explained position
+  assert.match(linkMoves('21.Bxd5 exd5 22.Rxd5 Qb6', r.result.lines), /data-line="Bxd5 exd5 Rxd5 Qb6">Qb6</);
   // Skoberne-Suarez 2012: Rf1 prepares Nxg6; at once the engine line avoids Qxh6, which fails to Qxf2+ (Rf1 guards f2).
   // With depth on and no claim list in the proposer's reply: the plain prompt, and the panel is told the reply was unread
   calls = [];
@@ -443,6 +455,8 @@ try {
   r = await ask('r4rkb/ppR5/3Np1pp/4n3/5N2/4Q3/q4PPP/3R2K1 w - - 2 24', 'Re7', 'd1f1', { depth: true });
   assert.deepEqual(calls, [[PROPOSER, 'claude-opus-5-5'], [systemFor('claude-haiku-5-5'), 'claude-haiku-5-5']]);
   assert.deepEqual([r.read, r.concepts, 'verified_concepts' in facts, facts.verified_concepts], [false, null, true, null]);
+  assert.equal(r.result.note, 'Could not read the positional ideas in the reply.');
+  assert.ok(!r.result.lines.includes(facts.prepares.follow_up_fails)); // it starts mid-line: a link could not play it
   assert.equal(facts.prepares.move, 'Nxg6');
   assert.match(facts.prepares.follow_up_fails, /^Why 25\.Qxh6 fails: 25\. you Qxh6 .* 25\.\.\. opp Qxf2\+ /);
   assert.equal(facts.prepares.better_move_guards, 'f2');
@@ -462,9 +476,14 @@ try {
   const plan = await findPlan(engines, quiet, planStub, { onStep: t => planSteps.push(t) });
   assert.deepEqual(planCalls, [[PLANNER, 'claude-opus-5-5'], [PLAN_SYSTEM, 'claude-haiku-5-5']]);
   assert.deepEqual(planSteps, ['Looking for plan ideas', 'Asking Claude']);
-  assert.deepEqual([plan.best.move, plan.facts.plan_kind, plan.facts.side_to_move], ['f4', 'positional', 'White']);
-  assert.match(plan.best.line, /^1\. you f4 \[pawn gains space/);
-  assert.deepEqual(plan.shapes, [{ orig: 'f2', dest: 'f4', brush: 'green' }, { orig: 'f4', brush: 'green' }]);
+  assert.deepEqual([plan.facts.plan_kind, plan.facts.side_to_move], ['positional', 'White']);
+  assert.match(plan.facts.best.line_with_evals, /^1\. you f4 \[pawn gains space/);
+  // the plan's result: a head over one row, the engine line to link, the shapes for the board
+  assert.deepEqual(plan.result, { head: { label: 'Plan for White', pill: 'Positional' },
+    rows: [{ kind: 'best', label: 'first move', move: 'f4', eval: plan.facts.best.latest_sf_eval }],
+    text: 'Push to **f4** with 1.f4.', lines: [plan.facts.best.line_with_evals], note: null,
+    shapes: [{ orig: 'f2', dest: 'f4', brush: 'green' }, { orig: 'f4', brush: 'green' }] });
+  assert.match(linkMoves(md(plan.result.text), plan.result.lines), /<strong>f4<\/strong> with <a href="#" data-line="f4">1\.f4<\/a>/);
   assert.deepEqual(plan.ideas.map(i => [i.concept, i.beyond_line, i.targets.map(t => t.square)]), [['kingside space', undefined, ['f4']], ['knight to the hole', true, ['b6']]]);
   assert.deepEqual(plan.ideas[1].checked, ['now, before your move: the piece on b3 can reach b6 in 3 moves, the other pieces standing still',
     "now, before your move: a pawn of the opponent's can still ever attack b6: no"]);

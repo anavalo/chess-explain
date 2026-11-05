@@ -72,6 +72,10 @@ _Avoid_: answer (that one explains two moves)
 One Explain or Find plan run from the panel: the fair-play check, then the engines, then the task.
 _Avoid_: handler, flow
 
+**Result**:
+What one request shows in the panel: the move rows, the answer's or plan's text, the lines its move links play, a note and the board shapes.
+_Avoid_: card (that is one box in the panel), view
+
 ## Lichess
 
 **Lichess board**:

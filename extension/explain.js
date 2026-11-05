@@ -704,16 +704,29 @@ export async function request({ user, engines, llm, onStep = () => {} }, task) {
   return task(await engines(), llm);
 }
 
-/** The Explain task. {fen, move, best} -> answer()'s {text, facts, concepts, read} plus the two moves' {move, eval, line,
-    threat_line} as best and compared. move: the move to compare against (SAN or UCI), best: lichess's top move (UCI,
-    optional). `llm` and `opts` go to answer(). */
+/** A task's result is what the panel shows for it, in the words the user reads: {head, rows, text, lines, note, shapes}.
+    head: {label, pill} over the rows, or null. rows: [{kind: best|compared, label, move, eval}]. text: the answer or
+    the plan (markdown). lines: the sheet lines a move link in the text may play, each from the request's position.
+    note: a sentence under the text, or null. shapes: for the lichess board, or null. */
+const row = (kind, label, line) => ({ kind, label, move: line.move, eval: line.latest_sf_eval });
+
+/** The Explain task. {fen, move, best} -> answer()'s {text, facts, concepts, read} plus its result. move: the move to
+    compare against (SAN or UCI), best: lichess's top move (UCI, optional). `llm` and `opts` go to answer(). */
 export async function explainMove(engines, req, llm, opts) {
   const a = await answer(await factSheet(engines, req.fen, req.move, req.best, NODES), llm, opts);
-  const line = k => ({
-    move: a.facts[k].move, eval: a.facts[k].latest_sf_eval, line: a.facts[k].line_with_evals,
-    threat_line: a.facts[k].if_opp_plays_the_threat_at_once,
-  });
-  return { ...a, best: line('alternative'), compared: line('played') };
+  const { played, alternative, prepares } = a.facts;
+  return { ...a, result: {
+    head: null,
+    rows: [row('best', 'engine move', alternative), row('compared', 'compared', played)],
+    text: a.text,
+    // every line that starts at the explained position (prepares.follow_up_fails starts mid-line, so it is left out)
+    lines: [alternative, played].flatMap(l => [l.line_with_evals, l.if_opp_plays_the_threat_at_once])
+      .concat(prepares?.line_if_played_at_once).filter(Boolean),
+    // a deeper read that added nothing says why
+    note: a.read === undefined || a.concepts ? null
+      : a.read ? 'No positional idea passed the board checks.' : 'Could not read the positional ideas in the reply.',
+    shapes: null,
+  } };
 }
 
 // ---- a plan for the side to move ----
@@ -769,12 +782,19 @@ export async function planAnswer(sheet, llm, { model = 'claude-haiku-5-5', onSte
   return { text: await llm(PLAN_SYSTEM, facts, model), facts, ideas };
 }
 
-/** The Find plan task: the plan sheet and its planAnswer(), plus shapes (for the lichess board) and best: {move, eval, line}.
-    `opts` go to planAnswer(). */
+/** The Find plan task: the plan sheet and its planAnswer(), plus its result (see explainMove), whose shapes are
+    planShapes(). `opts` go to planAnswer(). */
 export async function findPlan(engines, fen, llm, { nodes = NODES, ...opts } = {}) {
   const a = await planAnswer(await planFacts(engines, fen, nodes), llm, opts);
-  const b = a.facts.best;
-  return { ...a, shapes: planShapes(a.facts, a.ideas, a.text), best: { move: b.move, eval: b.latest_sf_eval, line: b.line_with_evals } };
+  const { best, side_to_move, plan_kind } = a.facts;
+  return { ...a, result: {
+    head: { label: `Plan for ${side_to_move}`, pill: plan_kind === 'tactical' ? 'Tactical' : 'Positional' },
+    rows: [row('best', 'first move', best)],
+    text: a.text,
+    lines: [best.line_with_evals],
+    note: null,
+    shapes: planShapes(a.facts, a.ideas, a.text),
+  } };
 }
 
 // ---- node ----
