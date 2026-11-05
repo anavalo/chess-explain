@@ -48,6 +48,12 @@ _Avoid_: coach, concept LLM
 A proposed idea whose board checks all held, shown on the fact sheet in `verified_concepts` with its checks in words.
 _Avoid_: concept (when an unchecked proposal is meant)
 
+## Lichess
+
+**Lichess board**:
+The analysis board in the lichess tab: where the position comes from, where an answer's lines are played and where a plan's shapes are drawn. It can be used only where lichess allows its engine, whether or not the engine is switched on.
+_Avoid_: page, tab, DOM
+
 ## Prompt
 
 **Sheet legend**:
