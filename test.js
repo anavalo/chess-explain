@@ -265,13 +265,13 @@ assert.equal(planShapes(pSheet, many, 'a3 b3 c3 d3 f3').length, 5);
 // lichess.js fails here too.
 {
   const other = 'rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1';
-  const fakePage = ({ allowed = true, engineOn = true } = {}) => {
+  const fakePage = ({ allowed = true, engineOn = true, study, ongoing = false } = {}) => {
     const cg = () => ({ drawn: null, setAutoShapes(shapes) { this.drawn = shapes; } });
     const nodes = { '': { fen: start, children: [{ san: 'e4' }], ceval: { pvs: [{ moves: ['d2d4', 'd7d5'] }] } }, zz: { fen: other, children: [] } };
     const sounds = [];
     const ctrl = {
       path: '', node: nodes[''], chessground: cg(),
-      isCevalAllowed: () => allowed, cevalEnabled: () => engineOn,
+      isCevalAllowed: () => allowed, cevalEnabled: () => engineOn, study, ongoing,
       userJumpIfCan(path) { if (nodes[path]) [ctrl.path, ctrl.node] = [path, nodes[path]]; },
       playUciList(ucis) {
         for (const uci of ucis) {
@@ -293,11 +293,20 @@ assert.equal(planShapes(pSheet, many, 'a3 b3 c3 d3 f3').length, 5);
   assert.deepEqual(await board.read(), { fen: start, path: '', best: 'd2d4', next: 'e4', user: 'fable6' });
   fakePage({ engineOn: false });
   assert.equal((await board.read()).best, undefined);
-  // the rule, decided in read(): only where lichess allows its engine, and it fails closed
+  // the rule, decided in read(): where lichess allows its engine, and it fails closed
+  const refused = /does not allow its engine here \(a game in progress, or a broadcast\)/;
   fakePage({ allowed: false });
-  await assert.rejects(board.read(), /does not allow its engine here/);
+  await assert.rejects(board.read(), refused);
   delete fakePage().ctrl.isCevalAllowed;
-  await assert.rejects(board.read(), /does not allow its engine here/);
+  await assert.rejects(board.read(), refused);
+  // and in a study where lichess does not allow it: computer analysis turned off, or an interactive lesson
+  fakePage({ allowed: false, engineOn: false, study: {} });
+  assert.deepEqual(await board.read(), { fen: start, path: '', best: undefined, next: 'e4', user: 'fable6' });
+  // but not in a broadcast or with a game in progress; an `ongoing` that cannot be read fails closed
+  for (const page of [{ study: { relay: {} } }, { study: {}, ongoing: true }, { study: {}, ongoing: null }]) {
+    fakePage({ allowed: false, ...page });
+    await assert.rejects(board.read(), refused);
+  }
   fakePage();
   delete globalThis.window.site.analysis;
   await assert.rejects(board.read(), /Open a lichess analysis board or study/);

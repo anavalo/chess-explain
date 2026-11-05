@@ -83,7 +83,7 @@ _Avoid_: card (that is one box in the panel), view
 ## Lichess
 
 **Lichess board**:
-The analysis board in the lichess tab: where the position comes from, where an answer's lines are played and where a plan's shapes are drawn. It can be used only where lichess allows its engine, whether or not the engine is switched on.
+The analysis board in the lichess tab: where the position comes from, where an answer's lines are played and where a plan's shapes are drawn. It can be used where lichess allows its engine, whether or not the engine is switched on, and in a study where lichess does not (computer analysis turned off, or an interactive lesson); never with a game in progress or in a broadcast.
 _Avoid_: page, tab, DOM
 
 ## Prompt

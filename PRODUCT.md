@@ -48,7 +48,9 @@ Durable constraints, confirmed by the owner:
 - **No server of ours.** Engines run in the browser. Calls leave only for Anthropic (the explanation)
   and lichess (the fair-play check). Free and open source, GPL-3.0.
 - **The user's own API key.** Bring-your-own Anthropic key stays the model. A no-key path is not planned.
-- **Lichess only.** It works only where lichess itself allows its engine, switched on or not. No chess.com or other sites.
+- **Lichess only.** It works where lichess itself allows its engine, switched on or not, and in a study where
+  lichess does not (computer analysis turned off, or an interactive lesson). Never with a game in progress or in a
+  broadcast. No chess.com or other sites.
 - **Chrome side panel only.** No standalone web app and no mobile surface.
 
 Other product facts:

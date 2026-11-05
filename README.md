@@ -73,9 +73,10 @@ On 39 positions from Silman's *How to Reassess Your Chess*, this took Opus from 
 ## Fair play
 
 Using engine help during a game you are playing is cheating, and this tool would rather not be your
-accomplice. chess-explain only works where lichess itself allows its engine (analysis boards, studies,
-finished games), and before every explanation the panel asks lichess's public API whether your account
-is playing a game. If you are, or if it cannot tell (logged out, network error), it refuses. Go finish
+accomplice. chess-explain works where lichess itself allows its engine (analysis boards, studies,
+finished games), and in a study where lichess has it turned off (computer analysis disabled, or an
+interactive lesson). It never works with a game in progress or in a broadcast. Before every explanation
+and every plan the panel asks lichess's public API whether your account is playing a game. If you are, or if it cannot tell (logged out, network error), it refuses. Go finish
 your game. It will still be a blunder afterwards, and we can talk about it then.
 
 ## Installation

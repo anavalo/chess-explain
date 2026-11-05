@@ -33,8 +33,9 @@ How it works:
 
 You need your own Anthropic API key. It stays in your browser and is sent only to Anthropic.
 
-Fair play: chess-explain only works where lichess itself allows its engine, and before every
-explanation it asks lichess whether you are playing a game. If you are, it refuses.
+Fair play: chess-explain works where lichess itself allows its engine, and in studies where it is
+turned off. It never works with a game in progress, and before every explanation it asks lichess
+whether you are playing a game. If you are, it refuses.
 
 Free and open source (GPL-3.0): https://github.com/anavalo/chess-explain
 

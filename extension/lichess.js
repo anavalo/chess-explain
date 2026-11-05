@@ -1,16 +1,21 @@
 // The lichess board: everything the extension knows about lichess's page. It is read and written through lichess's own
-// analysis controller (window.site.analysis), never the page's markup, and only where lichess allows its engine.
+// analysis controller (window.site.analysis), never the page's markup, and only where lichess allows its engine or
+// in a study (see readPage); never with a game in progress.
 //
 // readPage, playLine and showShapes run inside the lichess tab. chrome.scripting sends each one as source text, so
 // each must stand alone: no name from this file may appear in its body (test.js re-parses them the same way).
 
 /** In the lichess tab: the board's position, or {error}. `best` is lichess's top engine move, set only while lichess
-    shows its engine's lines; `next` is the next game move. Fails closed when lichess's rule cannot be read. */
+    shows its engine's lines; `next` is the next game move.
+    The rule: where lichess allows its engine, and also in a study where it does not (computer analysis turned off,
+    or an interactive lesson). Never with a game in progress or in a broadcast. Fails closed when any of that cannot
+    be read. */
 function readPage() {
   const ctrl = window.site?.analysis;
   if (!ctrl?.node) return { error: 'Open a lichess analysis board or study.' };
-  if (!ctrl.isCevalAllowed?.())
-    return { error: 'Lichess does not allow its engine here (a game in progress, or a study with computer analysis disabled).' };
+  const study = ctrl.study && ctrl.ongoing === false && !ctrl.study.relay;
+  if (!ctrl.isCevalAllowed?.() && !study)
+    return { error: 'Lichess does not allow its engine here (a game in progress, or a broadcast).' };
   const moves = ctrl.cevalEnabled?.() ? ctrl.node.ceval?.pvs?.[0]?.moves : undefined;
   return {
     fen: ctrl.node.fen,
@@ -71,7 +76,7 @@ function showShapes(fen, shapes) {
 /** The lichess board behind `run(func, args)`, which runs a function in one lichess page and resolves to its result:
     inTab() in the extension, a direct call on a fake page in the tests.
     - read(): {fen, path, best, next, user}; throws, with the reason worded for the user, where there is no analysis
-      board or lichess does not allow its engine. The one place that rule is decided.
+      board or the rule (see readPage) says no. The one place that rule is decided.
     - play(fen, path, ucis): plays a line from a position a read returned; throws when the board cannot get back there.
     - draw(fen, shapes) / clear(): the plan's shapes, shown while the board is on `fen`. */
 export function lichessBoard(run) {
