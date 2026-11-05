@@ -70,6 +70,24 @@ throws away any idea with a check that does not hold, then writes the answer wit
 On 39 positions from Silman's *How to Reassess Your Chess*, this took Opus from giving the book's reason in
 14 of 78 answers to 34, with no clear rise in false claims.
 
+## Find plan
+
+Sometimes there is no blunder to explain, only a position and the question of what to do with it. The
+**Plan** tab answers that for the side to move.
+
+![A plan for Black next to a lichess study, with its target squares marked on the board](store/screenshot-plan.png)
+
+1. **Stockfish 19** finds the best move and its line, with the same labels as above, and what the
+   opponent threatens.
+2. The strongest Claude model proposes one to three plan ideas (a weak pawn to attack, a square for a
+   knight, a file to take), each backed by board checks. The extension runs every check on the board
+   and throws away any idea with a check that does not hold.
+3. The model you chose writes the plan from the ideas that passed: a goal, two or three steps with the
+   moves of the engine line that carry them out, and why it works.
+
+The first move is drawn on the board as a green arrow, and the squares the plan aims at are circled:
+red to attack, green to occupy. They are only drawn, never saved to a study.
+
 ## Fair play
 
 Using engine help during a game you are playing is cheating, and this tool would rather not be your
@@ -101,6 +119,9 @@ next in the game; type a move in the box to compare with that instead. With lich
 top move is lichess's; with it off, the extension's own Stockfish picks it. Click a move in the
 answer to play its line on the board, up to that move.
 
+For a plan instead, switch to the **Plan** tab and click **Find plan**. It needs no move to compare
+with and works with lichess's engine off.
+
 Each explanation takes about half a minute. That is three engines running dozens of searches in a
 browser tab, so make a cup of tea, or use the time to guess the answer yourself.
 
@@ -121,7 +142,8 @@ explanation would cost less than one cent.
 
 Settings also offer Claude Opus 5.5, at about 7 cents an explanation. On the 132-position eval set below it
 made about half as many false or unsupported claims as Haiku and found the decisive point more often. Positional
-depth adds one call to the strongest model, about the cost of an explanation on it.
+depth adds one call to the strongest model, about the cost of an explanation on it. A plan is two
+calls: one to the strongest model for the ideas, one to the model you chose for the text.
 
 ## Development
 

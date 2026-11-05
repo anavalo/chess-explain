@@ -37,8 +37,8 @@ good, the product says so instead of manufacturing a reason. There is no server 
 - Moves in the answer are links that play their line on the lichess board.
 - **Positional depth** is an optional switch that adds board-checked positional ideas at the cost of one
   more model call.
-- **Find plan** asks for a plan for the side to move. It is on the branch `feat/find-plan` and its UI is
-  not settled.
+- **Find plan** asks for a plan for the side to move, in its own Plan tab next to Explain. It is on the
+  branch `feat/find-plan`.
 - Setup needs an Anthropic API key, entered once in the panel's settings.
 
 ## Capabilities and Constraints
@@ -68,7 +68,6 @@ Other product facts:
 
 Undecided:
 
-- How Find plan sits in the panel. The owner dislikes the current button and wants to explore tabs.
 - Whether a whole-game review workflow is added.
 
 ## Brand Commitments
