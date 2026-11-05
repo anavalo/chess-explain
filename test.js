@@ -243,13 +243,17 @@ assert.deepEqual(pr.ideas, [{ concept: 'centre', claim: 'e4 takes the centre and
   checked: ['after 1.e4: e4: your pawn', 'after 1.e4 e5 2.Nf3: the piece on f3 attacks e5: yes', 'after 1.e4 e5 2.Nf3: e-file: closed'],
   targets: [{ square: 'e5', kind: 'attack' }, { square: 'e4', kind: 'occupy' }] }]);
 assert.deepEqual(Object.keys(pr.facts).slice(-2), ['verified_plan_ideas', 'pawn_pushes_in_line']);
-assert.deepEqual((await withPlan(pSheet, async () => 'No plan.')).ideas, null);
+// a reply with no idea list is told apart from one whose ideas all failed
+const unread = await withPlan(pSheet, async () => 'No plan.'), noneHeld = await withPlan(pSheet, async () => '[]');
+assert.deepEqual([unread.ideas, unread.read, noneHeld.ideas, noneHeld.read], [null, false, null, true]);
+assert.equal(pr.read, true);
 // a saved plan sheet to its plan, as the eval's --facts does: the planner, then the writer, both with their own prompt
 const pCalls = [];
 const pa = await planAnswer(pSheet, (system, f, model) => (pCalls.push([system, model]), system === PLANNER ? planner : 'Play 1.e4.'), { model: 'claude-opus-5-5' });
 assert.deepEqual(pCalls, [[PLANNER, 'claude-opus-5-5'], [PLAN_SYSTEM, 'claude-opus-5-5']]);
 assert.deepEqual([pa.text, pa.ideas, pa.facts.verified_plan_ideas], ['Play 1.e4.', pr.ideas, pr.ideas]);
-await assert.rejects(planAnswer(pSheet, async () => 'No plan.'), /No clear plan found here/);
+await assert.rejects(planAnswer(pSheet, async () => 'No plan.'), /Could not read the plan ideas in the reply/);
+await assert.rejects(planAnswer(pSheet, async () => '[]'), /No clear plan found here/);
 // the board: an arrow for the first move, circles only on targets the text names, red to attack, at most 4
 assert.deepEqual(planShapes(pSheet, pr.ideas, 'Play 1.e4, then hit **e5**.'),
   [{ orig: 'e2', dest: 'e4', brush: 'green' }, { orig: 'e5', brush: 'red' }, { orig: 'e4', brush: 'green' }]);

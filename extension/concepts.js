@@ -191,13 +191,14 @@ const ANCHOR = 'pawn_plan_only_in_better_line';
 /** Find plan's deeper read: the strongest model proposes plan ideas for the plan sheet `facts` (PLANNER), verify() keeps
     those whose checks all hold, and they go in as "verified_plan_ideas" before "pawn_pushes_in_line". An idea's targets
     ({square, kind: attack|occupy}, for the board) are kept only when one of its checks names the square. Returns
-    {facts, ideas}; ideas is null when no idea held or the reply held no claim list. One idea may be a manoeuvre the
-    engine line does not play ("beyond_line": true); it counts only with a route check, and a second one is dropped. */
+    {facts, ideas, read}: ideas is null when no idea held; read is false when the reply held no claim list. One idea may
+    be a manoeuvre the engine line does not play ("beyond_line": true); it counts only with a route check, and a second
+    one is dropped. */
 export async function withPlan(facts, llm) {
-  const claims = claimsIn(await llm(PLANNER, facts, PROPOSER_MODEL)) ?? [];
+  const claims = claimsIn(await llm(PLANNER, facts, PROPOSER_MODEL));
   // one manoeuvre beyond the engine line at most: the first that holds and shows its route on the board
   let beyond = 0;
-  const checked = verify(facts, claims).map(c => (c.beyond_line && !(c.verified && c.checks.some(k => k.op === 'route') && beyond++ === 0)
+  const checked = verify(facts, claims ?? []).map(c => (c.beyond_line && !(c.verified && c.checks.some(k => k.op === 'route') && beyond++ === 0)
     ? { ...c, verified: false } : c));
   const kept = checked.filter(c => c.verified);
   const ideas = render(facts, checked)?.map((idea, i) => {
@@ -209,7 +210,7 @@ export async function withPlan(facts, llm) {
   }) ?? null;
   const out = {};
   for (const [k, v] of Object.entries(facts)) { if (k === 'pawn_pushes_in_line') out.verified_plan_ideas = ideas; out[k] = v; }
-  return { facts: out, ideas };
+  return { facts: out, ideas, read: claims !== null };
 }
 
 /** The shapes Find plan draws on the lichess board: a green arrow for the plan's first move, and a circle on each idea

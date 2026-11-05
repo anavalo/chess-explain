@@ -772,12 +772,13 @@ export async function planFacts({ sf, sf15 }, fen, nodes = NODES) {
 }
 
 /** The plan for a plan sheet, as answer() is for a fact sheet: the strongest model's plan ideas checked on the board
-    (withPlan), then `model` writes the plan from the ideas that held. No idea held: throws, and the writer is never
-    called. Returns {text, facts, ideas}. The eval starts here from a saved sheet. */
+    (withPlan), then `model` writes the plan from the ideas that held. No idea held, or no idea list in the planner's
+    reply: throws, saying which, and the writer is never called. Returns {text, facts, ideas}. The eval starts here
+    from a saved sheet. */
 export async function planAnswer(sheet, llm, { model = 'claude-haiku-5-5', onStep = () => {} } = {}) {
   onStep('Looking for plan ideas');
-  const { facts, ideas } = await withPlan(sheet, llm);
-  if (!ideas) throw new Error('No clear plan found here.');
+  const { facts, ideas, read } = await withPlan(sheet, llm);
+  if (!ideas) throw new Error(read ? 'No clear plan found here.' : 'Could not read the plan ideas in the reply.');
   onStep('Asking Claude');
   return { text: await llm(PLAN_SYSTEM, facts, model), facts, ideas };
 }
