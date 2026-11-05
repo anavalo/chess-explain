@@ -735,18 +735,23 @@ export async function planFacts({ sf, sf15 }, fen, nodes = NODES) {
   };
 }
 
-/** Find plan: the plan sheet, the strongest model's plan ideas checked on the board (withPlan), then `model` writes the
-    plan from the ideas that held. No idea held: throws, and the writer is never called. Returns {text, facts, ideas,
-    shapes (for the lichess board), best: {move, eval, line}}. */
-export async function findPlan(engines, fen, llm, { model = 'claude-haiku-5-5', onStep = () => {}, nodes = NODES } = {}) {
-  const sheet = await planFacts(engines, fen, nodes);
+/** The plan for a plan sheet, as answer() is for a fact sheet: the strongest model's plan ideas checked on the board
+    (withPlan), then `model` writes the plan from the ideas that held. No idea held: throws, and the writer is never
+    called. Returns {text, facts, ideas}. The eval starts here from a saved sheet. */
+export async function planAnswer(sheet, llm, { model = 'claude-haiku-5-5', onStep = () => {} } = {}) {
   onStep('Looking for plan ideas');
   const { facts, ideas } = await withPlan(sheet, llm);
   if (!ideas) throw new Error('No clear plan found here.');
   onStep('Asking Claude');
-  const text = await llm(PLAN_SYSTEM, facts, model);
-  const b = facts.best;
-  return { text, facts, ideas, shapes: planShapes(facts, ideas, text), best: { move: b.move, eval: b.latest_sf_eval, line: b.line_with_evals } };
+  return { text: await llm(PLAN_SYSTEM, facts, model), facts, ideas };
+}
+
+/** Find plan: the plan sheet and its planAnswer(), plus shapes (for the lichess board) and best: {move, eval, line}.
+    `opts` go to planAnswer(). */
+export async function findPlan(engines, fen, llm, { nodes = NODES, ...opts } = {}) {
+  const a = await planAnswer(await planFacts(engines, fen, nodes), llm, opts);
+  const b = a.facts.best;
+  return { ...a, shapes: planShapes(a.facts, a.ideas, a.text), best: { move: b.move, eval: b.latest_sf_eval, line: b.line_with_evals } };
 }
 
 // ---- node ----

@@ -20,7 +20,8 @@
 // --deep runs the deeper read before each answer (as the panel's positional depth switch does), and gives the judge, the
 // pairwise judge and --print the "verified_concepts" legend entry; to compare a deep run with a plain one, judge both with --deep.
 // --plan builds Find plan's plan sheets (with --no-llm) for each position's FEN instead, and --print planner|plan prints
-// the planner and plan-writer prompts, for subagent runs; the summary checks plans at 200 words.
+// the planner and plan-writer prompts, for subagent runs; the summary checks plans at 200 words. A plan sheet in
+// --facts DIR gets its plan (the planner, then the plan writer), not an explanation.
 // --masked writes <name>.masked.txt per answer, with the two candidate moves hidden, for a reader (a Haiku subagent) to say
 // which move the text argues for in <name>.masked.json ({"better": "<SAN>"}); the summary counts how many it recovers.
 import { PgnParser, parseComment, startingPosition } from 'chessops/pgn';
@@ -32,7 +33,7 @@ import { basename } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
-import { NODES, aboutEqual, answer, ask, linePlies, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
+import { NODES, aboutEqual, answer, ask, linePlies, nodeEngines, planAnswer, play, position, san, sanToUci, search } from './extension/explain.js';
 import { JUDGE, PAIR, PLANNER, PLAN_SYSTEM, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
 
 // ---- the judge (its prompts are in extension/prompt.js) ----
@@ -126,9 +127,10 @@ await Promise.all(Array.from({ length: facts ? 16 : 4 }, async () => {
     let text;
     try {
       if (facts) {
-        const { sheet } = readRun(facts, name) ?? {};
-        const key = process.env.ANTHROPIC_API_KEY;
-        const a = await answer(JSON.parse(sheet), (system, f, m) => ask(system, f, key, m), { model: o.model, depth: o.deep });
+        const s = JSON.parse(readRun(facts, name)?.sheet);
+        const key = process.env.ANTHROPIC_API_KEY, llm = (system, f, m) => ask(system, f, key, m);
+        // a plan sheet (it has "best") gets its plan, not an explanation
+        const a = await (s.best ? planAnswer(s, llm, { model: o.model }) : answer(s, llm, { model: o.model, depth: o.deep }));
         text = `${JSON.stringify(a.facts, null, 1)}\n\n${a.text}\n`;
       } else text = (await run(process.execPath, [cli, fen, ...o.plan ? [] : [played, '--vs', better], ...flags], { maxBuffer: 1 << 24 })).stdout;
     } catch (e) {
@@ -333,6 +335,7 @@ function mask(n) {
   const r = readRun(out, n);
   if (!r?.answer) return;
   const sheet = JSON.parse(r.sheet);
+  if (!sheet.alternative) return; // a plan sheet has no two moves to hide
   let { answer } = r;
   for (const [move, tag] of [[sheet.alternative.move, '[better move]'], [sheet.played.move, '[played move]']]) {
     const esc = move.replace(/[+#]$/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

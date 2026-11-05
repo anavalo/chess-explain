@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  Refused, ask as anthropic, checkNotPlaying, findPlan, handle, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
+  Refused, ask as anthropic, checkNotPlaying, findPlan, handle, planAnswer, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
 } from './extension/explain.js';
 import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { lichessBoard } from './extension/lichess.js';
@@ -214,6 +214,12 @@ assert.deepEqual(pr.ideas, [{ concept: 'centre', claim: 'e4 takes the centre and
   targets: [{ square: 'e5', kind: 'attack' }, { square: 'e4', kind: 'occupy' }] }]);
 assert.deepEqual(Object.keys(pr.facts).slice(-2), ['verified_plan_ideas', 'pawn_pushes_in_line']);
 assert.deepEqual((await withPlan(pSheet, async () => 'No plan.')).ideas, null);
+// a saved plan sheet to its plan, as the eval's --facts does: the planner, then the writer, both with their own prompt
+const pCalls = [];
+const pa = await planAnswer(pSheet, (system, f, model) => (pCalls.push([system, model]), system === PLANNER ? planner : 'Play 1.e4.'), { model: 'claude-opus-5-5' });
+assert.deepEqual(pCalls, [[PLANNER, 'claude-opus-5-5'], [PLAN_SYSTEM, 'claude-opus-5-5']]);
+assert.deepEqual([pa.text, pa.ideas, pa.facts.verified_plan_ideas], ['Play 1.e4.', pr.ideas, pr.ideas]);
+await assert.rejects(planAnswer(pSheet, async () => 'No plan.'), /No clear plan found here/);
 // the board: an arrow for the first move, circles only on targets the text names, red to attack, at most 4
 assert.deepEqual(planShapes(pSheet, pr.ideas, 'Play 1.e4, then hit **e5**.'),
   [{ orig: 'e2', dest: 'e4', brush: 'green' }, { orig: 'e5', brush: 'red' }, { orig: 'e4', brush: 'green' }]);
