@@ -10,7 +10,7 @@ import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chess
 import {
   Refused, ask as anthropic, checkNotPlaying, findPlan, handle, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
 } from './extension/explain.js';
-import { KINDS, endNotes, imbalances, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
+import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { linkMoves, md } from './extension/md.js';
 import { JUDGE, LEGEND, PAIR, PLANNER, PLAN_SYSTEM, PROPOSER, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
 import { claimsIn, planShapes, render, verify, withConcepts, withPlan } from './extension/concepts.js';
@@ -113,18 +113,30 @@ assert.deepEqual(endNotes(pos('4k3/8/4p3/3pP3/3P4/8/8/2B1K3 w - - 0 1'), 'white'
 assert.deepEqual(leafDiff(pos('r4rk1/pp3ppp/8/3Np3/4P3/8/PPP2PPP/R4RK1 b - - 0 15'),
   pos('r1b2rk1/pp3ppp/2p5/4p3/2B1P3/2N5/PPP2PPP/R4RK1 b - - 0 15'), 'white'), {
   pieces_left: { alternative: 'you: R R N, opp: R R', played: 'you: R R B N, opp: R R B' },
-  only_after_alternative: ['your knight on outpost d5'],
+  only_after_alternative: ['your knight on outpost d5', 'your hole d6'],
   only_after_played: null,
 });
 assert.equal(leafDiff(null, pos('8/8/8/8/4k3/4P3/5K2/8 b - - 1 1'), 'white'), null);
 
 // imbalances before any move: doubled rooks on the a-file are one label; both bishop pairs cancel out
 assert.deepEqual(imbalances(pos('4r3/R4pk1/2pq1rpp/1p1pn3/1P1Q4/2P1P1P1/4BP1P/R5K1 b - - 2 30')), {
-  yours: ['rook on semi-open e-file', 'pawn on c6 backward', 'outpost square c4'],
+  yours: ['rook on semi-open e-file', 'pawn on c6 backward', 'outpost square c4', 'hole d3', 'hole f3'],
   opponents: ['rook on open a-file', 'pawn on c3 backward', 'outpost square c5'],
   both: ["piece imbalance: your knight for opp's bishop"],
 });
 assert.deepEqual(imbalances(pos('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1')), { yours: null, opponents: null, both: null });
+// Silman's b6 and d6 holes (Xie Jun-Larsen): no black pawn can ever cover them and no white pawn defends them yet.
+// Only holes a piece can use soon, the two nearest: f6 (the bishop reaches it in 2, as d6) loses the tie to d6
+assert.deepEqual(imbalances(pos('r1b2rk1/1p1nqpbp/2p2np1/p3p3/P3P3/2NQBN1P/1PP1BPP1/R4RK1 w - - 0 1')).yours, ['hole b6', 'hole d6']);
+// a light-squared bishop can use f5 but not the dark b6 and d6; a knight on d1 reaches f5 and b6 first; one on a1 needs
+// 4 moves to b6 and d6, too far to count
+assert.deepEqual(holes(pos('4k3/8/2p5/4p3/8/8/8/3BK3 w - - 0 1').board, 'white').map(h => h.square), ['f5']);
+assert.deepEqual(holes(pos('4k3/8/2p5/4p3/8/8/8/3NK3 w - - 0 1').board, 'white').map(h => h.square), ['f5', 'b6']);
+assert.deepEqual(holes(pos('4k3/8/2p5/4p3/8/8/8/N3K3 w - - 0 1').board, 'white').map(h => h.square), ['f5']);
+// routes: own pieces block, an enemy piece can be taken but not passed; no route for pawns
+const xl = pos('r1b2rk1/1p1nqpbp/2p2np1/p3p3/P3P3/2NQBN1P/1PP1BPP1/R4RK1 w - - 0 1').board, at = parseSquare;
+assert.deepEqual([route(xl, at('f3'), at('d6')), route(xl, at('e3'), at('b6')), route(xl, at('d3'), at('d7')), route(xl, at('d3'), at('d8'), 1), route(xl, at('a4'), at('a5'))],
+  [3, 1, 1, undefined, undefined]);
 // White's king on e2 while Black's has castled; with both kings home and able to castle there is no imbalance
 assert.ok(imbalances(pos('rnbq2n1/ppp3kr/3p3p/8/2BPPPpb/2N1B3/PPP1K3/R2Q3R b - - 0 13')).opponents.includes('king still in the centre'));
 assert.ok(!JSON.stringify(imbalances(pos('r3k2r/1pqn1pb1/p2p1np1/N2Pp2p/8/4BP2/PPPQB1PP/R3K2R w KQkq - 6 14'))).includes('king still'));
@@ -336,8 +348,15 @@ try {
 
   // Find plan on a quiet position: our own engine picks f4, the planner's checks run on its line, the writer gets PLAN_SYSTEM
   const quiet = 'r1br2k1/1pq1nppp/p1n1p3/8/2B1P3/1NQ1B3/PP3PPP/2R2RK1 w - - 0 1', planCalls = [], planSteps = [];
+  // and one manoeuvre beyond the line: the b3 knight to the b6 hole, backed by its route; one with no route check and a
+  // second one (to d6, which every short route reaches only over a square a black pawn covers) are dropped
+  const toHole = (square, checks) => ({ concept: 'knight to the hole', claim: `Later the knight heads for ${square}.`, beyond_line: true,
+    targets: [{ square, kind: 'occupy' }], checks });
+  const holeChecks = (sq, moves = 3) => [{ pos: 'start', op: 'route', args: { from: 'b3', to: sq }, expect: moves },
+    { pos: 'start', op: 'pawn_can_ever_attack', args: { square: sq, side: 'black' }, expect: false }];
   const kingside = JSON.stringify([{ concept: 'kingside space', claim: 'f4 grabs space.', targets: [{ square: 'f4', kind: 'occupy' }],
-    checks: [{ pos: 'start', op: 'piece_on', args: { square: 'f4' }, expect: 'empty' }, { pos: 'best:1', op: 'piece_on', args: { square: 'f4' }, expect: 'white pawn' }] }]);
+    checks: [{ pos: 'start', op: 'piece_on', args: { square: 'f4' }, expect: 'empty' }, { pos: 'best:1', op: 'piece_on', args: { square: 'f4' }, expect: 'white pawn' }] },
+  toHole('c5', [holeChecks('c5')[1]]), toHole('b6', holeChecks('b6')), toHole('d6', holeChecks('d6', 'more than 4'))]);
   const planStub = (system, f, model) => (planCalls.push([system, model]), system === PLANNER ? kingside : (sheets.push(f), 'Push to **f4** with 1.f4.'));
   const plan = await findPlan(engines, quiet, planStub, { onStep: t => planSteps.push(t) });
   assert.deepEqual(planCalls, [[PLANNER, 'claude-opus-5-5'], [PLAN_SYSTEM, 'claude-haiku-5-5']]);
@@ -345,6 +364,10 @@ try {
   assert.deepEqual([plan.best.move, plan.facts.plan_kind, plan.facts.side_to_move], ['f4', 'positional', 'White']);
   assert.match(plan.best.line, /^1\. you f4 \[pawn gains space/);
   assert.deepEqual(plan.shapes, [{ orig: 'f2', dest: 'f4', brush: 'green' }, { orig: 'f4', brush: 'green' }]);
+  assert.deepEqual(plan.ideas.map(i => [i.concept, i.beyond_line, i.targets.map(t => t.square)]), [['kingside space', undefined, ['f4']], ['knight to the hole', true, ['b6']]]);
+  assert.deepEqual(plan.ideas[1].checked, ['now, before your move: the piece on b3 can reach b6 in 3 moves, the other pieces standing still',
+    "now, before your move: a pawn of the opponent's can still ever attack b6: no"]);
+  assert.match(plan.facts.imbalances.yours.join(), /hole b6/);
   // no idea holds: an error, and the writer is never called
   planCalls.length = 0;
   await assert.rejects(findPlan(engines, quiet, (system, f, m) => (planCalls.push(system), '[]')), /No clear plan found here/);
@@ -354,7 +377,7 @@ try {
   const keys = new Set();
   const walk = v => { if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) { if (!Array.isArray(v)) keys.add(k); walk(x); } };
   sheets.forEach(walk);
-  const notFields = ['you', 'opp', 'check', 'yes', 'partly', 'no', 'tie', 'labelled', 'line', 'term', 'none', 'tactical', 'positional', 'must', 'forced']; // quoted labels and verdict values
+  const notFields = ['you', 'opp', 'check', 'yes', 'partly', 'no', 'tie', 'labelled', 'line', 'term', 'none', 'tactical', 'positional', 'must', 'forced', 'hole']; // quoted labels and verdict values
   const quoted = new Set([...(LEGEND + JUDGE + PAIR + PLAN_SYSTEM).matchAll(/"([a-z][a-z0-9_]*)"/g)].map(m => m[1]));
   assert.deepEqual([...quoted].filter(k => !keys.has(k) && !notFields.includes(k)), []);
   engines.save?.(); // a full run only: a failed one would leave out the searches after the failure

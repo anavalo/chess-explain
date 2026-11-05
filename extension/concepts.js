@@ -3,7 +3,7 @@
 // holds; render() turns the survivors into the sheet field "verified_concepts" (checks in words, sides as your/opp's).
 import { SquareSet, attacks, between, parseSquare, makeSquare, squareFile, squareRank } from './vendor/chessops.js';
 import { linePlies, position, play, sanToUci } from './explain.js';
-import { isOutpost } from './features.js';
+import { isOutpost, route } from './features.js';
 import { PLANNER, PROPOSER } from './prompt.js';
 
 // the proposer is always the strongest model, whatever model writes the answer
@@ -56,6 +56,8 @@ const OPS = {
   king_square: (pos, { side: c }) => makeSquare(pos.board.kingOf(side(c))),
   undeveloped_minors: (pos, { side: c }) => { const color = side(c); return Object.entries(START[color]).reduce((n, [role, ss]) => n + ss.filter(s => { const p = pos.board.get(sq(s)); return p && p.role === role && p.color === color; }).length, 0); },
   material: (pos, { side: c }) => [...pos.board[side(c)]].reduce((n, s) => n + VALUE[pos.board.get(s).role], 0),
+  // moves the piece needs to get there, the rest of the board standing still (see route() in features.js)
+  route: (pos, { from, to }) => route(pos.board, sq(from), sq(to)) ?? 'more than 4',
   legal_moves: (pos, { square }) => {
     const s = sq(square);
     if (pieceAt(pos.board, s).color !== pos.turn) throw new Error(`the piece on ${square} is not on the side to move`);
@@ -124,6 +126,7 @@ export function render(sheet, verified) {
     undeveloped_minors: () => `${s(a.side)} knights and bishops still on their starting squares: ${v}`,
     material: () => `${s(a.side)} material: ${v}`,
     legal_moves: () => `the piece on ${a.square} has ${v} legal moves`,
+    route: () => `the piece on ${a.from} can reach ${a.to} in ${v} moves, the other pieces standing still`,
   })[op]();
   const out = verified.filter(c => c.verified).map(c => ({ concept: c.concept, claim: c.claim,
     checked: c.checks.map(k => `${where(k.pos)}: ${say(k)}`) }));
@@ -159,16 +162,21 @@ const ANCHOR = 'pawn_plan_only_in_better_line';
 /** Find plan's deeper read: the strongest model proposes plan ideas for the plan sheet `facts` (PLANNER), verify() keeps
     those whose checks all hold, and they go in as "verified_plan_ideas" before "pawn_pushes_in_line". An idea's targets
     ({square, kind: attack|occupy}, for the board) are kept only when one of its checks names the square. Returns
-    {facts, ideas}; ideas is null when no idea held or the reply held no claim list. */
+    {facts, ideas}; ideas is null when no idea held or the reply held no claim list. One idea may be a manoeuvre the
+    engine line does not play ("beyond_line": true); it counts only with a route check, and a second one is dropped. */
 export async function withPlan(facts, llm) {
   const claims = claimsIn(await llm(PLANNER, facts, PROPOSER_MODEL)) ?? [];
-  const checked = verify(facts, claims), kept = checked.filter(c => c.verified);
+  // one manoeuvre beyond the engine line at most: the first that holds and shows its route on the board
+  let beyond = 0;
+  const checked = verify(facts, claims).map(c => (c.beyond_line && !(c.verified && c.checks.some(k => k.op === 'route') && beyond++ === 0)
+    ? { ...c, verified: false } : c));
+  const kept = checked.filter(c => c.verified);
   const ideas = render(facts, checked)?.map((idea, i) => {
     const named = new Set(kept[i].checks.flatMap(k => Object.values(k.args ?? {})).map(String));
     const targets = (Array.isArray(kept[i].targets) ? kept[i].targets : [])
       .filter(t => /^[a-h][1-8]$/.test(t?.square) && named.has(t.square) && (t.kind === 'attack' || t.kind === 'occupy'))
       .map(({ square, kind }) => ({ square, kind }));
-    return { ...idea, targets };
+    return { ...idea, ...kept[i].beyond_line === true && { beyond_line: true }, targets };
   }) ?? null;
   const out = {};
   for (const [k, v] of Object.entries(facts)) { if (k === 'pawn_pushes_in_line') out.verified_plan_ideas = ideas; out[k] = v; }

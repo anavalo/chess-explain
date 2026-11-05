@@ -1,13 +1,15 @@
 // The features: structural facts about one side's pawns and pieces, the one table that words them as labels, and the
 // imbalances and leaf diffs built from them. Pure board code: no engine, no LLM.
 
-import { FILE_NAMES, SquareSet, makeSquare, opposite, pawnAttacks, squareFile, squareRank } from './vendor/chessops.js';
+import { FILE_NAMES, SquareSet, attacks, makeSquare, opposite, pawnAttacks, squareFile, squareRank } from './vendor/chessops.js';
 
 /** Whose pieces a label is about, on a sheet written for `you`: 'your' or "opp's". */
 export const owner = (color, you) => (color === you ? 'your' : "opp's");
 
 const LIGHT = SquareSet.lightSquares(), DARK = SquareSet.darkSquares();
-const CENTRE_FILES = [2, 3, 4, 5].map(f => SquareSet.fromFile(f)).reduce((a, b) => a.union(b)); // c-f
+const files = fs => fs.map(f => SquareSet.fromFile(f)).reduce((a, b) => a.union(b));
+const CENTRE_FILES = files([2, 3, 4, 5]); // c-f
+const HOLE_FILES = files([1, 2, 3, 4, 5, 6]); // b-g
 const ahead = (color, sq) => (color === 'white' ? sq + 8 : sq - 8);
 const sameColour = sq => (LIGHT.has(sq) ? LIGHT : DARK);
 /** A sheet field with nothing in it is null, not []. */
@@ -27,6 +29,7 @@ export const KINDS = {
   bishopPair: { word: (f, ctx) => (ctx === 'move' ? 'bishop pair gone' : 'bishop pair'), sample: {} },
   outpost: { word: f => `${f.role} on outpost ${f.square}`, sample: { role: '<knight|bishop>', square: '<square>' } },
   outpostSquare: { word: f => `outpost square ${f.square}`, sample: { square: '<square>' } },
+  hole: { word: f => `hole ${f.square}`, sample: { square: '<square>' } },
   rookFile: { word: (f, ctx) => (ctx === 'move' ? `rook on ${f.open} file` : `rook on ${f.open} ${f.file}-file`), sample: { open: 'open|semi-open' } },
   passed: { word: f => `passed ${f.file}-pawn`, sample: { file: '<file>' } },
   doubled: { word: f => `${f.file}-pawns doubled`, sample: { file: '<file>' } },
@@ -53,9 +56,62 @@ export function hasBishopPair(board, color) {
 export function isOutpost(board, sq, color) {
   const r = squareRank(sq), rel = color === 'white' ? r : 7 - r;
   if (rel < 3 || rel > 5 || !pawnAttacks(opposite(color), sq).intersects(board.pawn.intersect(board[color]))) return false;
+  return !enemyPawnCanAttack(board, sq, color);
+}
+
+/** Can an enemy pawn of `color`'s opponent ever attack `sq`: one on a neighbouring file that has not gone past it.
+    ponytail: an enemy pawn that is blocked still counts as able to attack it. */
+function enemyPawnCanAttack(board, sq, color) {
+  const r = squareRank(sq);
   for (const p of board.pawn.intersect(board[opposite(color)]))
-    if (Math.abs(squareFile(p) - squareFile(sq)) === 1 && (color === 'white' ? squareRank(p) > r : squareRank(p) < r)) return false;
-  return true;
+    if (Math.abs(squareFile(p) - squareFile(sq)) === 1 && (color === 'white' ? squareRank(p) > r : squareRank(p) < r)) return true;
+  return false;
+}
+
+/** The fewest moves the piece on `from` needs to reach `to`, every other piece standing still: it cannot pass through
+    pieces or land on its own, it may land on (take) an enemy piece but not go on from there, and it does not stop on
+    a square an enemy pawn attacks on the way (the pawn would take it). Undefined past `max` moves. Pieces only: a
+    pawn's route is not worked out. */
+export function route(board, from, to, max = 4) {
+  const piece = board.get(from);
+  if (!piece || piece.role === 'pawn') return undefined;
+  const occupied = board.occupied.without(from), own = board[piece.color].without(from), enemy = board[opposite(piece.color)];
+  const pawns = board.pawn.intersect(enemy);
+  const hit = sq => pawnAttacks(piece.color, sq).intersects(pawns); // an enemy pawn attacks sq
+  let frontier = [from], seen = SquareSet.empty().with(from);
+  for (let n = 1; n <= max && frontier.length; n++) {
+    const next = [];
+    for (const sq of frontier)
+      for (const t of attacks(piece, sq, occupied).diff(own)) {
+        if (t === to) return n;
+        if (seen.has(t)) continue;
+        seen = seen.with(t);
+        if (!enemy.has(t) && !hit(t)) next.push(t);
+      }
+    frontier = next;
+  }
+  return undefined;
+}
+
+/** Holes for `color` in the enemy camp (its 5th-6th rank, b-g files): squares no enemy pawn can ever attack, next to an
+    enemy pawn that has gone past them, with no pawn on them and none of `color`'s pawns defending them (that is an
+    outpost). Silman's holes, where a piece can settle for good. Only the two a piece of `color` can reach soonest, and
+    only those a knight reaches in 3 moves or a bishop of the square's colour in 2: a far hole nobody can use is noise. */
+export function holes(board, color) {
+  const found = [], theirs = board.pawn.intersect(board[opposite(color)]);
+  const knights = [...board.knight.intersect(board[color])], bishops = [...board.bishop.intersect(board[color])];
+  const camp = SquareSet.fromRank(color === 'white' ? 4 : 3).union(SquareSet.fromRank(color === 'white' ? 5 : 2));
+  for (const sq of HOLE_FILES.intersect(camp).diff(board.pawn)) {
+    const f = squareFile(sq), sides = SquareSet.fromFile(f - 1).union(SquareSet.fromFile(f + 1));
+    if (!theirs.intersects(sides) || enemyPawnCanAttack(board, sq, color)) continue;
+    if (pawnAttacks(opposite(color), sq).intersects(board.pawn.intersect(board[color]))) continue; // an outpost
+    const moves = [...knights.map(k => (k === sq ? 0 : route(board, k, sq, 3))), ...bishops.map(b => (b === sq ? 0 : route(board, b, sq, 2)))]
+      .filter(n => n !== undefined);
+    if (moves.length) found.push({ sq, near: Math.min(...moves) });
+  }
+  // ponytail: two holes at most, nearest first (ties by square); raise if answers miss a third that matters
+  return found.sort((a, b) => a.near - b.near || a.sq - b.sq).slice(0, 2).sort((a, b) => a.sq - b.sq)
+    .map(({ sq }) => ({ kind: 'hole', square: makeSquare(sq) }));
 }
 
 /** Empty outposts for `color`: holes in the enemy pawns that a `color` knight or bishop could take. Only next to an
@@ -135,7 +191,7 @@ export function rookFile(board, sq, color) {
 }
 
 /** The pawn and square features of one side, `(board, color) -> [feature]`, for a position and for the change a move makes. */
-const STRUCTURE = [passedPawns, pawnWeaknesses, shieldHoles, outpostSquares];
+const STRUCTURE = [passedPawns, pawnWeaknesses, shieldHoles, outpostSquares, holes];
 
 /** Silman's imbalances as features: what already differs on the board before any move, for the side to move
     ("yours"), the opponent, and both (the piece imbalance and the end notes). Each list may be empty.

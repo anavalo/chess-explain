@@ -26,6 +26,9 @@ You get facts from two engines about one position and two candidate moves:
   away or was taken, SF 15 counts it in King safety), "rook on 7th rank" (attacks pawns there or holds the king on its back rank),
   "<side> outpost square <square>" (a pawn move just made that empty square an outpost for that side: no enemy pawn can
   ever attack it again, so a knight or bishop can settle there; the pawn move weakened it for the other side),
+  "<side> hole <square>" (a square in the enemy camp that no enemy pawn can ever attack, though no pawn of that side
+  defends it yet: a knight or bishop that gets there cannot be driven off by a pawn; a pawn move that makes one weakened
+  it for the other side),
   "frees|shuts in <side> bishop on <square> (+|-N squares)" (that move opened or closed the bishop's diagonals; freeing
   your own bad bishop or shutting in the enemy's good one is often the point of a pawn break or a pawn capture),
   "<side> pawn islands N to M" (groups of pawns on adjacent files, with no pawn lost: fewer islands is a sounder structure,
@@ -40,7 +43,8 @@ You get facts from two engines about one position and two candidate moves:
   If "you_are_in_check_from" is set, your first sentence must say you were in check and from which piece,
   and that every legal move had to answer that check. If it is null, do not mention check at all.
 - "imbalances" lists what already differs on the board before any move: "yours", "opponents" and "both" (bishop pair,
-  outposts, empty "outpost square"s (holes in the enemy pawns that side's pieces can use), rooks on open files, passed
+  outposts, empty "outpost square"s (holes in the enemy pawns that side's pieces can use, already defended by a pawn),
+  "hole"s (the same, not defended by a pawn yet: a square to bring a knight to), rooks on open files, passed
   and weak pawns, holes in the king shield, bad or opposite-coloured bishops, different pieces, a "king still in the
   centre" (not castled, with the enemy queen and pieces on, and the centre open or the enemy king safe)). Unless you
   were in check, your first sentence (at most 20 words) sums up the position from the one or two imbalances that matter
@@ -290,13 +294,24 @@ ${CHECKS}
 Prefer ideas that show what the line changes: the same check at "start" and later in the line giving different results.
 An idea may use up to 6 checks. Work out the board carefully from the FENs and lines; you may reason step by step before answering.
 
+One idea (at most) may go beyond the engine line: a manoeuvre the line does not play yet. When "imbalances" lists a
+"hole" for "yours", add this idea for one hole: a knight of yours heads there (a knight is the piece a hole is for:
+pick the hole and knight with the shortest route, up to 3 moves), or a bishop only when no knight can get there,
+after the line's first moves if they come first. Mark it "beyond_line": true, and back it with a "route" check (how many moves
+the piece needs, at "start" or at a "best:N" position where it still stands) and a "pawn_can_ever_attack" check (expect
+false) on the hole. Leave it out only when the engine line already puts a piece on the hole or a check shows the route
+fails. It does not contradict the engine line: it is what to aim for once the line's first moves are played.
+- route {from, to} -> how many moves the piece on \`from\` needs to reach \`to\` with every other piece standing still
+  (it cannot pass through pieces or land on its own, never stops on the way on a square an enemy pawn attacks, and may
+  take an enemy piece at the end), or "more than 4"
+
 Each idea also names up to two target squares to mark on the board: {"square": "e6", "kind": "attack"} for an enemy piece
 or weakness to aim at, {"square": "d5", "kind": "occupy"} for a square to put a piece on. A target counts only if one of
 that idea's checks names the square.
 
 Reply with only JSON: [{"concept": "<short name, e.g. knight to the d5 outpost>",
  "claim": "<one sentence a club player would read>", "targets": [{"square": "...", "kind": "attack"}],
- "checks": [{"pos": "...", "op": "...", "args": {...}, "expect": ...}]}]`;
+ "beyond_line": false, "checks": [{"pos": "...", "op": "...", "args": {...}, "expect": ...}]}]`;
 
 /** The plan writer's prompt: the plan sheet's legend (label meanings reused word for word from LEGEND) and the plan rules. */
 export const PLAN_SYSTEM = `You are a chess coach for club players (around 1200-1800 rating).
@@ -312,7 +327,8 @@ ${part(LEGEND, '- "imbalances"', '- "opponent_threat"')}- "opponent_threat" (whe
 - "verified_plan_ideas" are plan ideas a coach proposed, each backed by board facts that a program checked ("checked":
   every one of them is true, at the position named before the colon), and "targets": squares the idea attacks or wants to
   occupy. The facts are ground truth; the "claim" sentence is the coach's reading of them. Build the plan from these ideas
-  and the engine line, in the words of their checked facts, and add nothing the facts do not show.
+  and the engine line, in the words of their checked facts, and add nothing the facts do not show. An idea with
+  "beyond_line": true is a manoeuvre the engine line does not play yet: what to aim for after the line's first moves.
 - "pawn_pushes_in_line" (when not null) lists your quiet pawn moves later in the line that do something: attack a piece,
   free or shut in a bishop, or go to the square "(to the square 1.Nd2 left)" the first move cleared.
 - "sf15_terms" are Stockfish 15.1's hand-crafted evaluation terms at the quiet position "explained_at_position_after";
@@ -325,6 +341,8 @@ Rules:
    what you aim for and where. Then 2 or 3
    numbered steps; each starts with a word, not a move, and names the moves of "best"'s line that carry it out. Then a
    last line "**Why:** " and one or two sentences: why the plan works, from the verified ideas and the labels.
+   An idea with "beyond_line" is the last step: say it comes later, and give its route in squares ("the knight heads
+   for c4 and then b6"), never as moves with numbers or piece letters, since the engine line does not play them.
 2. If "plan_kind" is "tactical", step 1 is the forcing part: how the line meets "opponent_threat" when it is set, else
    the first moves of the forcing line and what they win or threaten, from their labels.
 3. Write every variation with move numbers and no space after the dot ("14...Rfe8 15.Nbd2 Ne7"). Use only moves from
