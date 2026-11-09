@@ -49,25 +49,15 @@ document.getElementById('key-form').onsubmit = async e => {
 };
 showKeyStatus();
 
-// the model is a setting too; a saved model the picker no longer offers becomes the default, so the answer cache
-// and the requests use it
-const model = () => document.querySelector('input[name="model"]:checked').value;
-chrome.storage.local.get('model').then(({ model: m }) => {
-  const radio = m && document.querySelector(`input[name="model"][value="${CSS.escape(m)}"]`);
-  if (radio) radio.checked = true;
-  else if (m) chrome.storage.local.set({ model: model() });
-});
-settings.onchange = e => e.target.name === 'model' && chrome.storage.local.set({ model: e.target.value });
+const MODEL = 'claude-opus-5-5'; // one model, the strongest
 // positional depth: before the answer, the strongest model proposes positional ideas, the board checks them, and the
 // answer is written with the ideas that held. One more call; on unless turned off, remembered like the model.
 const deep = document.getElementById('deep');
 chrome.storage.local.get('deep').then(({ deep: on }) => (deep.checked = on !== false));
 deep.onchange = () => chrome.storage.local.set({ deep: deep.checked });
 // the fact sheets this panel has built, and those of the next moves, built while the user reads (see prepareNext).
-// On unless turned off; turning it off, or another tab, stops a build under way. Closing the panel ends them all.
-const sheets = sheetCache(), prepare = document.getElementById('prepare');
-chrome.storage.local.get('prepare').then(({ prepare: on }) => (prepare.checked = on !== false));
-prepare.onchange = () => { chrome.storage.local.set({ prepare: prepare.checked }); if (!prepare.checked) sheets.stop(); };
+// Another tab stops a build under way. Closing the panel ends them all.
+const sheets = sheetCache();
 chrome.tabs.onActivated.addListener(() => sheets.stop());
 const buttons = [document.getElementById('go'), document.getElementById('plan')];
 
@@ -186,7 +176,7 @@ async function explain(apiKey, board, again) {
   const move = again?.req.move ?? (document.getElementById('move').value.trim() || b.next);
   if (!move) return error('No next game move here. Type a move to compare with.');
   const req = again ? { ...again.req, user: b.user }
-    : { user: b.user, fen: b.fen, move, best: b.best, model: model(), depth: deep.checked, version: chrome.runtime.getManifest().version,
+    : { user: b.user, fen: b.fen, move, best: b.best, model: MODEL, depth: deep.checked, version: chrome.runtime.getManifest().version,
       recent: await recentReasons(chrome.storage.local, b.game, b.path) };
   // a saved answer waits on the fair-play check alone; a new one gets requested()'s spinner instead
   const s = spinner('Checking you are not in a game');
@@ -215,7 +205,7 @@ async function explain(apiKey, board, again) {
     line (b.ahead), built in the background, so a step forward answers without waiting for the engines. The board is
     read again first (its page rule), and each build waits for the fair-play check (see sheetCache). */
 async function prepareNext(board, b) {
-  if (!prepare.checked || !engines) return;
+  if (!engines) return;
   const now = await activeBoard();
   if (now?.tab !== board.tab) return;
   const { user, path, fen } = await now.read();
@@ -229,7 +219,7 @@ async function plan(apiKey, board) {
   await sheets.stop(); // the plan's searches never run beside a build ahead
   const { result } = await requested(b, apiKey, (e, llm, step) => {
     step("Finding the engine's plan");
-    return findPlan(e, b.fen, llm, { model: model(), onStep: step });
+    return findPlan(e, b.fen, llm, { model: MODEL, onStep: step });
   });
   out.replaceChildren();
   render(result, b);
@@ -239,11 +229,9 @@ async function plan(apiKey, board) {
 }
 
 /** One request at a time: Explain or Find plan, each in its own view (`name`). Clears that view's last answer first,
-    and for a new plan the board's shapes; the view's tab shows a spinner, for when the other view is open. */
+    and for a new plan the board's shapes. */
 async function run(task, name) {
-  const label = document.querySelector(`input[name="view"][value="${name}"]`).parentNode;
   buttons.forEach(b => (b.disabled = true));
-  label.classList.add('busy');
   out = outs[name];
   out.replaceChildren();
   if (name === 'plan') shapes = null;
@@ -260,7 +248,6 @@ async function run(task, name) {
     error(e.message);
   } finally {
     buttons.forEach(b => (b.disabled = false));
-    label.classList.remove('busy');
   }
 }
 

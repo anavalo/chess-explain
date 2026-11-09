@@ -85,7 +85,7 @@ Sometimes there is no blunder to explain, only a position and the question of wh
 2. The strongest Claude model proposes one to three plan ideas (a weak pawn to attack, a square for a
    knight, a file to take), each backed by board checks. The extension runs every check on the board
    and throws away any idea with a check that does not hold.
-3. The model you chose writes the plan from the ideas that passed: a goal, two or three steps with the
+3. The same model writes the plan from the ideas that passed: a goal, two or three steps with the
    moves of the engine line that carry them out, and why it works.
 
 The first move is drawn on the board as a green arrow, and the squares the plan aims at are circled:

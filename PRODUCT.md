@@ -60,8 +60,7 @@ Other product facts:
 - **About equal.** When the two moves are within 0.3 pawns the panel says so and skips the rest of the
   analysis and the model call.
 - **No evaluation numbers in answers.** Answers use words, not centipawns.
-- **Positional depth text names no model.** In the panel and in docs it says "the strongest model". The
-  model picker in settings is the one place that names models.
+- **The panel names no model.** There is no model picker; docs say "the strongest model".
 - Plain JavaScript, no framework, no build step. Everything the extension needs is committed.
 - An explanation takes about half a minute. The wait is a product fact, not a defect to hide.
 - Terminology is fixed in `GLOSSARY.md` (fact sheet, label, feature, imbalance, explainer).
