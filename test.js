@@ -313,14 +313,16 @@ assert.equal(planShapes(pSheet, many, 'a3 b3 c3 d3 f3').length, 5);
     fakePage({ allowed: false, ...page });
     await assert.rejects(board.read(), refused);
   }
-  // the next two positions on the game line (first children), each with its next move; one with no next move is left out
+  // the same side's next two turns on the game line (first children, two and four plies on), each with its next
+  // move; one with no next move is left out
   page = fakePage();
-  const n3 = { id: 'cc', san: 'Nf3', fen: 'f3', children: [] }, n2 = { id: 'bb', san: 'e5', fen: 'f2', children: [n3] };
-  const n1 = { id: 'aa', san: 'e4', fen: 'f1', children: [n2, { id: 'dd', san: 'c5', fen: 'side line', children: [{ san: 'Nf3' }] }] };
+  const n5 = { id: 'ee', san: 'Bb5', fen: 'f5', children: [] }, n4 = { id: 'dd', san: 'Nc6', fen: 'f4', children: [n5] };
+  const n3 = { id: 'cc', san: 'Nf3', fen: 'f3', children: [n4] }, n2 = { id: 'bb', san: 'e5', fen: 'f2', children: [n3] };
+  const n1 = { id: 'aa', san: 'e4', fen: 'f1', children: [n2, { id: 'xx', san: 'c5', fen: 'side line', children: [{ san: 'Nf3' }] }] };
   Object.assign(page.ctrl, { path: '', node: { fen: start, children: [n1] } });
-  assert.deepEqual((await board.read()).ahead, [{ fen: 'f1', path: 'aa', next: 'e5' }, { fen: 'f2', path: 'aabb', next: 'Nf3' }]);
+  assert.deepEqual((await board.read()).ahead, [{ fen: 'f2', path: 'aabb', next: 'Nf3' }, { fen: 'f4', path: 'aabbccdd', next: 'Bb5' }]);
   Object.assign(page.ctrl, { path: 'aa', node: n1 });
-  assert.deepEqual((await board.read()).ahead, [{ fen: 'f2', path: 'aabb', next: 'Nf3' }]);
+  assert.deepEqual((await board.read()).ahead, [{ fen: 'f3', path: 'aabbcc', next: 'Nc6' }]);
   fakePage();
   delete globalThis.window.site.analysis;
   await assert.rejects(board.read(), /Open a lichess analysis board or study/);

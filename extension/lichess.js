@@ -6,8 +6,8 @@
 // each must stand alone: no name from this file may appear in its body (test.js re-parses them the same way).
 
 /** In the lichess tab: the board's position, or {error}. `best` is lichess's top engine move, set only while lichess
-    shows its engine's lines; `next` is the next game move. `ahead`: the next two positions on the line, each
-    {fen, path, next} as above, those with no next move left out. `game`: the study chapter's id, or the game's (null
+    shows its engine's lines; `next` is the next game move. `ahead`: the same side's next two turns on the line
+    (two and four plies on), each {fen, path, next} as above, those with no next move left out. `game`: the study chapter's id, or the game's (null
     on a board that is no game, which lichess calls 'synthetic').
     The rule: where lichess allows its engine, and also in a study where it does not (computer analysis turned off,
     or an interactive lesson). Never with a game in progress or in a broadcast. Fails closed when any of that cannot
@@ -20,9 +20,9 @@ function readPage() {
     return { error: 'Lichess does not allow its engine here (a game in progress, or a broadcast).' };
   const moves = ctrl.cevalEnabled?.() ? ctrl.node.ceval?.pvs?.[0]?.moves : undefined;
   const ahead = [];
-  for (let n = ctrl.node, path = ctrl.path, i = 0; i < 2 && (n = n.children?.[0]); i++) {
+  for (let n = ctrl.node, path = ctrl.path, i = 1; i <= 4 && (n = n.children?.[0]); i++) {
     path += n.id;
-    if (n.children?.[0]) ahead.push({ fen: n.fen, path, next: n.children[0].san });
+    if (i % 2 === 0 && n.children?.[0]) ahead.push({ fen: n.fen, path, next: n.children[0].san });
   }
   const game = ctrl.study ? ctrl.study.data?.chapter?.id : ctrl.data?.game?.id;
   return {
