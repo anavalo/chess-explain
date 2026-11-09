@@ -608,8 +608,9 @@ function bySide(diff, a, p) {
 
 // ---- the LLM ----
 
-/** One Messages API call: `system`, the fact sheet as the user message. Returns the reply's text. */
-export async function ask(system, facts, apiKey, model) {
+/** One Messages API call: `system`, the fact sheet as the user message. Returns the reply's text. With `onText`, the
+    reply is streamed and `onText(text so far)` hears each piece as it is written. */
+export async function ask(system, facts, apiKey, model, onText) {
   // Haiku has no server-side fallback; on the others a safety decline is retried on a fallback model
   const fallback = !model.startsWith('claude-haiku');
   const r = await fetch('https://api.anthropic.com/v1/messages', {
@@ -627,6 +628,7 @@ export async function ask(system, facts, apiKey, model) {
       max_tokens: 16000,
       output_config: { effort: 'high' },
       ...fallback && { fallbacks: 'default' },
+      ...onText && { stream: true },
       // cached for 5 minutes: a write costs 1.25x input, a read 0.20 $/MTok (Opus 5.5, Sonnet 5.5), so one call in 5
       // minutes pays the write premium and two or more save. A prompt under 512 tokens is simply not cached.
       system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
@@ -634,15 +636,40 @@ export async function ask(system, facts, apiKey, model) {
     }),
     signal: AbortSignal.timeout(120_000),
   }).catch(e => { throw new Error(`Could not reach the Anthropic API (${e.message}).`); });
-  const body = await r.json().catch(() => ({}));
+  // an error status is a plain JSON body, streamed or not
+  const body = onText && r.ok ? await streamed(r.body, onText) : await r.json().catch(() => ({}));
   if (r.status === 401) throw new Error('Anthropic rejected the API key. Check it in the panel settings.');
   if (!r.ok) throw new Error(`Anthropic API error ${r.status}: ${body.error?.message ?? r.statusText}`);
   if (body.stop_reason === 'refusal') return DECLINED;
   return body.content.filter(b => b.type === 'text').map(b => b.text).join('');
 }
 
-/** The `llm(system, facts, model)` that answer(), planAnswer() and the tasks take: ask() with the user's key. */
-export const llmWith = apiKey => (system, facts, model) => ask(system, facts, apiKey, model);
+/** Reads ask()'s server-sent events into the reply as an unstreamed call returns it: {stop_reason, content}. The text
+    is every text delta in order, across text blocks: a decline mid-stream adds a fallback block and the fallback model
+    goes on, so the text before it stands. An error event, or a stream cut off before its stop reason, throws. */
+async function streamed(stream, onText) {
+  const reader = stream.getReader(), utf8 = new TextDecoder();
+  let buf = '', text = '', stop_reason = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += utf8.decode(value, { stream: true });
+    let end;
+    while ((end = buf.indexOf('\n\n')) >= 0) { // one event per blank-line-ended block; its JSON is on the data line
+      const data = buf.slice(0, end).match(/^data: (.*)$/m)?.[1];
+      buf = buf.slice(end + 2);
+      const e = data ? JSON.parse(data) : {};
+      if (e.type === 'error') throw new Error(`Anthropic API error: ${e.error?.message ?? e.error?.type}`);
+      if (e.delta?.type === 'text_delta') onText(text += e.delta.text);
+      stop_reason = e.delta?.stop_reason ?? stop_reason;
+    }
+  }
+  if (!stop_reason) throw new Error('The answer was cut off. Try again.');
+  return { stop_reason, content: [{ type: 'text', text }] };
+}
+
+/** The `llm(system, facts, model, onText)` that answer(), planAnswer() and the tasks take: ask() with the user's key. */
+export const llmWith = apiKey => (system, facts, model, onText) => ask(system, facts, apiKey, model, onText);
 
 // ---- one panel request ----
 
@@ -680,11 +707,11 @@ export async function factSheet(engines, fen, move, best = null, nodes = NODES) 
 export const aboutEqual = facts => Math.abs(facts.latest_sf_gap) < EQUAL_GAP;
 
 /** The answer for a fact sheet: a plain verdict when the moves are about equal (no LLM call), else the explainer's text,
-    after a deeper read when `depth` is on. `llm(system, facts, model)` is one LLM call: ask() with the key, or a test stub.
-    `onStep(words)` hears which call comes next. Returns {text, facts, concepts, read}: facts as the explainer saw them;
+    after a deeper read when `depth` is on. `llm(system, facts, model, onText)` is one LLM call: ask() with the key, or a
+    test stub. `onStep(words)` hears which call comes next; `onText` streams the explainer's text (see ask). Returns {text, facts, concepts, read}: facts as the explainer saw them;
     concepts, the verified concepts (null when none held); read, whether the proposer's reply held a claim list
     (undefined when no deeper read ran). */
-export async function answer(facts, llm, { model = 'claude-haiku-5-5', depth = false, onStep = () => {} } = {}) {
+export async function answer(facts, llm, { model = 'claude-haiku-5-5', depth = false, onStep = () => {}, onText } = {}) {
   if (aboutEqual(facts)) {
     return { facts, concepts: null, text: `**${facts.played.move}** is about as good as **${facts.alternative.move}**: `
       + 'the engine sees no real difference between them. Either move is fine.' };
@@ -695,7 +722,7 @@ export async function answer(facts, llm, { model = 'claude-haiku-5-5', depth = f
     ({ facts, concepts, read } = await withConcepts(facts, llm));
   }
   onStep('Asking Claude');
-  return { text: await llm(systemFor(model, !!facts.verified_concepts), facts, model), facts, concepts, read };
+  return { text: await llm(systemFor(model, !!facts.verified_concepts), facts, model, onText), facts, concepts, read };
 }
 
 /** One request from the panel: fair play first, then the engines, then `task(engines, llm)`, whose result it resolves
@@ -740,19 +767,23 @@ export async function remembered(storage, { user, fen, move, best, model, depth,
     the plan (markdown). lines: the sheet lines a move link in the text may play, each from the request's position.
     note: a sentence under the text, or null. shapes: for the lichess board, or null. */
 const row = (kind, label, line) => ({ kind, label, move: line.move, eval: line.latest_sf_eval });
+const explainRows = ({ played, alternative }) => [row('best', 'engine move', alternative), row('compared', 'compared', played)];
+// every line that starts at the explained position (prepares.follow_up_fails starts mid-line, so it is left out)
+const explainLines = ({ played, alternative, prepares }) => [alternative, played]
+  .flatMap(l => [l.line_with_evals, l.if_opp_plays_the_threat_at_once]).concat(prepares?.line_if_played_at_once).filter(Boolean);
 
 /** The Explain task. {fen, move, best} -> answer()'s {text, facts, concepts, read} plus its result. move: the move to
-    compare against (SAN or UCI), best: lichess's top move (UCI, optional). `llm` and `opts` go to answer(). */
-export async function explainMove(engines, req, llm, opts) {
-  const a = await answer(await factSheet(engines, req.fen, req.move, req.best, NODES), llm, opts);
-  const { played, alternative, prepares } = a.facts;
+    compare against (SAN or UCI), best: lichess's top move (UCI, optional). `onSheet(rows, lines)` hears the result's
+    rows and lines once the sheet is built, before any LLM call; `llm` and the other `opts` go to answer(). */
+export async function explainMove(engines, req, llm, { onSheet = () => {}, ...opts } = {}) {
+  const sheet = await factSheet(engines, req.fen, req.move, req.best, NODES);
+  onSheet(explainRows(sheet), explainLines(sheet));
+  const a = await answer(sheet, llm, opts);
   return { ...a, result: {
     head: null,
-    rows: [row('best', 'engine move', alternative), row('compared', 'compared', played)],
+    rows: explainRows(a.facts),
     text: a.text,
-    // every line that starts at the explained position (prepares.follow_up_fails starts mid-line, so it is left out)
-    lines: [alternative, played].flatMap(l => [l.line_with_evals, l.if_opp_plays_the_threat_at_once])
-      .concat(prepares?.line_if_played_at_once).filter(Boolean),
+    lines: explainLines(a.facts),
     // a deeper read that added nothing says why
     note: a.read === undefined || a.concepts ? null
       : a.read ? 'No positional idea passed the board checks.' : 'Could not read the positional ideas in the reply.',

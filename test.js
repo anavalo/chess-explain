@@ -352,6 +352,51 @@ assert.deepEqual([sent.model, sent.system, sent.messages], ['claude-opus-5-5', c
   assert.deepEqual([r.text, r.concepts.length], ['Fine.', 1]);
   assert.deepEqual(seen, [cached(PROPOSER), cached(systemFor('claude-opus-5-5', true))]);
 }
+// streaming: with onText the reply comes as server-sent events, cut here at awkward bytes (mid-line, mid-event, inside
+// a UTF-8 character). onText hears the text so far after each piece; thinking and the fallback block add none; the text
+// returned is the unstreamed one. An error event throws; a refusal stop is the decline, as unstreamed.
+{
+  const parts = ['**Nf3** keeps ', 'the knight — and ', 'wins the e5 pawn.'];
+  const sse = events => {
+    const bytes = new TextEncoder().encode(events.map(([type, data]) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`).join(''));
+    const cuts = [...Array(Math.ceil(bytes.length / 9)).keys()].map(i => i * 9).concat(bytes.indexOf(0xe2) + 1, bytes.length).sort((a, b) => a - b);
+    return new ReadableStream({ start(c) { cuts.slice(1).forEach((end, i) => c.enqueue(bytes.slice(cuts[i], end))); c.close(); } });
+  };
+  const delta = (index, delta) => ['content_block_delta', { index, delta }];
+  const transcript = (stop, mid = []) => [
+    ['message_start', { message: { id: 'msg', role: 'assistant', content: [] } }],
+    ['content_block_start', { index: 0, content_block: { type: 'thinking', thinking: '' } }],
+    delta(0, { type: 'thinking_delta', thinking: '' }), delta(0, { type: 'signature_delta', signature: 'sig' }),
+    ['content_block_stop', { index: 0 }],
+    ['content_block_start', { index: 1, content_block: { type: 'text', text: '' } }],
+    ['ping', {}], delta(1, { type: 'text_delta', text: parts[0] }), ...mid, delta(1, { type: 'text_delta', text: parts[1] }),
+    ['content_block_stop', { index: 1 }],
+    ['content_block_start', { index: 2, content_block: { type: 'fallback' } }], ['content_block_stop', { index: 2 }],
+    ['content_block_start', { index: 3, content_block: { type: 'text', text: '' } }],
+    delta(3, { type: 'text_delta', text: parts[2] }), ['content_block_stop', { index: 3 }],
+    ['message_delta', { delta: { stop_reason: stop }, usage: { output_tokens: 9 } }], ['message_stop', {}]];
+  let events, streamedReq;
+  globalThis.fetch = async (url, { body }) => {
+    const b = JSON.parse(body);
+    if (!b.stream) return Response.json({ stop_reason: 'end_turn', content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: parts[0] + parts[1] },
+      { type: 'fallback' }, { type: 'text', text: parts[2] }] });
+    streamedReq = b;
+    return new Response(sse(events), { headers: { 'content-type': 'text/event-stream' } });
+  };
+  const heard = [];
+  events = transcript('end_turn');
+  const text = await anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5', t => heard.push(t));
+  assert.deepEqual(heard, [parts[0], parts[0] + parts[1], parts.join('')]);
+  assert.equal(text, parts.join(''));
+  assert.equal(text, await anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5'));
+  assert.deepEqual([streamedReq.stream, streamedReq.fallbacks, streamedReq.system], [true, 'default', cached(PROPOSER)]);
+  events = transcript('end_turn', [['error', { error: { type: 'overloaded_error', message: 'Overloaded' } }]]);
+  await assert.rejects(anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5', () => {}), /Anthropic API error: Overloaded/);
+  events = transcript('refusal');
+  assert.equal(await anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5', () => {}), '(the model declined to answer)');
+  events = transcript('end_turn').slice(0, -2); // cut off before its stop reason: not an answer
+  await assert.rejects(anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5', () => {}), /cut off/);
+}
 // the deeper read's prompt is the plain one plus the "verified_concepts" entry
 for (const m of ['claude-haiku-5-5', 'claude-opus-5-5'])
   assert.ok(systemFor(m, true).includes('"verified_concepts"') && systemFor(m, true).replace(/\n- "verified_concepts"[^]*?swing in the lines still comes first\./, '') === systemFor(m));
@@ -475,7 +520,7 @@ let facts;
 const sheets = [];
 // the LLM stub: logs each call; the proposer gets `proposer`, the explainer's sheet is kept in `facts`
 let calls = [], proposer = null;
-const stub = (system, f, model) => (calls.push([system, model]), system === PROPOSER ? proposer : (sheets.push(facts = f), '(stub)'));
+const stub = (system, f, model, onText) => (calls.push([system, model, ...onText ? [onText] : []]), system === PROPOSER ? proposer : (sheets.push(facts = f), '(stub)'));
 const ask = (fen, move, best, opts) => explainMove(engines, { fen, move, best }, stub, opts);
 try {
   const fen = 'r3k2r/1p1bbpp1/pqn1p2p/2ppP3/3P4/2PB1N2/PP1N1PPP/R2Q1RK1 w kq - 2 11';
@@ -525,13 +570,15 @@ try {
   // Kramnik-Leko 2001: Qa1 prepares Bxd5, which fails at once to Qb6 hitting the queen on b2.
   // With depth on: the proposer, then the explainer with the concepts entry and the verified concepts after the pawn plan
   calls = [];
-  const steps = [];
+  const steps = [], sheetSeen = [];
   proposer = `Ideas:\n${JSON.stringify([
     { concept: 'king', claim: 'Your king is on g1.', checks: [{ pos: 'start', op: 'king_square', args: { side: 'white' }, expect: 'g1' }] },
     { concept: 'wrong', claim: 'x', checks: [{ pos: 'start', op: 'king_square', args: { side: 'white' }, expect: 'h1' }] }])}`;
   r = await ask('2rq1rk1/R2n1ppp/4p3/2pb4/5B2/6P1/1Q2PPBP/3R2K1 w - - 0 21', 'e4', 'b2a1',
-    { model: 'claude-opus-5-5', depth: true, onStep: t => steps.push(t) });
-  assert.deepEqual(calls, [[PROPOSER, 'claude-opus-5-5'], [systemFor('claude-opus-5-5', true), 'claude-opus-5-5']]);
+    { model: 'claude-opus-5-5', depth: true, onStep: t => steps.push(t), onSheet: (...a) => sheetSeen.push([calls.length, ...a]), onText: 'the onText' });
+  // only the explainer streams; the panel gets the rows and lines before any LLM call
+  assert.deepEqual(calls, [[PROPOSER, 'claude-opus-5-5'], [systemFor('claude-opus-5-5', true), 'claude-opus-5-5', 'the onText']]);
+  assert.deepEqual(sheetSeen, [[0, r.result.rows, r.result.lines]]);
   assert.deepEqual(steps, ['Looking for positional ideas', 'Asking Claude']);
   assert.deepEqual([r.read, r.concepts], [true, [{ concept: 'king', claim: 'Your king is on g1.', checked: ['now, before your move: your king on g1'] }]]);
   assert.equal(r.result.note, null);

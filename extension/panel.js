@@ -84,7 +84,7 @@ function spinner(stage = '') {
   return { set: s => ((stage = s), tick()), done: () => { clearInterval(timer); status.remove(); } };
 }
 
-/** The answer card; a move link in it plays its line (one of `lines`, from b's position) on the lichess board. */
+/** The answer card, returned; a move link in it plays its line (one of `lines`, from b's position) on the lichess board. */
 function answerCard(text, lines, b) {
   const area = out, answer = el('div', 'card answer', { html: linkMoves(md(text), lines) });
   answer.onclick = async e => {
@@ -100,10 +100,11 @@ function answerCard(text, lines, b) {
       error(e.message, area);
     }
   };
+  return answer;
 }
 
-/** Shows a task's result (see explainMove) for the position `b`: every word in it comes from the task. */
-function render(result, b) {
+/** The moves card: a task result's head and rows (see explainMove). */
+function movesCard(result) {
   const moves = el('div', 'card moves');
   if (result.head) {
     const head = el('div', 'plan-head', {}, moves);
@@ -116,6 +117,11 @@ function render(result, b) {
     el('small', '', { text: m.label }, row);
     el('span', 'eval', { text: m.eval }, row);
   }
+}
+
+/** Shows a task's result (see explainMove) for the position `b`: every word in it comes from the task. */
+function render(result, b) {
+  movesCard(result);
   answerCard(result.text, result.lines, b);
   if (result.note) el('div', 'card note', { text: result.note });
 }
@@ -172,9 +178,17 @@ async function explain(apiKey, board, again) {
     : { user: b.user, fen: b.fen, move, best: b.best, model: model(), depth: deep.checked, version: chrome.runtime.getManifest().version };
   // a saved answer waits on the fair-play check alone; a new one gets requested()'s spinner instead
   const s = spinner('Checking you are not in a game');
+  // a new one shows its moves once the sheet is built, then the answer as it is written (redrawn once a frame at most)
   const { result, saved } = await remembered(chrome.storage.local, req, () => (s.done(), requested(b, apiKey, (e, llm, step) => {
     step(`Analysing ${move}`);
-    return explainMove(e, { fen: b.fen, move, best: b.best }, llm, { model: req.model, depth: req.depth, onStep: step });
+    let card, lines, text = null, frame = 0;
+    const onSheet = (rows, l) => { movesCard({ rows }); lines = l; card = answerCard('', lines, b); };
+    const onText = t => {
+      if (text === null) step('Writing');
+      text = t;
+      frame ||= requestAnimationFrame(() => { frame = 0; card.innerHTML = linkMoves(md(text), lines); });
+    };
+    return explainMove(e, { fen: b.fen, move, best: b.best }, llm, { model: req.model, depth: req.depth, onStep: step, onSheet, onText });
   })), { fresh: !!again }).finally(s.done);
   out.replaceChildren();
   render(saved ? { ...result, note: [result.note, 'Saved answer.'].filter(Boolean).join(' ') } : result, b);
