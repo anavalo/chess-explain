@@ -97,7 +97,7 @@ The numbered instructions on how the explainer must write its answer.
 _Avoid_: guidelines, style rules
 
 **Explainer prompt**:
-The sheet legend plus the rules one model gets; models differ only in which rules they get.
+The sheet legend plus the rules the model gets.
 _Avoid_: SYSTEM, system prompt
 
 **Rule check**:

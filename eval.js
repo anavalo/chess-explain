@@ -34,7 +34,7 @@ import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
 import { NODES, aboutEqual, answer, linePlies, llmWith, nodeEngines, planAnswer, play, position, san, sanToUci, search } from './extension/explain.js';
-import { JUDGE, PAIR, PLANNER, PLAN_SYSTEM, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
+import { JUDGE, MODEL, PAIR, PLANNER, PLAN_SYSTEM, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
 
 // ---- the judge (its prompts are in extension/prompt.js) ----
 
@@ -230,7 +230,7 @@ async function claude(system, content, schema) {
       'anthropic-beta': 'server-side-fallback-2026-07-01',
     },
     body: JSON.stringify({
-      model: 'claude-opus-5-5',
+      model: MODEL,
       max_tokens: 16000,
       fallbacks: 'default',
       output_config: { effort: 'high', format: { type: 'json_schema', schema } },

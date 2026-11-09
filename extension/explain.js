@@ -18,7 +18,7 @@ import {
   endNotes, hasBishopPair, imbalances, isOutpost, islandChange, key, leafDiff, orNull, outpostSquares, owner, passedPawns,
   pawnWeaknesses, rookFile, shieldHoles, word,
 } from './features.js';
-import { PLAN_SYSTEM, systemFor } from './prompt.js';
+import { MODEL, PLAN_SYSTEM, systemFor } from './prompt.js';
 // concepts.js imports chess helpers from here: a cycle, safe because neither module uses the other's exports at load time
 import { planShapes, withConcepts, withPlan } from './concepts.js';
 
@@ -786,7 +786,7 @@ export const aboutEqual = facts => Math.abs(facts.latest_sf_gap) < EQUAL_GAP;
     proposer's) end with them as "recent_reasons". Returns {text, facts, concepts, read}: facts as the explainer saw them;
     concepts, the verified concepts (null when none held); read, whether the proposer's reply held a claim list
     (undefined when no deeper read ran). */
-export async function answer(facts, llm, { model = 'claude-opus-5-5', depth = false, recent = null, onStep = () => {}, onText } = {}) {
+export async function answer(facts, llm, { model = MODEL, depth = false, recent = null, onStep = () => {}, onText } = {}) {
   if (aboutEqual(facts)) {
     return { facts, concepts: null, text: `**${facts.played.move}** is about as good as **${facts.alternative.move}**: `
       + 'the engine sees no real difference between them. Either move is fine.' };
@@ -975,7 +975,7 @@ export async function planFacts({ sf, sf2, sf15 }, fen, nodes = NODES) {
     (withPlan), then `model` writes the plan from the ideas that held. No idea held, or no idea list in the planner's
     reply: throws, saying which, and the writer is never called. Returns {text, facts, ideas}. The eval starts here
     from a saved sheet. */
-export async function planAnswer(sheet, llm, { model = 'claude-opus-5-5', onStep = () => {} } = {}) {
+export async function planAnswer(sheet, llm, { model = MODEL, onStep = () => {} } = {}) {
   onStep('Looking for plan ideas');
   // the planner plans the best line only; the writer gets the about-as-good move for one sentence
   const { also_good = null, ...rest } = sheet;

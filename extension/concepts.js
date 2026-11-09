@@ -4,10 +4,8 @@
 import { SquareSet, attacks, between, opposite, parseSquare, makeSquare, squareFile, squareRank } from './vendor/chessops.js';
 import { linePlies, position, play, sanToUci } from './explain.js';
 import { enemyPawnCanAttack, isOutpost, route } from './features.js';
-import { PLANNER, PROPOSER } from './prompt.js';
+import { MODEL, PLANNER, PROPOSER } from './prompt.js';
 
-// the proposer is always the strongest model, whatever model writes the answer
-const PROPOSER_MODEL = 'claude-opus-5-5';
 const LIGHT = SquareSet.lightSquares();
 const VALUE = { pawn: 1, knight: 3, bishop: 3, rook: 5, queen: 9, king: 0 };
 const START = { white: { knight: ['b1', 'g1'], bishop: ['c1', 'f1'] }, black: { knight: ['b8', 'g8'], bishop: ['c8', 'f8'] } };
@@ -180,7 +178,7 @@ export function claimsIn(reply) {
     the concepts. */
 export async function withConcepts(facts, llm) {
   if (!(ANCHOR in facts)) throw new Error(`the fact sheet has no "${ANCHOR}" to put the verified concepts after`);
-  const claims = claimsIn(await llm(PROPOSER, facts, PROPOSER_MODEL));
+  const claims = claimsIn(await llm(PROPOSER, facts, MODEL));
   const concepts = claims ? render(facts, verify(facts, claims)) : null;
   const out = {};
   for (const [k, v] of Object.entries(facts)) { out[k] = v; if (k === ANCHOR) out.verified_concepts = concepts; }
@@ -195,7 +193,7 @@ const ANCHOR = 'pawn_plan_only_in_better_line';
     be a manoeuvre the engine line does not play ("beyond_line": true); it counts only with a route check, and a second
     one is dropped. */
 export async function withPlan(facts, llm) {
-  const claims = claimsIn(await llm(PLANNER, facts, PROPOSER_MODEL));
+  const claims = claimsIn(await llm(PLANNER, facts, MODEL));
   // one manoeuvre beyond the engine line at most: the first that holds and shows its route on the board
   let beyond = 0;
   const checked = verify(facts, claims ?? []).map(c => (c.beyond_line && !(c.verified && c.checks.some(k => k.op === 'route') && beyond++ === 0)

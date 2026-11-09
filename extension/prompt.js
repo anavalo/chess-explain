@@ -1,6 +1,10 @@
 // The explainer prompt (sheet legend + rules) and the rule checks that test an answer against the rules.
 // explain.js sends the prompt; eval.js runs the checks and sends the judge prompts, which carry the legend only.
 
+/** The one model every call uses, the strongest. Here, in a leaf module, so the explain.js/concepts.js import cycle
+    cannot reach it before it is set. */
+export const MODEL = 'claude-opus-5-5';
+
 /** The sheet legend: what each fact sheet field and label means. The judge gets it too, so put new writing rules in
     RULES, where a rule under A/B test cannot bias the judge. */
 export const LEGEND = `You are a chess coach for club players (around 1200-1800 rating).

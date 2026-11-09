@@ -49,9 +49,8 @@ document.getElementById('key-form').onsubmit = async e => {
 };
 showKeyStatus();
 
-const MODEL = 'claude-opus-5-5'; // one model, the strongest
 // positional depth: before the answer, the strongest model proposes positional ideas, the board checks them, and the
-// answer is written with the ideas that held. One more call; on unless turned off, remembered like the model.
+// answer is written with the ideas that held. One more call; on unless turned off, and the setting is remembered.
 const deep = document.getElementById('deep');
 chrome.storage.local.get('deep').then(({ deep: on }) => (deep.checked = on !== false));
 deep.onchange = () => chrome.storage.local.set({ deep: deep.checked });
@@ -225,7 +224,7 @@ async function plan(apiKey, board) {
   await sheets.stop(); // the plan's searches never run beside a build ahead
   const { result } = await requested(b, apiKey, (e, llm, step) => {
     step("Finding the engine's plan");
-    return findPlan(e, b.fen, llm, { model: MODEL, onStep: step });
+    return findPlan(e, b.fen, llm, { onStep: step });
   });
   out.replaceChildren();
   render(result, b);
