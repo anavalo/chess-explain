@@ -26,6 +26,8 @@ export const NODES = 2_000_000;
 const THREADS = 1; // one search thread: a node-limited search then gives the same lines every run
 const EQUAL_GAP = 0.3; // pawns; below this both moves are called equal and the LLM is skipped
 const ALSO_GAP = 0.1; // pawns; a plan names the engine's second move as "about as good" below this
+const ANSWERS = 200; // saved Explain answers kept (see remembered), oldest dropped first
+const DECLINED = '(the model declined to answer)';
 const LEAF_PLIES = 6; // SF 15 terms are measured within this many plies of each line
 // centipawns the opponent must gain with a free move before the position's threat is reported. A free move is worth
 // a tempo (up to ~0.5) anyway; above that it is a plan, such as a g4-g5 pawn storm.
@@ -633,7 +635,7 @@ export async function ask(system, facts, apiKey, model) {
   const body = await r.json().catch(() => ({}));
   if (r.status === 401) throw new Error('Anthropic rejected the API key. Check it in the panel settings.');
   if (!r.ok) throw new Error(`Anthropic API error ${r.status}: ${body.error?.message ?? r.statusText}`);
-  if (body.stop_reason === 'refusal') return '(the model declined to answer)';
+  if (body.stop_reason === 'refusal') return DECLINED;
   return body.content.filter(b => b.type === 'text').map(b => b.text).join('');
 }
 
@@ -703,6 +705,32 @@ export async function request({ user, engines, llm, onStep = () => {} }, task) {
   await checkNotPlaying(user);
   onStep('Starting Stockfish');
   return task(await engines(), llm);
+}
+
+/** The Explain answers already given, in `storage` (chrome.storage.local in the panel) under `answers`: [[key, result]],
+    oldest first, at most ANSWERS. The key is the request: fen, move, best, model, depth and the extension's `version`,
+    so a new release asks afresh. A saved one resolves to {result, saved: true} once lichess confirms `user` is not in
+    a game (fail closed: no engine, no LLM). Else, or when `fresh`, `run()` (a request()) answers and its result is
+    saved over any old one, unless it has no text or the model declined. */
+export async function remembered(storage, { user, fen, move, best, model, depth, version }, run, { fresh = false } = {}) {
+  const key = [fen, move, best ?? '', model, depth ? 'depth' : '', version].join(' | ');
+  const saved = async () => (await storage.get('answers')).answers ?? [];
+  const hit = !fresh && (await saved()).find(([k]) => k === key);
+  if (hit) {
+    await checkNotPlaying(user);
+    return { result: hit[1], saved: true };
+  }
+  const got = await run();
+  const { text } = got.result;
+  // a failed save (get or set) must not lose the answer just paid for
+  if (text && text !== DECLINED) {
+    try {
+      await storage.set({ answers: [...(await saved()).filter(([k]) => k !== key), [key, got.result]].slice(-ANSWERS) });
+    } catch (e) {
+      console.error(e);
+    }
+  }
+  return got;
 }
 
 /** A task's result is what the panel shows for it, in the words the user reads: {head, rows, text, lines, note, shapes}.

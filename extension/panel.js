@@ -1,4 +1,4 @@
-import { explainMove, findPlan, llmWith, request, sanToUci, startEngines, uciEngine } from './explain.js';
+import { explainMove, findPlan, llmWith, remembered, request, sanToUci, startEngines, uciEngine } from './explain.js';
 import { inTab, lichessBoard } from './lichess.js';
 import { linkMoves, md } from './md.js';
 
@@ -147,26 +147,38 @@ async function ready() {
 }
 
 /** One request for the position `b` the board gave, under a spinner: `task(engines, llm, step)` runs once fair play
-    has passed and the engines have started, and `step` names its stages on the spinner. */
+    has passed and the engines have started, and `step` names its stages on the spinner (and in the console, with
+    the seconds since the request started). */
 async function requested(b, apiKey, task) {
-  const s = spinner();
+  const s = spinner(), started = Date.now();
+  const log = stage => console.log(`${((Date.now() - started) / 1000).toFixed(1)} s: ${stage}`);
+  const step = stage => (log(stage), s.set(stage));
   try {
-    return await request({ user: b.user, engines: ready, llm: llmWith(apiKey), onStep: s.set }, (e, llm) => task(e, llm, s.set));
+    return await request({ user: b.user, engines: ready, llm: llmWith(apiKey), onStep: step }, (e, llm) => task(e, llm, step));
   } finally {
+    log('done');
     s.done();
   }
 }
 
-async function explain(apiKey, board) {
-  const b = await board.read();
-  const move = document.getElementById('move').value.trim() || b.next;
+/** Explain for the board's position, or `again` ({b, req}): a saved answer's request, asked afresh. The board is
+    read either way, so its page rule and the logged-in user are the current ones. */
+async function explain(apiKey, board, again) {
+  const now = await board.read();
+  const b = again ? { ...again.b, user: now.user } : now;
+  const move = again?.req.move ?? (document.getElementById('move').value.trim() || b.next);
   if (!move) return error('No next game move here. Type a move to compare with.');
-  const { result } = await requested(b, apiKey, (e, llm, step) => {
+  const req = again ? { ...again.req, user: b.user }
+    : { user: b.user, fen: b.fen, move, best: b.best, model: model(), depth: deep.checked, version: chrome.runtime.getManifest().version };
+  // a saved answer waits on the fair-play check alone; a new one gets requested()'s spinner instead
+  const s = spinner('Checking you are not in a game');
+  const { result, saved } = await remembered(chrome.storage.local, req, () => (s.done(), requested(b, apiKey, (e, llm, step) => {
     step(`Analysing ${move}`);
-    return explainMove(e, { fen: b.fen, move, best: b.best }, llm, { model: model(), depth: deep.checked, onStep: step });
-  });
+    return explainMove(e, { fen: b.fen, move, best: b.best }, llm, { model: req.model, depth: req.depth, onStep: step });
+  })), { fresh: !!again }).finally(s.done);
   out.replaceChildren();
-  render(result, b);
+  render(saved ? { ...result, note: [result.note, 'Saved answer.'].filter(Boolean).join(' ') } : result, b);
+  if (saved) el('button', 'again', { text: 'Ask again' }).onclick = () => run((k, bd) => explain(k, bd, { b, req }), 'explain');
 }
 
 async function plan(apiKey, board) {

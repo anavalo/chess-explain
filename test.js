@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  Refused, ask as anthropic, checkNotPlaying, explainMove, findPlan, planAnswer, request, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
+  Refused, ask as anthropic, checkNotPlaying, explainMove, findPlan, llmWith, planAnswer, remembered, request, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
 } from './extension/explain.js';
 import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { lichessBoard } from './extension/lichess.js';
@@ -381,6 +381,48 @@ for (const user of [undefined, 'in_a_game'])
   // a live one still answers
   const live = uciEngine(l => queueMicrotask(() => live.onLine(l === 'isready' ? 'readyok' : l)));
   assert.deepEqual(await live.until(['isready'], l => l === 'readyok'), ['readyok']);
+}
+// the answer cache: the same request again shows the saved result after lichess's status check alone (no engine, no
+// LLM); a game in progress still refuses it; another best, model, depth or version asks afresh; so does Ask again
+{
+  const status = globalThis.fetch, data = {};
+  const storage = { get: async k => structuredClone({ [k]: data[k] }), set: async o => void Object.assign(data, structuredClone(o)) };
+  let asked, started, reply = 'Saved.';
+  globalThis.fetch = async (url, init) => (asked.push(new URL(url).host), url.startsWith('https://api.anthropic.com/')
+    ? Response.json(reply ? { stop_reason: 'end_turn', content: [{ type: 'text', text: reply }] } : { stop_reason: 'refusal', content: [] })
+    : status(url, init));
+  const base = { user: 'fable6', fen: 'the fen', move: 'Nf3', best: 'd2d4', model: 'claude-opus-5-5', depth: true, version: '0.62' };
+  const explain = async (req, opts) => {
+    asked = [], started = 0;
+    const got = await remembered(storage, req, () => request({ user: req.user, engines: async () => (started++, 'the engines'), llm: llmWith('key') },
+      async (e, llm) => ({ result: { rows: [], text: await llm('system', {}, req.model), note: null } })), opts);
+    return [got.result.text, !!got.saved, asked, started];
+  };
+  const fresh = ['Saved.', false, ['lichess.org', 'api.anthropic.com'], 1];
+  assert.deepEqual(await explain(base), fresh);
+  assert.deepEqual(await explain(base), ['Saved.', true, ['lichess.org'], 0]);
+  await assert.rejects(explain({ ...base, user: 'in_a_game' }), Refused);
+  assert.deepEqual([asked, started], [['lichess.org'], 0]);
+  for (const other of [{ best: null }, { model: 'claude-haiku-5-5' }, { depth: false }, { version: '0.63' }])
+    assert.deepEqual(await explain({ ...base, ...other }), fresh);
+  reply = 'Asked again.';
+  assert.deepEqual(await explain(base, { fresh: true }), ['Asked again.', false, ['lichess.org', 'api.anthropic.com'], 1]);
+  assert.deepEqual((await explain(base))[0], 'Asked again.'); // the fresh answer replaced the saved one
+  // a decline is not saved
+  reply = null;
+  const declined = { ...base, fen: 'another fen' };
+  assert.deepEqual(await explain(declined), ['(the model declined to answer)', false, ['lichess.org', 'api.anthropic.com'], 1]);
+  assert.equal((await explain(declined))[1], false);
+  // at most 200 answers, the oldest dropped first
+  for (let i = 0; i < 200; i++) await remembered(storage, { ...base, fen: i }, async () => ({ result: { text: 'x' } }));
+  assert.deepEqual([data.answers.length, data.answers[0][0], data.answers.at(-1)[0]],
+    [200, '0 | Nf3 | d2d4 | claude-opus-5-5 | depth | 0.62', '199 | Nf3 | d2d4 | claude-opus-5-5 | depth | 0.62']);
+  // a storage that fails (get or set) still shows the answer just paid for
+  const logged = console.error, gone = async () => { throw new Error('gone'); };
+  console.error = () => {};
+  for (const broken of [{ get: gone, set: gone }, { ...storage, set: gone }])
+    assert.equal((await remembered(broken, base, async () => ({ result: { text: 'x' } }), { fresh: true })).result.text, 'x');
+  console.error = logged;
 }
 delete globalThis.fetch; // nothing past here may call out
 
