@@ -27,6 +27,7 @@ const THREADS = 1; // one search thread: a node-limited search then gives the sa
 const EQUAL_GAP = 0.3; // pawns; below this both moves are called equal and the LLM is skipped
 const ALSO_GAP = 0.1; // pawns; a plan names the engine's second move as "about as good" below this
 const ANSWERS = 200; // saved Explain answers kept (see remembered), oldest dropped first
+const SHEETS = 20; // fact sheets a panel keeps (see sheetCache), oldest dropped first
 const DECLINED = '(the model declined to answer)';
 const LEAF_PLIES = 6; // SF 15 terms are measured within this many plies of each line
 // centipawns the opponent must gain with a free move before the position's threat is reported. A free move is worth
@@ -46,18 +47,21 @@ export class Refused extends Error {}
 
 /** Talks UCI to one Stockfish. `send(line)` writes a command; feed every output line to the returned `onLine`.
     Commands run one at a time, in call order. A dead engine never answers again: tell it with `fail(error)`, and the
-    request it is on and every later one reject with that error instead of waiting for ever. */
+    request it is on and every later one reject with that error instead of waiting for ever. When `signal` aborts
+    while its commands are with the engine (or before), `stop` follows them, so a search ends at once with its bestmove. */
 export function uciEngine(send) {
   let waiting = null, reject = null, dead = null, queue = Promise.resolve();
-  const until = (cmds, done) => (queue = queue.then(() => new Promise((resolve, no) => {
+  const until = (cmds, done, signal) => (queue = queue.then(() => new Promise((resolve, no) => {
     if (dead) return no(dead);
-    const lines = [];
+    const lines = [], stop = () => send('stop');
     waiting = l => {
       lines.push(l);
-      if (done(l)) { waiting = reject = null; resolve(lines); }
+      if (done(l)) { waiting = reject = null; signal?.removeEventListener('abort', stop); resolve(lines); }
     };
     reject = no;
     cmds.forEach(send);
+    if (signal?.aborted) stop();
+    else signal?.addEventListener('abort', stop, { once: true });
   })));
   const fail = error => {
     dead = error;
@@ -689,17 +693,86 @@ export async function checkNotPlaying(user) {
 }
 
 /** The fact sheet for `move` (SAN or UCI) in `fen`, against `best` (optional; else the best other move). The panel,
-    the CLI and so the eval all build it here, so they all see the same sheet. */
-export async function factSheet(engines, fen, move, best = null, nodes = NODES) {
+    the CLI and so the eval all build it here, so they all see the same sheet. `signal` stops the build (see abortable):
+    it then rejects with an AbortError once the engines are idle, and the next build's ucinewgame leaves no trace of it. */
+export async function factSheet(engines, fen, move, best = null, nodes = NODES, { signal } = {}) {
   let pos;
   try { pos = position(fen); } catch { throw new Error('invalid position'); }
   let played = parseMove(pos, move);
   const vs = best ? parseMove(pos, best) : null;
-  // the hash and history tables carry over from earlier requests: clear them, so the same request gives the same lines
-  await Promise.all([engines.sf, engines.sf2].map(e => e.until(['ucinewgame', 'isready'], l => l === 'readyok')));
-  // you played lichess's move: still explain that move, against the best other move
-  if (vs === played) played = await otherBest(engines.sf, pos, played, nodes);
-  return buildFacts(engines, fen, played, vs, nodes);
+  const e = signal ? abortable(engines, signal) : engines;
+  try {
+    // the hash and history tables carry over from earlier requests: clear them, so the same request gives the same lines
+    await Promise.all([e.sf, e.sf2].map(x => x.until(['ucinewgame', 'isready'], l => l === 'readyok')));
+    // you played lichess's move: still explain that move, against the best other move
+    if (vs === played) played = await otherBest(e.sf, pos, played, nodes);
+    return await buildFacts(e, fen, played, vs, nodes);
+  } finally {
+    await e.idle?.();
+  }
+}
+
+/** `engines` for one build that `signal` can stop: every command (sf, sf2 and sf15 alike, so every search) first checks
+    it, so once it aborts nothing more is sent; the search under way gets `stop` (see uciEngine) and its caller an
+    AbortError once its bestmove is in. idle() resolves once every command sent has its answer. */
+function abortable(engines, signal) {
+  const out = new Set();
+  const wrap = e => ({ until: async (cmds, done) => {
+    signal.throwIfAborted();
+    const p = e.until(cmds, done, signal);
+    out.add(p);
+    const lines = await p.finally(() => out.delete(p));
+    signal.throwIfAborted();
+    return lines;
+  } });
+  return { sf: wrap(engines.sf), sf2: wrap(engines.sf2), sf15: wrap(engines.sf15), idle: () => Promise.allSettled(out) };
+}
+
+/** The fact sheets one panel has built, by `fen | move`, as promises, at most SHEETS: a request's (when it has no
+    `best`) and the next moves' built ahead. One engine job at a time.
+    - get(engines, fen, move, best): factSheet()'s sheet. A kept one serves when `best` is unset or is its alternative
+      (a sheet built ahead has best = null: the engine's best other move); one still being built is waited for. Else
+      the builds ahead stop and, once the engines are idle, the sheet is built. A failed or stopped build never serves.
+    - prepare(engines, user, ahead): builds the sheets for `ahead` ([{fen, next}]) one at a time, each once lichess
+      confirms `user` is not in a game (fail closed: a refusal or an error ends it). Sheets only, never an LLM call.
+    - stop(): stops the builds ahead; resolves once the engines are idle. */
+export function sheetCache() {
+  const sheets = new Map();
+  let ctl = new AbortController(), idle = Promise.resolve();
+  const keep = (key, p) => {
+    sheets.delete(key);
+    sheets.set(key, p);
+    if (sheets.size > SHEETS) sheets.delete(sheets.keys().next().value);
+    p.catch(() => sheets.get(key) === p && sheets.delete(key));
+    return p;
+  };
+  const after = job => { const p = idle.then(job); idle = p.then(() => {}, () => {}); return p; };
+  const stop = () => (ctl.abort(), idle);
+  return {
+    async get(engines, fen, move, best = null) {
+      const key = `${fen} | ${move}`, sheet = await sheets.get(key)?.catch(() => null);
+      // b.best === the played move never matches: the alternative is never the played move
+      if (sheet && (!best || sanToUci(fen, [best])[0] === sanToUci(fen, [sheet.alternative.move])[0])) return sheet;
+      ctl.abort();
+      const p = after(() => factSheet(engines, fen, move, best));
+      return best ? p : keep(key, p);
+    },
+    async prepare(engines, user, ahead) {
+      ctl.abort();
+      const { signal } = ctl = new AbortController();
+      await idle; // the builds just stopped leave the Map first, so a key this list still wants is built again
+      try {
+        for (const { fen, next } of ahead) {
+          const key = `${fen} | ${next}`;
+          if (sheets.has(key)) continue;
+          await checkNotPlaying(user);
+          if (signal.aborted) return;
+          await keep(key, after(() => factSheet(engines, fen, next, null, NODES, { signal })));
+        }
+      } catch {} // a refusal, an error or a stop: nothing more is built ahead
+    },
+    stop,
+  };
 }
 
 /** True when the two moves are too close to explain: the engines' lines differ for reasons too small, and a story
@@ -773,10 +846,11 @@ const explainLines = ({ played, alternative, prepares }) => [alternative, played
   .flatMap(l => [l.line_with_evals, l.if_opp_plays_the_threat_at_once]).concat(prepares?.line_if_played_at_once).filter(Boolean);
 
 /** The Explain task. {fen, move, best} -> answer()'s {text, facts, concepts, read} plus its result. move: the move to
-    compare against (SAN or UCI), best: lichess's top move (UCI, optional). `onSheet(rows, lines)` hears the result's
-    rows and lines once the sheet is built, before any LLM call; `llm` and the other `opts` go to answer(). */
-export async function explainMove(engines, req, llm, { onSheet = () => {}, ...opts } = {}) {
-  const sheet = await factSheet(engines, req.fen, req.move, req.best, NODES);
+    compare against (SAN or UCI), best: lichess's top move (UCI, optional). The sheet comes from `sheet(engines, fen,
+    move, best)`: factSheet(), or a sheetCache's get. `onSheet(rows, lines)` hears the result's rows and lines once the
+    sheet is built, before any LLM call; `llm` and the other `opts` go to answer(). */
+export async function explainMove(engines, req, llm, { onSheet = () => {}, sheet: build = factSheet, ...opts } = {}) {
+  const sheet = await build(engines, req.fen, req.move, req.best);
   onSheet(explainRows(sheet), explainLines(sheet));
   const a = await answer(sheet, llm, opts);
   return { ...a, result: {

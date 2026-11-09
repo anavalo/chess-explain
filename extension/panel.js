@@ -1,4 +1,4 @@
-import { explainMove, findPlan, llmWith, remembered, request, sanToUci, startEngines, uciEngine } from './explain.js';
+import { explainMove, findPlan, llmWith, remembered, request, sanToUci, sheetCache, startEngines, uciEngine } from './explain.js';
 import { inTab, lichessBoard } from './lichess.js';
 import { linkMoves, md } from './md.js';
 
@@ -59,6 +59,12 @@ settings.onchange = e => e.target.name === 'model' && chrome.storage.local.set({
 const deep = document.getElementById('deep');
 chrome.storage.local.get('deep').then(({ deep: on }) => (deep.checked = !!on));
 deep.onchange = () => chrome.storage.local.set({ deep: deep.checked });
+// the fact sheets this panel has built, and those of the next moves, built while the user reads (see prepareNext).
+// On unless turned off; turning it off, or another tab, stops a build under way. Closing the panel ends them all.
+const sheets = sheetCache(), prepare = document.getElementById('prepare');
+chrome.storage.local.get('prepare').then(({ prepare: on }) => (prepare.checked = on !== false));
+prepare.onchange = () => { chrome.storage.local.set({ prepare: prepare.checked }); if (!prepare.checked) sheets.stop(); };
+chrome.tabs.onActivated.addListener(() => sheets.stop());
 const buttons = [document.getElementById('go'), document.getElementById('plan')];
 
 // Builds an element; `html` is only ever our own markup or md() output, which escapes the model's text.
@@ -126,10 +132,10 @@ function render(result, b) {
   if (result.note) el('div', 'card note', { text: result.note });
 }
 
-/** The lichess board of the active tab; null when that tab is not lichess. */
+/** The lichess board of the active tab, with its `tab` id; null when that tab is not lichess. */
 const activeBoard = async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tab?.url?.startsWith('https://lichess.org/') ? lichessBoard(inTab(tab.id)) : null;
+  return tab?.url?.startsWith('https://lichess.org/') ? { ...lichessBoard(inTab(tab.id)), tab: tab.id } : null;
 };
 
 // The views: Explain and Plan. The plan's board shapes ([fen, shapes]) are drawn only while the Plan view shows, on
@@ -188,15 +194,31 @@ async function explain(apiKey, board, again) {
       text = t;
       frame ||= requestAnimationFrame(() => { frame = 0; card.innerHTML = linkMoves(md(text), lines); });
     };
-    return explainMove(e, { fen: b.fen, move, best: b.best }, llm, { model: req.model, depth: req.depth, onStep: step, onSheet, onText });
+    return explainMove(e, { fen: b.fen, move, best: b.best }, llm,
+      { model: req.model, depth: req.depth, onStep: step, onSheet, onText, sheet: sheets.get });
   })), { fresh: !!again }).finally(s.done);
   out.replaceChildren();
   render(saved ? { ...result, note: [result.note, 'Saved answer.'].filter(Boolean).join(' ') } : result, b);
   if (saved) el('button', 'again', { text: 'Ask again' }).onclick = () => run((k, bd) => explain(k, bd, { b, req }), 'explain');
+  prepareNext(board, b).catch(() => {}); // fail closed: an error builds nothing
+}
+
+/** After an Explain of `b` on `board`, while its tab is still the active one: the sheets of the next game moves on b's
+    line (b.ahead), built in the background, so a step forward answers without waiting for the engines. The board is
+    read again first (its page rule), and each build waits for the fair-play check (see sheetCache). */
+async function prepareNext(board, b) {
+  if (!prepare.checked || !engines) return;
+  const now = await activeBoard();
+  if (now?.tab !== board.tab) return;
+  const { user, path, fen } = await now.read();
+  // the board must still be on b's line (b, or one of b.ahead): another game or chapter, or an old saved b, builds nothing
+  if (![b, ...b.ahead].some(a => a.path === path && a.fen === fen)) return;
+  await sheets.prepare(await ready(), user, b.ahead.filter(a => a.path.startsWith(path)));
 }
 
 async function plan(apiKey, board) {
   const b = await board.read();
+  await sheets.stop(); // the plan's searches never run beside a build ahead
   const { result } = await requested(b, apiKey, (e, llm, step) => {
     step("Finding the engine's plan");
     return findPlan(e, b.fen, llm, { model: model(), onStep: step });

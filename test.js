@@ -6,9 +6,9 @@
 // usage: node test.js [--record]
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
+import { Chess, makeUci, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  Refused, answer, ask as anthropic, checkNotPlaying, explainMove, findPlan, llmWith, planAnswer, remembered, request, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
+  Refused, answer, ask as anthropic, checkNotPlaying, explainMove, factSheet, findPlan, llmWith, planAnswer, remembered, request, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, sheetCache, trapped,
 } from './extension/explain.js';
 import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { lichessBoard } from './extension/lichess.js';
@@ -290,7 +290,7 @@ assert.equal(planShapes(pSheet, many, 'a3 b3 c3 d3 f3').length, 5);
   const board = lichessBoard(async (func, args = []) => new Function(`return (${func})`)()(...args));
   // one read for both flows; lichess's top move only while lichess shows its engine
   let page = fakePage();
-  assert.deepEqual(await board.read(), { fen: start, path: '', best: 'd2d4', next: 'e4', user: 'fable6' });
+  assert.deepEqual(await board.read(), { fen: start, path: '', best: 'd2d4', next: 'e4', user: 'fable6', ahead: [] });
   fakePage({ engineOn: false });
   assert.equal((await board.read()).best, undefined);
   // the rule, decided in read(): where lichess allows its engine, and it fails closed
@@ -301,12 +301,20 @@ assert.equal(planShapes(pSheet, many, 'a3 b3 c3 d3 f3').length, 5);
   await assert.rejects(board.read(), refused);
   // and in a study where lichess does not allow it: computer analysis turned off, or an interactive lesson
   fakePage({ allowed: false, engineOn: false, study: {} });
-  assert.deepEqual(await board.read(), { fen: start, path: '', best: undefined, next: 'e4', user: 'fable6' });
+  assert.deepEqual(await board.read(), { fen: start, path: '', best: undefined, next: 'e4', user: 'fable6', ahead: [] });
   // but not in a broadcast or with a game in progress; an `ongoing` that cannot be read fails closed
   for (const page of [{ study: { relay: {} } }, { study: {}, ongoing: true }, { study: {}, ongoing: null }]) {
     fakePage({ allowed: false, ...page });
     await assert.rejects(board.read(), refused);
   }
+  // the next two positions on the game line (first children), each with its next move; one with no next move is left out
+  page = fakePage();
+  const n3 = { id: 'cc', san: 'Nf3', fen: 'f3', children: [] }, n2 = { id: 'bb', san: 'e5', fen: 'f2', children: [n3] };
+  const n1 = { id: 'aa', san: 'e4', fen: 'f1', children: [n2, { id: 'dd', san: 'c5', fen: 'side line', children: [{ san: 'Nf3' }] }] };
+  Object.assign(page.ctrl, { path: '', node: { fen: start, children: [n1] } });
+  assert.deepEqual((await board.read()).ahead, [{ fen: 'f1', path: 'aa', next: 'e5' }, { fen: 'f2', path: 'aabb', next: 'Nf3' }]);
+  Object.assign(page.ctrl, { path: 'aa', node: n1 });
+  assert.deepEqual((await board.read()).ahead, [{ fen: 'f2', path: 'aabb', next: 'Nf3' }]);
   fakePage();
   delete globalThis.window.site.analysis;
   await assert.rejects(board.read(), /Open a lichess analysis board or study/);
@@ -478,6 +486,93 @@ for (const user of [undefined, 'in_a_game'])
   for (const broken of [{ get: gone, set: gone }, { ...storage, set: gone }])
     assert.equal((await remembered(broken, base, async () => ({ result: { text: 'x' } }), { fresh: true })).result.text, 'x');
   console.error = logged;
+}
+// the sheets of the next moves, built ahead on fake engines. A search answers a millisecond later, or at once on `stop`,
+// with the first legal moves, scored by the position and by the searches the engine ran since ucinewgame (as its hash
+// table would), so a command an aborted build sent after the next build's ucinewgame would change that build's sheet
+{
+  globalThis.fetch = async url => { const id = new URL(url).searchParams.get('ids'); return Response.json([{ id, playing: id === 'in_a_game' }]); };
+  const sent = [], searches = () => sent.filter(l => l.startsWith('go ')).length;
+  const hash = t => [...t].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 1_000_003, 7);
+  const legal = p => [...p.allDests()].flatMap(([from, to]) => [...to].filter(t => p.board.getRole(from) !== 'king' || Math.abs(from % 8 - t % 8) < 2)
+    .map(t => makeUci({ from, to: t, promotion: p.board.getRole(from) === 'pawn' && (t < 8 || t >= 56) ? 'queen' : undefined }))).sort();
+  const fake = () => {
+    let n = 0, multipv = 1, fen, pending = null;
+    const say = (...ls) => setImmediate(() => ls.forEach(l => e.onLine(l)));
+    const e = uciEngine(line => {
+      sent.push(line);
+      if (line === 'ucinewgame') n = 0;
+      else if (line === 'isready') say('readyok');
+      else if (line === 'eval') say('Final evaluation +0.10 (white side)');
+      else if (line.startsWith('setoption name MultiPV value ')) multipv = Number(line.split(' ').pop());
+      else if (line.startsWith('position fen ')) fen = line.slice(13);
+      else if (line === 'stop') pending?.();
+      else if (line.startsWith('go ')) {
+        const p = pos(fen), firsts = (line.split(' searchmoves ')[1]?.split(' ') ?? legal(p)).slice(0, multipv), k = n++;
+        const pv = m => { const q = p.clone(), out = [m]; q.play(parseUci(m)); while (out.length < 3 && legal(q).length) { out.push(legal(q)[0]); q.play(parseUci(out.at(-1))); } return out; };
+        const infos = firsts.map((m, i) => `info depth 1 multipv ${i + 1} score cp ${hash(fen + m) % 300 - 150 + k} pv ${pv(m).join(' ')}`);
+        const t = setTimeout(() => pending(), 1);
+        pending = () => { clearTimeout(t); pending = null; say(...infos, `bestmove ${firsts[0] ?? '(none)'}`); };
+      }
+    });
+    return e;
+  };
+  const eng = { sf: fake(), sf2: fake(), sf15: fake() }, llm = async () => '(stub)';
+  const afterE5 = 'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2';
+  const next = [{ fen: afterE4, path: 'aa', next: 'e5' }, { fen: afterE5, path: 'aabb', next: 'Nf3' }];
+  const ref = await factSheet(eng, afterE4, 'e5'), refStart = await factSheet(eng, start, 'd4');
+  // an Explain, then the next two positions built ahead: stepping forward searches nothing and gets the same sheet
+  const cache = sheetCache();
+  const first = await explainMove(eng, { fen: start, move: 'e4', best: null }, llm, { sheet: cache.get });
+  await cache.prepare(eng, 'fable6', next);
+  let s0 = searches();
+  assert.deepEqual((await explainMove(eng, { fen: afterE4, move: 'e5', best: null }, llm, { sheet: cache.get })).facts, ref);
+  // lichess's best move served too when it is the sheet's alternative; not when it is another move or the played one
+  const alt = sanToUci(afterE4, [ref.alternative.move])[0];
+  assert.equal(await cache.get(eng, afterE4, 'e5', alt), await cache.get(eng, afterE4, 'e5'));
+  assert.equal(searches(), s0);
+  for (const best of [legal(pos(afterE4)).find(m => m !== alt && m !== 'e7e5'), 'e7e5']) {
+    s0 = searches();
+    assert.notEqual(await cache.get(eng, afterE4, 'e5', best), await cache.get(eng, afterE4, 'e5'));
+    assert.ok(searches() > s0, best);
+  }
+  // the same request again: its own sheet (kept, as it had no best)
+  s0 = searches();
+  assert.deepEqual(await cache.get(eng, start, 'e4'), first.facts);
+  assert.equal(searches(), s0);
+  // fair play first: a user in a game gets nothing built ahead
+  const refused = sheetCache();
+  await refused.prepare(eng, 'in_a_game', next);
+  s0 = searches();
+  assert.deepEqual(await refused.get(eng, afterE4, 'e5'), ref);
+  assert.ok(searches() > s0);
+  // another request during a build ahead: the build stops (stop sent mid-search), the engines go idle, and the
+  // request's sheet is the uninterrupted one. The stopped sheet is never served: asked for, it is built afresh, the same
+  const busy = sheetCache();
+  sent.length = 0;
+  const bg = busy.prepare(eng, 'fable6', [{ fen: start, path: 'zz', next: 'd4' }]);
+  while (searches() < 3) await new Promise(r => setTimeout(r, 1));
+  assert.deepEqual(await busy.get(eng, afterE4, 'e5'), ref);
+  assert.ok(sent[sent.indexOf('stop') - 1]?.startsWith('go nodes'), 'stop follows a search');
+  await bg;
+  s0 = searches();
+  assert.deepEqual(await busy.get(eng, start, 'd4'), refStart);
+  assert.ok(searches() > s0);
+  // a second prepare over the position whose build the first is running: the stopped build leaves, it is built again
+  const twice = sheetCache();
+  s0 = searches();
+  const p1 = twice.prepare(eng, 'fable6', [next[1]]);
+  while (searches() === s0) await new Promise(r => setTimeout(r, 1));
+  await twice.prepare(eng, 'fable6', [next[1]]);
+  await p1;
+  s0 = searches();
+  assert.deepEqual(await twice.get(eng, afterE5, 'Nf3'), await cache.get(eng, afterE5, 'Nf3'));
+  assert.equal(searches(), s0);
+  // a build stopped at once rejects with an AbortError, and the next sheet is the same
+  const ctl = new AbortController(), early = factSheet(eng, start, 'd4', null, 1, { signal: ctl.signal });
+  ctl.abort();
+  await assert.rejects(early, { name: 'AbortError' });
+  assert.deepEqual(await factSheet(eng, start, 'd4'), refStart);
 }
 delete globalThis.fetch; // nothing past here may call out
 

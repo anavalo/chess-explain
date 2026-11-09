@@ -80,6 +80,7 @@
   #plan + .note { margin: 6px 2px 16px; }
   .plan-head { display: flex; align-items: center; justify-content: space-between; }
   .again { margin-top: 8px; }
+  .settings .toggle { margin: 0; }
   .error { background: var(--bad-bg); color: var(--bad); border-color: transparent; }
 </style>
 <header>
@@ -106,6 +107,7 @@
       <label><input type="radio" name="model" value="claude-opus-5-5"><span><b>Opus 5.5</b><small>Fewer mistakes · ~7¢</small></span></label>
     </div>
   </div>
+  <label class="toggle"><span><b>Prepare the next moves</b><small>After an Explain, analyses the next two game moves while you read · uses the CPU, no extra call</small></span><input id="prepare" type="checkbox" role="switch" checked></label>
 </section>
 <div id="view" class="seg" role="radiogroup" aria-label="View">
   <label><input type="radio" name="view" value="explain" autocomplete="off" checked><span><b>Explain</b></span></label>

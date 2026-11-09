@@ -6,7 +6,8 @@
 // each must stand alone: no name from this file may appear in its body (test.js re-parses them the same way).
 
 /** In the lichess tab: the board's position, or {error}. `best` is lichess's top engine move, set only while lichess
-    shows its engine's lines; `next` is the next game move.
+    shows its engine's lines; `next` is the next game move. `ahead`: the next two positions on the line, each
+    {fen, path, next} as above, those with no next move left out.
     The rule: where lichess allows its engine, and also in a study where it does not (computer analysis turned off,
     or an interactive lesson). Never with a game in progress or in a broadcast. Fails closed when any of that cannot
     be read. */
@@ -17,12 +18,18 @@ function readPage() {
   if (!ctrl.isCevalAllowed?.() && !study)
     return { error: 'Lichess does not allow its engine here (a game in progress, or a broadcast).' };
   const moves = ctrl.cevalEnabled?.() ? ctrl.node.ceval?.pvs?.[0]?.moves : undefined;
+  const ahead = [];
+  for (let n = ctrl.node, path = ctrl.path, i = 0; i < 2 && (n = n.children?.[0]); i++) {
+    path += n.id;
+    if (n.children?.[0]) ahead.push({ fen: n.fen, path, next: n.children[0].san });
+  }
   return {
     fen: ctrl.node.fen,
     path: ctrl.path,
     best: typeof moves === 'string' ? moves.split(' ')[0] : moves?.[0],
     next: ctrl.node.children?.[0]?.san,
     user: document.querySelector('#user_tag')?.textContent.trim(),
+    ahead,
   };
 }
 
@@ -75,7 +82,7 @@ function showShapes(fen, shapes) {
 
 /** The lichess board behind `run(func, args)`, which runs a function in one lichess page and resolves to its result:
     inTab() in the extension, a direct call on a fake page in the tests.
-    - read(): {fen, path, best, next, user}; throws, with the reason worded for the user, where there is no analysis
+    - read(): {fen, path, best, next, user, ahead}; throws, with the reason worded for the user, where there is no analysis
       board or the rule (see readPage) says no. The one place that rule is decided.
     - play(fen, path, ucis): plays a line from a position a read returned; throws when the board cannot get back there.
     - draw(fen, shapes) / clear(): the plan's shapes, shown while the board is on `fen`. */
