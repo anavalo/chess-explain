@@ -798,7 +798,7 @@ export async function answer(facts, llm, { model = 'claude-opus-5-5', depth = fa
   }
   if (recent?.length) facts = { ...facts, recent_reasons: recent };
   onStep('Asking Claude');
-  const system = systemFor(model, !!facts.verified_concepts, !!facts.recent_reasons);
+  const system = systemFor(!!facts.verified_concepts, !!facts.recent_reasons);
   return { text: await llm(system, facts, model, onText), facts, concepts, read };
 }
 

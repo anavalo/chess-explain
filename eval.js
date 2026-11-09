@@ -13,8 +13,8 @@
 // a pairwise pick is steadier than two separate grades. Kept in <name>.pair-<DIR name>.json; picks are always in out-dir/DIR terms.
 // --sample N --month YYYY-MM draws N fresh positions from that month's lichess database into eval-sets/holdout-YYYY-MM.json
 // (gitignored, run it with --set). Never tune on them: a new month per release.
-// --print explainer|judge|pair prints that prompt and exits (explainer: for --model; judge and pair: with the verdict schema,
-// the reference variant with --set), for subagent runs that write <name>.txt and <name>.judge.json without the API.
+// --print explainer|judge|pair prints that prompt and exits (judge and pair: with the verdict schema, the reference
+// variant with --set), for subagent runs that write <name>.txt and <name>.judge.json without the API.
 // --compare DIR pairs out-dir's judge verdicts with DIR's by position (A = DIR, B = out-dir) and prints the flips with
 // their noise, overall and by the SF 15 gate; run it on two samples of the same arm first to see the noise floor.
 // --deep runs the deeper read before each answer (as the panel's positional depth switch does), and gives the judge, the
@@ -93,12 +93,12 @@ if (o.sample) {
 const set = JSON.parse(readFileSync(o.set ?? fileURLToPath(new URL('eval-sets/quiet-132.json', import.meta.url)), 'utf8'));
 const reference = Object.fromEntries(set.map(p => [p.id, p.reference_reason]));
 if (o.print) {
-  // the exact prompts, for subagent runs on the subscription: the explainer prompt for --model, or a judge prompt with
+  // the exact prompts, for subagent runs on the subscription: the explainer prompt, or a judge prompt with
   // the JSON its verdict must match (the reference variant when --set gives reference reasons)
   const ref = Object.values(reference).some(Boolean);
   const withSchema = (prompt, schema) => `${prompt}\n\nReply with only JSON matching this schema:\n${JSON.stringify(schema, null, 1)}`;
   const prompts = {
-    explainer: () => systemFor(o.model ?? 'claude-opus-5-5', o.deep),
+    explainer: () => systemFor(o.deep),
     judge: () => withSchema(legend(JUDGE), ref ? WITH_REFERENCE : VERDICT),
     pair: () => withSchema(legend(PAIR), ref ? PAIR_WITH_REFERENCE : PAIR_VERDICT),
     planner: () => PLANNER,

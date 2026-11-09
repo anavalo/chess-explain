@@ -180,10 +180,9 @@ const RECENT = `
 - "recent_reasons" (when not null) are reasons already given for earlier moves of this game ("said": the earlier answer's
   first sentence; "ideas": its positional ideas). Do not repeat one unless it is the decisive point here, and then say so briefly.`;
 
-/** The explainer prompt for `model`: the legend and rules 1-15, the same for every model. A deeper read (`concepts`)
-    also gets the "verified_concepts" entry, and a sheet with `recent` reasons the "recent_reasons" entry after it (or
-    after the pawn plan's). */
-export function systemFor(model, concepts = false, recent = false) {
+/** The explainer prompt: the legend and rules 1-15. A deeper read (`concepts`) also gets the "verified_concepts" entry,
+    and a sheet with `recent` reasons the "recent_reasons" entry after it (or after the pawn plan's). */
+export function systemFor(concepts = false, recent = false) {
   const legend = concepts ? withConceptsEntry(LEGEND) : LEGEND;
   const after = concepts ? CONCEPTS : PAWN_PLAN_END;
   return (recent ? legend.replace(after, after + RECENT) : legend) + RULES + SIZE + ADVICE;
@@ -196,6 +195,8 @@ export function withConceptsEntry(prompt) {
   return prompt.replace(PAWN_PLAN_END, PAWN_PLAN_END + CONCEPTS);
 }
 const PAWN_PLAN_END = "better move cleared that pawn's way. See rule 13.";
+// systemFor puts entries after it with replace(), which would drop them without a word if the legend lost it
+if (!LEGEND.includes(PAWN_PLAN_END)) throw new Error('the legend has no pawn plan entry to put the later entries after');
 
 /** Rule checks: mechanical tests of one answer against its fact sheet. They catch format slips, not wrong chess.
     Returns [{rule, problem}], empty when the answer passes. A plan (PLAN_SYSTEM) is checked with maxWords 200. */

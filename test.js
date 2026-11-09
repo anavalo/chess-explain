@@ -34,8 +34,8 @@ assert.deepEqual(links(linkMoves(md('1.Ra7 Kd8 2.Kd2+ wins.\n\n1...Kd8 and Kd2. 
     '1. you Rb1 [x] (+9) 1... opp Kd8 (+9) 2. you Kd2 (+9)\nWhy 2.Kf2 fails: 2. you Kf2 (+9)',
   ])), ['1.Ra7: Ra7', 'Kd8: Ra7 Kd8', '2.Kd2+: Ra7 Kd8 Kd2', '1.Rb1: Rb1', 'Kd8: Rb1 Kd8', '2.Kf2: Rb1 Kd8 Kf2']);
 // explainer prompt: the legend, then the rules with rule 15 and the two-move size words; the legend the judge sees holds no rules
-assert.ok(systemFor('claude-opus-5-5').startsWith(LEGEND) && systemFor('claude-opus-5-5').includes('Next time:'));
-assert.ok(systemFor('claude-opus-5-5').includes('"loses less"') && !systemFor('claude-opus-5-5').includes('more than that "winning"'));
+assert.ok(systemFor().startsWith(LEGEND) && systemFor().includes('Next time:'));
+assert.ok(systemFor().includes('"loses less"') && !systemFor().includes('more than that "winning"'));
 assert.ok(!LEGEND.includes('\nRules:'));
 // the legend quotes every label kind's wording (it wraps lines, so match across whitespace); a sample is the placeholders
 const legend = LEGEND.replace(/\s+/g, ' ');
@@ -366,7 +366,7 @@ assert.deepEqual([sent.model, sent.system, sent.messages], ['claude-opus-5-5', c
     content: [{ type: 'text', text: seen.length === 1 ? JSON.stringify(claims) : 'Fine.' }] }));
   const r = await answer(cSheet, llmWith('key'), { model: 'claude-opus-5-5', depth: true });
   assert.deepEqual([r.text, r.concepts.length], ['Fine.', 1]);
-  assert.deepEqual(seen, [cached(PROPOSER), cached(systemFor('claude-opus-5-5', true))]);
+  assert.deepEqual(seen, [cached(PROPOSER), cached(systemFor(true))]);
 }
 // streaming: with onText the reply comes as server-sent events, cut here at awkward bytes (mid-line, mid-event, inside
 // a UTF-8 character). onText hears the text so far after each piece; thinking and the fallback block add none; the text
@@ -414,17 +414,17 @@ assert.deepEqual([sent.model, sent.system, sent.messages], ['claude-opus-5-5', c
   await assert.rejects(anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5', () => {}), /cut off/);
 }
 // the deeper read's prompt is the plain one plus the "verified_concepts" entry
-assert.ok(systemFor('claude-opus-5-5', true).includes('"verified_concepts"') && systemFor('claude-opus-5-5', true)
-  .replace(/\n- "verified_concepts"[^]*?swing in the lines still comes first\./, '') === systemFor('claude-opus-5-5'));
+assert.ok(systemFor(true).includes('"verified_concepts"') && systemFor(true)
+  .replace(/\n- "verified_concepts"[^]*?swing in the lines still comes first\./, '') === systemFor());
 // recent reasons: their entry goes after the "verified_concepts" entry, or after the pawn plan's without it
 {
   const entry = `
 - "recent_reasons" (when not null) are reasons already given for earlier moves of this game ("said": the earlier answer's
   first sentence; "ideas": its positional ideas). Do not repeat one unless it is the decisive point here, and then say so briefly.`;
   const end = 'swing in the lines still comes first.', pawnEnd = "better move cleared that pawn's way. See rule 13.";
-  assert.equal(systemFor('claude-opus-5-5', true, true), systemFor('claude-opus-5-5', true).replace(end, end + entry));
-  assert.equal(systemFor('claude-opus-5-5', false, true), systemFor('claude-opus-5-5').replace(pawnEnd, pawnEnd + entry));
-  assert.equal(systemFor('claude-opus-5-5', true, false), systemFor('claude-opus-5-5', true));
+  assert.equal(systemFor(true, true), systemFor(true).replace(end, end + entry));
+  assert.equal(systemFor(false, true), systemFor().replace(pawnEnd, pawnEnd + entry));
+  assert.equal(systemFor(true, false), systemFor(true));
 }
 // eval --deep gives both judges the same entry
 for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verified_concepts"'));
@@ -548,8 +548,8 @@ assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '
     if (depth) assert.ok(!('recent_reasons' in calls[0][1]) && !('recent_reasons' in calls[2][1])); // the proposer's
     assert.deepEqual(Object.keys(w[1]), [...Object.keys(plain[1]), 'recent_reasons']);
     assert.deepEqual(w[1].recent_reasons, recent);
-    assert.equal(w[0], systemFor('claude-opus-5-5', depth, true));
-    assert.equal(plain[0], systemFor('claude-opus-5-5', depth));
+    assert.equal(w[0], systemFor(depth, true));
+    assert.equal(plain[0], systemFor(depth));
     assert.deepEqual(plain[1], depth ? (await withConcepts(cSheet, async () => JSON.stringify(claims))).facts : cSheet);
   }
 }
@@ -771,7 +771,7 @@ try {
   r = await ask('2rq1rk1/R2n1ppp/4p3/2pb4/5B2/6P1/1Q2PPBP/3R2K1 w - - 0 21', 'e4', 'b2a1',
     { model: 'claude-opus-5-5', depth: true, onStep: t => steps.push(t), onSheet: (...a) => sheetSeen.push([calls.length, ...a]), onText: 'the onText' });
   // only the explainer streams; the panel gets the rows and lines before any LLM call
-  assert.deepEqual(calls, [[PROPOSER, 'claude-opus-5-5'], [systemFor('claude-opus-5-5', true), 'claude-opus-5-5', 'the onText']]);
+  assert.deepEqual(calls, [[PROPOSER, 'claude-opus-5-5'], [systemFor(true), 'claude-opus-5-5', 'the onText']]);
   assert.deepEqual(sheetSeen, [[0, r.result.rows, r.result.lines]]);
   assert.deepEqual(steps, ['Looking for positional ideas', 'Asking Claude']);
   assert.deepEqual([r.read, r.concepts], [true, [{ concept: 'king', claim: 'Your king is on g1.', checked: ['now, before your move: your king on g1'] }]]);
@@ -789,7 +789,7 @@ try {
   calls = [];
   proposer = 'No ideas.';
   r = await ask('r4rkb/ppR5/3Np1pp/4n3/5N2/4Q3/q4PPP/3R2K1 w - - 2 24', 'Re7', 'd1f1', { depth: true });
-  assert.deepEqual(calls, [[PROPOSER, 'claude-opus-5-5'], [systemFor('claude-opus-5-5'), 'claude-opus-5-5']]);
+  assert.deepEqual(calls, [[PROPOSER, 'claude-opus-5-5'], [systemFor(), 'claude-opus-5-5']]);
   assert.deepEqual([r.read, r.concepts, 'verified_concepts' in facts, facts.verified_concepts], [false, null, true, null]);
   assert.equal(r.result.note, 'Could not read the positional ideas in the reply.');
   assert.ok(!r.result.lines.includes(facts.prepares.follow_up_fails)); // it starts mid-line: a link could not play it
