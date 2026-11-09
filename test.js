@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { Chess, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  Refused, ask as anthropic, checkNotPlaying, explainMove, findPlan, llmWith, planAnswer, remembered, request, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
+  Refused, answer, ask as anthropic, checkNotPlaying, explainMove, findPlan, llmWith, planAnswer, remembered, request, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
 } from './extension/explain.js';
 import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { lichessBoard } from './extension/lichess.js';
@@ -341,7 +341,17 @@ let sent;
 globalThis.fetch = async (url, { body }) => ((sent = JSON.parse(body)),
   Response.json({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'Fine.' }] }));
 assert.equal(await anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5'), 'Fine.');
-assert.deepEqual([sent.model, sent.system, sent.messages], ['claude-opus-5-5', PROPOSER, [{ role: 'user', content: JSON.stringify(cSheet, null, 1) }]]);
+const cached = text => [{ type: 'text', text, cache_control: { type: 'ephemeral' } }];
+assert.deepEqual([sent.model, sent.system, sent.messages], ['claude-opus-5-5', cached(PROPOSER), [{ role: 'user', content: JSON.stringify(cSheet, null, 1) }]]);
+// prompt caching: with depth on, the proposer's prompt and then the explainer's go as one cached block each
+{
+  const seen = [];
+  globalThis.fetch = async (url, { body }) => (seen.push(JSON.parse(body).system), Response.json({ stop_reason: 'end_turn',
+    content: [{ type: 'text', text: seen.length === 1 ? JSON.stringify(claims) : 'Fine.' }] }));
+  const r = await answer(cSheet, llmWith('key'), { model: 'claude-opus-5-5', depth: true });
+  assert.deepEqual([r.text, r.concepts.length], ['Fine.', 1]);
+  assert.deepEqual(seen, [cached(PROPOSER), cached(systemFor('claude-opus-5-5', true))]);
+}
 // the deeper read's prompt is the plain one plus the "verified_concepts" entry
 for (const m of ['claude-haiku-5-5', 'claude-opus-5-5'])
   assert.ok(systemFor(m, true).includes('"verified_concepts"') && systemFor(m, true).replace(/\n- "verified_concepts"[^]*?swing in the lines still comes first\./, '') === systemFor(m));

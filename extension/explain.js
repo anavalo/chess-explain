@@ -627,7 +627,9 @@ export async function ask(system, facts, apiKey, model) {
       max_tokens: 16000,
       output_config: { effort: 'high' },
       ...fallback && { fallbacks: 'default' },
-      system,
+      // cached for 5 minutes: a write costs 1.25x input, a read 0.20 $/MTok (Opus 5.5, Sonnet 5.5), so one call in 5
+      // minutes pays the write premium and two or more save. A prompt under 512 tokens is simply not cached.
+      system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: JSON.stringify(facts, null, 1) }],
     }),
     signal: AbortSignal.timeout(120_000),
