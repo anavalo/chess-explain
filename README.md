@@ -56,14 +56,14 @@ browser for Anthropic (the explanation) and lichess (the fair-play check).
    evaluates with a neural network, which is brilliant and completely unable to explain itself, so the
    old hand-written terms are brought back to do the explaining. They are rescaled to match Stockfish
    15.1's values.
-4. **Claude** (Haiku 5.5 by default) turns that fact sheet into a short explanation. The prompt forbids it from
+4. **Claude** (Opus 5.5) turns that fact sheet into a short explanation. The prompt forbids it from
    inventing moves or squares that are not in the facts. Chess commentary is a field with a long
    tradition of confident nonsense; we try not to add to it.
 
 When both moves are within 0.3 pawns, it says so and skips the rest of the analysis and the LLM call. Sometimes the honest answer is
 "either move is fine".
 
-With the **Positional depth** switch on (under the Explain button), the extension first asks the strongest Claude model for the positional ideas behind the better
+With the **Positional depth** switch on (under the Explain button, on by default), the extension first asks the strongest Claude model for the positional ideas behind the better
 move (a weak square, a bad bishop, an open file), each backed by board checks: which piece stands where,
 what it attacks, whether a pawn can ever cover a square. The extension runs every check on the board and
 throws away any idea with a check that does not hold, then writes the answer with the ideas that passed.
@@ -130,20 +130,21 @@ sent only to lichess, for the fair-play check. See [PRIVACY.md][privacy-link].
 
 ## Cost
 
-You pay Anthropic for what you use, and it is not much. An explanation is one call to Claude Haiku 5.5,
-Anthropic's smallest and cheapest model, with effort set to high so it thinks the facts through before
-it writes. The engines do the heavy lifting for free on your own machine; the model only has to put a
-one-page fact sheet into words.
+You pay Anthropic for what you use. An explanation is written by Claude Opus 5.5, with effort set to high
+so it thinks the facts through before it writes. With positional depth on, as it is by default, the
+strongest model is first asked for the positional ideas, so an explanation is two calls. The engines do the
+heavy lifting for free on your own machine; the model only has to put a one-page fact sheet into words.
 
-At Anthropic's prices as of October 2026 ($0.10 per million input tokens, $0.50 per million output
-tokens), an explanation sends about 3,000 tokens and gets back a short answer plus the model's thinking,
-which comes to a fraction of a cent. Even if the model used its whole 16,000-token output limit, one
-explanation would cost less than one cent.
+At Anthropic's prices as of October 2026 ($4 per million input tokens, $20 per million output tokens), the
+call that writes the answer sends about 6,100 tokens, 4,300 of them the system prompt, and gets back about
+150. The call for the positional ideas sends about 2,300 and gets back about 270. That comes to about 4
+cents. The model's thinking comes on top and was not measured; each 1,000 thinking tokens adds about 2 cents
+to a call. So an explanation costs about 5 to 10 cents with positional depth, and about 3 to 6 without it.
 
-Settings also offer Claude Opus 5.5, at about 7 cents an explanation. On the 132-position eval set below it
-made about half as many false or unsupported claims as Haiku and found the decisive point more often. Positional
-depth adds one call to the strongest model, about the cost of an explanation on it. A plan is two
-calls: one to the strongest model for the ideas, one to the model you chose for the text.
+The system prompt is cached for 5 minutes, so a second explanation within 5 minutes pays about 1.6 cents
+less for its input; the first pays about 0.4 cents more to write the cache. Asking about the same move
+again (same position, move, model and depth, and the same extension version) shows the saved answer, for
+free. A plan is two calls: one to the strongest model for the ideas, one to the writer for the text.
 
 ## Development
 
@@ -202,7 +203,7 @@ ANTHROPIC_API_KEY=... node eval.js [out-dir] [--no-llm] [--model ID] [--deep] [-
 This explains the 132 quiet positions in `eval-sets/quiet-132.json`, from lichess games, where the better move
 wins on position rather than with a tactic, and writes one fact sheet and answer per position to `out-dir` (default `eval-out/`). Run
 it before and after a change and diff the two folders. `--no-llm` writes the fact sheets only.
-`--model ID` picks the Claude model (default Haiku 5.5). `--deep` checks positional ideas before each answer, as the
+`--model ID` picks the Claude model (default Opus 5.5). `--deep` checks positional ideas before each answer, as the
 **Positional depth** switch does, and tells the judge what the checked ideas on a sheet mean; to compare a deep run
 with a plain one, judge both with `--deep`. `--facts DIR` reuses the fact sheets in `DIR`
 instead of running the engines, so a prompt or model change takes a minute or two instead of half an hour.
@@ -223,7 +224,7 @@ many answers go over 120 words.
 node eval.js --print explainer|judge|pair [--model ID] [--set FILE] [--deep]
 ```
 
-prints that prompt exactly and exits: the explainer prompt for `--model` (default Haiku 5.5), or a judge prompt with the
+prints that prompt exactly and exits: the explainer prompt for `--model` (default Opus 5.5), or a judge prompt with the
 JSON schema its verdict must match. Use it to run the explainer and judge as Claude Code subagents instead of through
 the API.
 

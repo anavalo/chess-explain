@@ -146,19 +146,15 @@ Rules:
    name Stockfish or SF 15; give a term as what it means ("your king is safer"), not as a score. The numbers on the sheet are
    for you, to find the reason and to judge its size`;
 
-/** The end of rule 14, Haiku's: size words for the gap alone, so it says "winning" for a move that still loses. */
-const SIZE_HAIKU = `: a gap under half a pawn is "a small edge", up to a pawn and a half
-   "clearly better", more than that "winning". Say what changed hands in pieces ("you win a pawn"), not in pawns.`;
-
-/** The end of rule 14 for every model but Haiku: size words compare the two moves, and a move still below zero is never
-    called winning. Opus absolute-eval slips 26 -> 0, decisive and claims no worse; Haiku lost decisive points (A/B 2026-11-04). */
+/** The end of rule 14: size words compare the two moves, and a move still below zero is never called winning. Opus
+    absolute-eval slips 26 -> 0, decisive and claims no worse (A/B 2026-11-04). */
 const SIZE = `. Size words compare the two moves, not the position: a gap under half
    a pawn makes the better move "slightly better", up to a pawn and a half "clearly better", more than that "much better".
    If the better move's "latest_sf_eval" is below zero, you are still worse after it: say it "loses less" or "holds
    better", and never call it winning, an edge or an advantage for you. Say what changed hands in pieces ("you win a
    pawn"), not in pawns.`;
 
-/** Rule 15, added for every model but Haiku: Haiku's advice was unsupported or generic in a third or more of answers (A/B 2026-11-03). */
+/** Rule 15: the "Next time:" line; Opus made 36 of 40 specific to the position (A/B 2026-11-03). */
 const ADVICE = `
 15. End with one last line, on its own, starting "Next time:": the habit that would have found the better move here,
    at most 15 words, naming this position's piece, square or move it applies to. Take it from the fact that decided
@@ -178,11 +174,10 @@ const CONCEPTS = `
   and do not add what the facts do not show. A concept never overrides the engine lines: a threat, a tactic or a material
   swing in the lines still comes first.`;
 
-/** The explainer prompt for `model`: every model gets the legend and rules 1-14 (Haiku its own end of rule 14), all but
-    Haiku also rule 15. A deeper read (`concepts`) also gets the "verified_concepts" entry. */
+/** The explainer prompt for `model`: the legend and rules 1-15, the same for every model. A deeper read (`concepts`)
+    also gets the "verified_concepts" entry. */
 export function systemFor(model, concepts = false) {
-  const haiku = model.startsWith('claude-haiku');
-  return (concepts ? withConceptsEntry(LEGEND) : LEGEND) + RULES + (haiku ? SIZE_HAIKU : SIZE + ADVICE);
+  return (concepts ? withConceptsEntry(LEGEND) : LEGEND) + RULES + SIZE + ADVICE;
 }
 
 /** `prompt`, which holds the sheet legend (the explainer's, or a judge prompt), with the "verified_concepts" entry after

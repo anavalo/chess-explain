@@ -103,8 +103,7 @@
   <div class="field">
     <span class="label" id="model-label">Model</span>
     <div class="seg" role="radiogroup" aria-labelledby="model-label">
-      <label><input type="radio" name="model" value="claude-haiku-5-5" checked><span><b>Haiku 5.5</b><small>Fast · under 1¢</small></span></label>
-      <label><input type="radio" name="model" value="claude-opus-5-5"><span><b>Opus 5.5</b><small>Fewer mistakes · ~7¢</small></span></label>
+      <label><input type="radio" name="model" value="claude-opus-5-5" checked><span><b>Opus 5.5</b><small>Fewer mistakes · about 3–6¢ an answer</small></span></label>
     </div>
   </div>
   <label class="toggle"><span><b>Prepare the next moves</b><small>After an Explain, analyses the next two game moves while you read · uses the CPU, no extra call</small></span><input id="prepare" type="checkbox" role="switch" checked></label>
@@ -119,7 +118,7 @@
     <input id="move" placeholder="Compare with (default: next game move)" autocomplete="off">
     <button id="go">Explain</button>
   </form>
-  <label class="toggle"><span><b>Positional depth</b><small>Board-checked positional ideas · one more call</small></span><input id="deep" type="checkbox" role="switch"></label>
+  <label class="toggle"><span><b>Positional depth</b><small>Board-checked positional ideas · one more call, about 2–4¢</small></span><input id="deep" type="checkbox" role="switch" checked></label>
   <div id="out-explain" aria-live="polite"></div>
 </section>
 <section data-view="plan" hidden>

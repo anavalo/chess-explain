@@ -615,8 +615,6 @@ function bySide(diff, a, p) {
 /** One Messages API call: `system`, the fact sheet as the user message. Returns the reply's text. With `onText`, the
     reply is streamed and `onText(text so far)` hears each piece as it is written. */
 export async function ask(system, facts, apiKey, model, onText) {
-  // Haiku has no server-side fallback; on the others a safety decline is retried on a fallback model
-  const fallback = !model.startsWith('claude-haiku');
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
@@ -625,13 +623,14 @@ export async function ask(system, facts, apiKey, model, onText) {
       'anthropic-version': '2023-06-01',
       // the key is the user's own, stored in their browser profile
       'anthropic-dangerous-direct-browser-access': 'true',
-      ...fallback && { 'anthropic-beta': 'server-side-fallback-2026-07-01' },
+      // a safety decline is retried on a fallback model
+      'anthropic-beta': 'server-side-fallback-2026-07-01',
     },
     body: JSON.stringify({
       model,
       max_tokens: 16000,
       output_config: { effort: 'high' },
-      ...fallback && { fallbacks: 'default' },
+      fallbacks: 'default',
       ...onText && { stream: true },
       // cached for 5 minutes: a write costs 1.25x input, a read 0.20 $/MTok (Opus 5.5, Sonnet 5.5), so one call in 5
       // minutes pays the write premium and two or more save. A prompt under 512 tokens is simply not cached.
@@ -784,7 +783,7 @@ export const aboutEqual = facts => Math.abs(facts.latest_sf_gap) < EQUAL_GAP;
     test stub. `onStep(words)` hears which call comes next; `onText` streams the explainer's text (see ask). Returns {text, facts, concepts, read}: facts as the explainer saw them;
     concepts, the verified concepts (null when none held); read, whether the proposer's reply held a claim list
     (undefined when no deeper read ran). */
-export async function answer(facts, llm, { model = 'claude-haiku-5-5', depth = false, onStep = () => {}, onText } = {}) {
+export async function answer(facts, llm, { model = 'claude-opus-5-5', depth = false, onStep = () => {}, onText } = {}) {
   if (aboutEqual(facts)) {
     return { facts, concepts: null, text: `**${facts.played.move}** is about as good as **${facts.alternative.move}**: `
       + 'the engine sees no real difference between them. Either move is fine.' };
@@ -921,7 +920,7 @@ export async function planFacts({ sf, sf2, sf15 }, fen, nodes = NODES) {
     (withPlan), then `model` writes the plan from the ideas that held. No idea held, or no idea list in the planner's
     reply: throws, saying which, and the writer is never called. Returns {text, facts, ideas}. The eval starts here
     from a saved sheet. */
-export async function planAnswer(sheet, llm, { model = 'claude-haiku-5-5', onStep = () => {} } = {}) {
+export async function planAnswer(sheet, llm, { model = 'claude-opus-5-5', onStep = () => {} } = {}) {
   onStep('Looking for plan ideas');
   // the planner plans the best line only; the writer gets the about-as-good move for one sentence
   const { also_good = null, ...rest } = sheet;

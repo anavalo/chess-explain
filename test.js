@@ -33,10 +33,9 @@ assert.deepEqual(links(linkMoves(md('1.Ra7 Kd8 2.Kd2+ wins.\n\n1...Kd8 and Kd2. 
     '1. you Ra7 (+9) 1... opp Kd8 (+9) 2. you Kd2 (+9)',
     '1. you Rb1 [x] (+9) 1... opp Kd8 (+9) 2. you Kd2 (+9)\nWhy 2.Kf2 fails: 2. you Kf2 (+9)',
   ])), ['1.Ra7: Ra7', 'Kd8: Ra7 Kd8', '2.Kd2+: Ra7 Kd8 Kd2', '1.Rb1: Rb1', 'Kd8: Rb1 Kd8', '2.Kf2: Rb1 Kd8 Kf2']);
-// explainer prompt: Haiku gets no rule 15; the legend the judge sees holds no rules
-assert.ok(systemFor('claude-haiku-5-5').startsWith(LEGEND) && !systemFor('claude-haiku-5-5').includes('Next time:'));
-assert.ok(systemFor('claude-opus-5-5').includes('Next time:') && systemFor('claude-opus-5-5').includes('"loses less"'));
-assert.ok(systemFor('claude-haiku-5-5').includes('more than that "winning"') && !systemFor('claude-haiku-5-5').includes('"loses less"'));
+// explainer prompt: the legend, then the rules with rule 15 and the two-move size words; the legend the judge sees holds no rules
+assert.ok(systemFor('claude-opus-5-5').startsWith(LEGEND) && systemFor('claude-opus-5-5').includes('Next time:'));
+assert.ok(systemFor('claude-opus-5-5').includes('"loses less"') && !systemFor('claude-opus-5-5').includes('more than that "winning"'));
 assert.ok(!LEGEND.includes('\nRules:'));
 // the legend quotes every label kind's wording (it wraps lines, so match across whitespace); a sample is the placeholders
 const legend = LEGEND.replace(/\s+/g, ' ');
@@ -406,8 +405,8 @@ assert.deepEqual([sent.model, sent.system, sent.messages], ['claude-opus-5-5', c
   await assert.rejects(anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5', () => {}), /cut off/);
 }
 // the deeper read's prompt is the plain one plus the "verified_concepts" entry
-for (const m of ['claude-haiku-5-5', 'claude-opus-5-5'])
-  assert.ok(systemFor(m, true).includes('"verified_concepts"') && systemFor(m, true).replace(/\n- "verified_concepts"[^]*?swing in the lines still comes first\./, '') === systemFor(m));
+assert.ok(systemFor('claude-opus-5-5', true).includes('"verified_concepts"') && systemFor('claude-opus-5-5', true)
+  .replace(/\n- "verified_concepts"[^]*?swing in the lines still comes first\./, '') === systemFor('claude-opus-5-5'));
 // eval --deep gives both judges the same entry
 for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verified_concepts"'));
 
@@ -466,7 +465,7 @@ for (const user of [undefined, 'in_a_game'])
   assert.deepEqual(await explain(base), ['Saved.', true, ['lichess.org'], 0]);
   await assert.rejects(explain({ ...base, user: 'in_a_game' }), Refused);
   assert.deepEqual([asked, started], [['lichess.org'], 0]);
-  for (const other of [{ best: null }, { model: 'claude-haiku-5-5' }, { depth: false }, { version: '0.63' }])
+  for (const other of [{ best: null }, { model: 'claude-sonnet-5-5' }, { depth: false }, { version: '0.63' }])
     assert.deepEqual(await explain({ ...base, ...other }), fresh);
   reply = 'Asked again.';
   assert.deepEqual(await explain(base, { fresh: true }), ['Asked again.', false, ['lichess.org', 'api.anthropic.com'], 1]);
@@ -690,7 +689,7 @@ try {
   calls = [];
   proposer = 'No ideas.';
   r = await ask('r4rkb/ppR5/3Np1pp/4n3/5N2/4Q3/q4PPP/3R2K1 w - - 2 24', 'Re7', 'd1f1', { depth: true });
-  assert.deepEqual(calls, [[PROPOSER, 'claude-opus-5-5'], [systemFor('claude-haiku-5-5'), 'claude-haiku-5-5']]);
+  assert.deepEqual(calls, [[PROPOSER, 'claude-opus-5-5'], [systemFor('claude-opus-5-5'), 'claude-opus-5-5']]);
   assert.deepEqual([r.read, r.concepts, 'verified_concepts' in facts, facts.verified_concepts], [false, null, true, null]);
   assert.equal(r.result.note, 'Could not read the positional ideas in the reply.');
   assert.ok(!r.result.lines.includes(facts.prepares.follow_up_fails)); // it starts mid-line: a link could not play it
@@ -711,7 +710,7 @@ try {
   toHole('c5', [holeChecks('c5')[1]]), toHole('b6', holeChecks('b6')), toHole('d6', holeChecks('d6', 'more than 4'))]);
   const planStub = (system, f, model) => (planCalls.push([system, model]), system === PLANNER ? kingside : (sheets.push(f), 'Push to **f4** with 1.f4.'));
   const plan = await findPlan(engines, quiet, planStub, { onStep: t => planSteps.push(t) });
-  assert.deepEqual(planCalls, [[PLANNER, 'claude-opus-5-5'], [PLAN_SYSTEM, 'claude-haiku-5-5']]);
+  assert.deepEqual(planCalls, [[PLANNER, 'claude-opus-5-5'], [PLAN_SYSTEM, 'claude-opus-5-5']]);
   assert.deepEqual(planSteps, ['Looking for plan ideas', 'Asking Claude']);
   assert.deepEqual([plan.facts.plan_kind, plan.facts.side_to_move], ['positional', 'White']);
   assert.match(plan.facts.best.line_with_evals, /^1\. you f4 \[pawn gains space/);

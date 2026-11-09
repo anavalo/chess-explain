@@ -81,12 +81,12 @@ Undecided:
 ## Evidence on Hand
 
 - `store/screenshot.png`: the panel next to a lichess analysis board.
-- `eval-sets/quiet-132.json`: 132 quiet positions from lichess games. On it, the stronger model made
-  about half as many false or unsupported claims as the default model and found the decisive point more
-  often (README, Cost).
+- `eval-sets/quiet-132.json`: 132 quiet positions from lichess games. In the October 2026 eval on it,
+  Claude Opus 5.5 made about half as many false or unsupported claims as Claude Haiku and found the
+  decisive point more often.
 - Positional depth on 39 positions from Silman's *How to Reassess Your Chess*: the book's reason given
   in 34 of 78 answers, up from 14, with no clear rise in false claims (README, How it works).
-- Cost: a fraction of a cent per explanation on the default model, about 7 cents on the stronger one
+- Cost: about 5 to 10 cents an explanation with positional depth (on by default), about 3 to 6 without
   (README, Cost).
 - `PRIVACY.md`: what leaves the browser and where it goes.
 - There are no testimonials, user counts, or press. Future work must not invent them.

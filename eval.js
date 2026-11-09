@@ -98,7 +98,7 @@ if (o.print) {
   const ref = Object.values(reference).some(Boolean);
   const withSchema = (prompt, schema) => `${prompt}\n\nReply with only JSON matching this schema:\n${JSON.stringify(schema, null, 1)}`;
   const prompts = {
-    explainer: () => systemFor(o.model ?? 'claude-haiku-5-5', o.deep),
+    explainer: () => systemFor(o.model ?? 'claude-opus-5-5', o.deep),
     judge: () => withSchema(legend(JUDGE), ref ? WITH_REFERENCE : VERDICT),
     pair: () => withSchema(legend(PAIR), ref ? PAIR_WITH_REFERENCE : PAIR_VERDICT),
     planner: () => PLANNER,

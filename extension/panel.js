@@ -47,17 +47,19 @@ document.getElementById('key-form').onsubmit = async e => {
 };
 showKeyStatus();
 
-// the model is a setting too; Haiku unless the user picked another
+// the model is a setting too; a saved model the picker no longer offers becomes the default, so the answer cache
+// and the requests use it
 const model = () => document.querySelector('input[name="model"]:checked').value;
 chrome.storage.local.get('model').then(({ model: m }) => {
   const radio = m && document.querySelector(`input[name="model"][value="${CSS.escape(m)}"]`);
   if (radio) radio.checked = true;
+  else if (m) chrome.storage.local.set({ model: model() });
 });
 settings.onchange = e => e.target.name === 'model' && chrome.storage.local.set({ model: e.target.value });
 // positional depth: before the answer, the strongest model proposes positional ideas, the board checks them, and the
-// answer is written with the ideas that held. One more call; remembered like the model.
+// answer is written with the ideas that held. One more call; on unless turned off, remembered like the model.
 const deep = document.getElementById('deep');
-chrome.storage.local.get('deep').then(({ deep: on }) => (deep.checked = !!on));
+chrome.storage.local.get('deep').then(({ deep: on }) => (deep.checked = on !== false));
 deep.onchange = () => chrome.storage.local.set({ deep: deep.checked });
 // the fact sheets this panel has built, and those of the next moves, built while the user reads (see prepareNext).
 // On unless turned off; turning it off, or another tab, stops a build under way. Closing the panel ends them all.
