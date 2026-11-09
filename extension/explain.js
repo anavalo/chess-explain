@@ -872,6 +872,23 @@ export async function keepReason(storage, game, path, { text, facts, concepts })
   await storage.set({ reasons: [...all.filter(([g]) => g !== game), [game, kept]].slice(-GAMES) });
 }
 
+/** One Explain request for the board read `b` ({user, fen, path, game, best}) and `move`: the reasons given for
+    earlier moves of b's line in b.game go with it (recentReasons); a saved answer is served when there is one, unless
+    `fresh` (remembered); else request() runs explainMove() and the fresh answer's reason is kept (keepReason; a failed
+    save is logged and never loses the answer). `engines`, `llm` and `onStep` go to request(); `depth`, `sheet`,
+    `onSheet` and `onText` to explainMove(). `onRun()` hears that a new run starts, before its fair-play check.
+    Returns {result, saved}. */
+export async function explainRequest(storage, b, move, { depth, version, fresh = false, engines, llm, sheet, onRun = () => {}, onStep = () => {}, onSheet, onText } = {}) {
+  const recent = await recentReasons(storage, b.game, b.path);
+  const req = { user: b.user, fen: b.fen, move, best: b.best, depth, version };
+  const got = await remembered(storage, req, () => (onRun(), request({ user: b.user, engines, llm, onStep }, (e, llm) => {
+    onStep(`Analysing ${move}`);
+    return explainMove(e, { fen: b.fen, move, best: b.best }, llm, { depth, recent, onStep, onSheet, onText, sheet });
+  })), { fresh });
+  if (!got.saved) await keepReason(storage, b.game, b.path, got).catch(console.error);
+  return { result: got.result, saved: !!got.saved };
+}
+
 /** A task's result is what the panel shows for it, in the words the user reads: {head, rows, text, lines, note, shapes}.
     head: {label, pill} over the rows, or null. rows: [{kind: best|compared, label, move, eval}]. text: the answer or
     the plan (markdown). lines: the sheet lines a move link in the text may play, each from the request's position.

@@ -73,7 +73,7 @@ _Avoid_: answer (that one explains two moves)
 ## Panel
 
 **Request**:
-One Explain or Find plan run from the panel: the fair-play check, then the engines, then the task.
+One Explain or Find plan run from the panel: the fair-play check, then the engines, then the task. An Explain request also reads the reasons given earlier in the game, serves a saved answer when it has one, and keeps a fresh answer's reason.
 _Avoid_: handler, flow
 
 **Result**:

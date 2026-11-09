@@ -1,5 +1,5 @@
 import {
-  explainMove, findPlan, keepReason, llmWith, recentReasons, remembered, request, sanToUci, sheetCache, startEngines, uciEngine,
+  explainRequest, findPlan, llmWith, request, sanToUci, sheetCache, startEngines, uciEngine,
 } from './explain.js';
 import { inTab, lichessBoard } from './lichess.js';
 import { linkMoves, md } from './md.js';
@@ -152,52 +152,58 @@ async function ready() {
     setTimeout(() => fail(new Error('Stockfish did not start within 30 s.')), 30_000))]);
 }
 
-/** One request for the position `b` the board gave, under a spinner: `task(engines, llm, step)` runs once fair play
-    has passed and the engines have started, and `step` names its stages on the spinner (and in the console, with
-    the seconds since the request started). */
-async function requested(b, apiKey, task) {
+/** A spinner whose stages are also logged in the console, with the seconds since it started. */
+function staged() {
   const s = spinner(), started = Date.now();
   const log = stage => console.log(`${((Date.now() - started) / 1000).toFixed(1)} s: ${stage}`);
-  const step = stage => (log(stage), s.set(stage));
+  return { step: stage => (log(stage), s.set(stage)), done: () => (log('done'), s.done()) };
+}
+
+/** One request for the position `b` the board gave, under a staged() spinner: `task(engines, llm, step)` runs once
+    fair play has passed and the engines have started, and `step` names its stages on the spinner. */
+async function requested(b, apiKey, task) {
+  const s = staged();
   try {
-    return await request({ user: b.user, engines: ready, llm: llmWith(apiKey), onStep: step }, (e, llm) => task(e, llm, step));
+    return await request({ user: b.user, engines: ready, llm: llmWith(apiKey), onStep: s.step }, (e, llm) => task(e, llm, s.step));
   } finally {
-    log('done');
     s.done();
   }
 }
 
-/** Explain for the board's position, or `again` ({b, req}): a saved answer's request, asked afresh. The board is
-    read either way, so its page rule and the logged-in user are the current ones. The reasons given for earlier moves
-    of b's line in this game go with the request (see recentReasons), and a fresh answer's reason is kept. */
+/** Explain for the board's position, or `again` ({b, move, depth}): a saved answer's request, asked afresh. The board
+    is read either way, so its page rule and the logged-in user are the current ones. explainRequest() sends the
+    reasons given earlier in the game, serves a saved answer and keeps a fresh answer's reason. */
 async function explain(apiKey, board, again) {
   const now = await board.read();
   const b = again ? { ...again.b, user: now.user } : now;
-  const move = again?.req.move ?? (document.getElementById('move').value.trim() || b.next);
+  const move = again?.move ?? (document.getElementById('move').value.trim() || b.next);
   if (!move) return error('No next game move here. Type a move to compare with.');
-  const req = again ? { ...again.req, user: b.user }
-    : { user: b.user, fen: b.fen, move, best: b.best, model: MODEL, depth: deep.checked, version: chrome.runtime.getManifest().version,
-      recent: await recentReasons(chrome.storage.local, b.game, b.path) };
-  // a saved answer waits on the fair-play check alone; a new one gets requested()'s spinner instead
-  const s = spinner('Checking you are not in a game');
+  const depth = again?.depth ?? deep.checked;
+  // a saved answer waits on the fair-play check alone; a new run gets a staged() spinner instead
+  const check = spinner('Checking you are not in a game');
+  let s = null;
+  const step = stage => s.step(stage);
   // a new one shows its moves once the sheet is built, then the answer as it is written (redrawn once a frame at most)
-  const got = await remembered(chrome.storage.local, req, () => (s.done(), requested(b, apiKey, (e, llm, step) => {
-    step(`Analysing ${move}`);
-    let card, lines, text = null, frame = 0;
-    const onSheet = (rows, l) => { movesCard({ rows }); lines = l; card = answerCard('', lines, b); };
-    const onText = t => {
-      if (text === null) step('Writing');
-      text = t;
-      frame ||= requestAnimationFrame(() => { frame = 0; card.innerHTML = linkMoves(md(text), lines); });
-    };
-    return explainMove(e, { fen: b.fen, move, best: b.best }, llm,
-      { model: req.model, depth: req.depth, recent: req.recent, onStep: step, onSheet, onText, sheet: sheets.get });
-  })), { fresh: !!again }).finally(s.done);
+  let card, lines, text = null, frame = 0;
+  const onSheet = (rows, l) => { movesCard({ rows }); lines = l; card = answerCard('', lines, b); };
+  const onText = t => {
+    if (text === null) step('Writing');
+    text = t;
+    frame ||= requestAnimationFrame(() => { frame = 0; card.innerHTML = linkMoves(md(text), lines); });
+  };
+  let got;
+  try {
+    got = await explainRequest(chrome.storage.local, b, move, {
+      depth, version: chrome.runtime.getManifest().version, fresh: !!again, engines: ready, llm: llmWith(apiKey),
+      sheet: sheets.get, onRun: () => (check.done(), (s = staged())), onStep: step, onSheet, onText });
+  } finally {
+    check.done();
+    s?.done();
+  }
   const { result, saved } = got;
-  if (!saved) keepReason(chrome.storage.local, b.game, b.path, got).catch(console.error);
   out.replaceChildren();
   render(saved ? { ...result, note: [result.note, 'Saved answer.'].filter(Boolean).join(' ') } : result, b);
-  if (saved) el('button', 'again', { text: 'Ask again' }).onclick = () => run((k, bd) => explain(k, bd, { b, req }), 'explain');
+  if (saved) el('button', 'again', { text: 'Ask again' }).onclick = () => run((k, bd) => explain(k, bd, { b, move, depth }), 'explain');
   prepareNext(board, b).catch(() => {}); // fail closed: an error builds nothing
 }
 
