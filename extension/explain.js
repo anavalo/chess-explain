@@ -814,12 +814,14 @@ export async function request({ user, engines, llm, onStep = () => {} }, task) {
 }
 
 /** The Explain answers already given, in `storage` (chrome.storage.local in the panel) under `answers`: [[key, result]],
-    oldest first, at most ANSWERS. The key is the request: fen, move, best, model, depth, the extension's `version`, so
-    a new release asks afresh, and the `recent` reasons sent, if any. A saved one resolves to {result, saved: true} once lichess confirms `user` is not in
-    a game (fail closed: no engine, no LLM). Else, or when `fresh`, `run()` (a request()) answers and its result is
-    saved over any old one, unless it has no text or the model declined. */
-export async function remembered(storage, { user, fen, move, best, model, depth, version, recent }, run, { fresh = false } = {}) {
-  const key = [fen, move, best ?? '', model, depth ? 'depth' : '', version, ...(recent?.length ? [JSON.stringify(recent)] : [])].join(' | ');
+    oldest first, at most ANSWERS. The key is the position's request: fen, move, best, depth and the extension's
+    `version`, so a new release asks afresh. It holds neither the model (there is one) nor the `recent` reasons sent:
+    those change after every answer, and a position seen again must find its answer. A saved one resolves to
+    {result, saved: true} once lichess confirms `user` is not in a game (fail closed: no engine, no LLM). Else, or when
+    `fresh`, `run()` (a request()) answers and its result is saved over any old one, unless it has no text or the
+    model declined. */
+export async function remembered(storage, { user, fen, move, best, depth, version }, run, { fresh = false } = {}) {
+  const key = [fen, move, best ?? '', depth ? 'depth' : '', version].join(' | ');
   const saved = async () => (await storage.get('answers')).answers ?? [];
   const hit = !fresh && (await saved()).find(([k]) => k === key);
   if (hit) {
