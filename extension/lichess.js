@@ -7,7 +7,8 @@
 
 /** In the lichess tab: the board's position, or {error}. `best` is lichess's top engine move, set only while lichess
     shows its engine's lines; `next` is the next game move. `ahead`: the next two positions on the line, each
-    {fen, path, next} as above, those with no next move left out.
+    {fen, path, next} as above, those with no next move left out. `game`: the study chapter's id, or the game's (null
+    on a board that is no game, which lichess calls 'synthetic').
     The rule: where lichess allows its engine, and also in a study where it does not (computer analysis turned off,
     or an interactive lesson). Never with a game in progress or in a broadcast. Fails closed when any of that cannot
     be read. */
@@ -23,6 +24,7 @@ function readPage() {
     path += n.id;
     if (n.children?.[0]) ahead.push({ fen: n.fen, path, next: n.children[0].san });
   }
+  const game = ctrl.study ? ctrl.study.data?.chapter?.id : ctrl.data?.game?.id;
   return {
     fen: ctrl.node.fen,
     path: ctrl.path,
@@ -30,6 +32,7 @@ function readPage() {
     next: ctrl.node.children?.[0]?.san,
     user: document.querySelector('#user_tag')?.textContent.trim(),
     ahead,
+    game: game && game !== 'synthetic' ? game : null,
   };
 }
 
@@ -82,7 +85,7 @@ function showShapes(fen, shapes) {
 
 /** The lichess board behind `run(func, args)`, which runs a function in one lichess page and resolves to its result:
     inTab() in the extension, a direct call on a fake page in the tests.
-    - read(): {fen, path, best, next, user, ahead}; throws, with the reason worded for the user, where there is no analysis
+    - read(): {fen, path, best, next, user, ahead, game}; throws, with the reason worded for the user, where there is no analysis
       board or the rule (see readPage) says no. The one place that rule is decided.
     - play(fen, path, ucis): plays a line from a position a read returned; throws when the board cannot get back there.
     - draw(fen, shapes) / clear(): the plan's shapes, shown while the board is on `fen`. */

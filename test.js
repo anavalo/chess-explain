@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { Chess, makeUci, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  Refused, answer, ask as anthropic, checkNotPlaying, explainMove, factSheet, findPlan, llmWith, planAnswer, remembered, request, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, sheetCache, trapped,
+  Refused, answer, ask as anthropic, checkNotPlaying, explainMove, factSheet, findPlan, firstSentence, keepReason, llmWith, moveLabel, planAnswer, recentReasons, remembered, request, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, sheetCache, trapped,
 } from './extension/explain.js';
 import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { lichessBoard } from './extension/lichess.js';
@@ -264,13 +264,13 @@ assert.equal(planShapes(pSheet, many, 'a3 b3 c3 d3 f3').length, 5);
 // lichess.js fails here too.
 {
   const other = 'rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1';
-  const fakePage = ({ allowed = true, engineOn = true, study, ongoing = false } = {}) => {
+  const fakePage = ({ allowed = true, engineOn = true, study, ongoing = false, data } = {}) => {
     const cg = () => ({ drawn: null, setAutoShapes(shapes) { this.drawn = shapes; } });
     const nodes = { '': { fen: start, children: [{ san: 'e4' }], ceval: { pvs: [{ moves: ['d2d4', 'd7d5'] }] } }, zz: { fen: other, children: [] } };
     const sounds = [];
     const ctrl = {
       path: '', node: nodes[''], chessground: cg(),
-      isCevalAllowed: () => allowed, cevalEnabled: () => engineOn, study, ongoing,
+      isCevalAllowed: () => allowed, cevalEnabled: () => engineOn, study, ongoing, data,
       userJumpIfCan(path) { if (nodes[path]) [ctrl.path, ctrl.node] = [path, nodes[path]]; },
       playUciList(ucis) {
         for (const uci of ucis) {
@@ -289,7 +289,14 @@ assert.equal(planShapes(pSheet, many, 'a3 b3 c3 d3 f3').length, 5);
   const board = lichessBoard(async (func, args = []) => new Function(`return (${func})`)()(...args));
   // one read for both flows; lichess's top move only while lichess shows its engine
   let page = fakePage();
-  assert.deepEqual(await board.read(), { fen: start, path: '', best: 'd2d4', next: 'e4', user: 'fable6', ahead: [] });
+  assert.deepEqual(await board.read(), { fen: start, path: '', best: 'd2d4', next: 'e4', user: 'fable6', ahead: [], game: null });
+  // the game: the study chapter's id, else the game's; none on a board that is no game
+  fakePage({ data: { game: { id: 'AbCd1234' } } });
+  assert.equal((await board.read()).game, 'AbCd1234');
+  fakePage({ data: { game: { id: 'synthetic' } } });
+  assert.equal((await board.read()).game, null);
+  fakePage({ data: { game: { id: 'synthetic' } }, study: { data: { chapter: { id: 'ch4pt3r1' } } } });
+  assert.equal((await board.read()).game, 'ch4pt3r1');
   fakePage({ engineOn: false });
   assert.equal((await board.read()).best, undefined);
   // the rule, decided in read(): where lichess allows its engine, and it fails closed
@@ -300,7 +307,7 @@ assert.equal(planShapes(pSheet, many, 'a3 b3 c3 d3 f3').length, 5);
   await assert.rejects(board.read(), refused);
   // and in a study where lichess does not allow it: computer analysis turned off, or an interactive lesson
   fakePage({ allowed: false, engineOn: false, study: {} });
-  assert.deepEqual(await board.read(), { fen: start, path: '', best: undefined, next: 'e4', user: 'fable6', ahead: [] });
+  assert.deepEqual(await board.read(), { fen: start, path: '', best: undefined, next: 'e4', user: 'fable6', ahead: [], game: null });
   // but not in a broadcast or with a game in progress; an `ongoing` that cannot be read fails closed
   for (const page of [{ study: { relay: {} } }, { study: {}, ongoing: true }, { study: {}, ongoing: null }]) {
     fakePage({ allowed: false, ...page });
@@ -407,6 +414,16 @@ assert.deepEqual([sent.model, sent.system, sent.messages], ['claude-opus-5-5', c
 // the deeper read's prompt is the plain one plus the "verified_concepts" entry
 assert.ok(systemFor('claude-opus-5-5', true).includes('"verified_concepts"') && systemFor('claude-opus-5-5', true)
   .replace(/\n- "verified_concepts"[^]*?swing in the lines still comes first\./, '') === systemFor('claude-opus-5-5'));
+// recent reasons: their entry goes after the "verified_concepts" entry, or after the pawn plan's without it
+{
+  const entry = `
+- "recent_reasons" (when not null) are reasons already given for earlier moves of this game ("said": the earlier answer's
+  first sentence; "ideas": its positional ideas). Do not repeat one unless it is the decisive point here, and then say so briefly.`;
+  const end = 'swing in the lines still comes first.', pawnEnd = "better move cleared that pawn's way. See rule 13.";
+  assert.equal(systemFor('claude-opus-5-5', true, true), systemFor('claude-opus-5-5', true).replace(end, end + entry));
+  assert.equal(systemFor('claude-opus-5-5', false, true), systemFor('claude-opus-5-5').replace(pawnEnd, pawnEnd + entry));
+  assert.equal(systemFor('claude-opus-5-5', true, false), systemFor('claude-opus-5-5', true));
+}
 // eval --deep gives both judges the same entry
 for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verified_concepts"'));
 
@@ -485,6 +502,64 @@ for (const user of [undefined, 'in_a_game'])
   for (const broken of [{ get: gone, set: gone }, { ...storage, set: gone }])
     assert.equal((await remembered(broken, base, async () => ({ result: { text: 'x' } }), { fresh: true })).result.text, 'x');
   console.error = logged;
+}
+// remembered reasons: an answer's first sentence and its move with its number
+assert.equal(firstSentence('\n  **Nf3** keeps the e5 pawn. It also develops!\nNext time: x.'), '**Nf3** keeps the e5 pawn.');
+assert.equal(firstSentence('After 12.Nf3 you win! Then'), 'After 12.Nf3 you win!');
+assert.equal(firstSentence('No full stop'), 'No full stop');
+assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '1... e5']);
+// the reasons per game: the last 4 moves of each, at most 50 games; a position gets those of earlier moves of its line
+// (strict path prefixes), oldest first, never another game's; a decline or an about-equal verdict is not kept
+{
+  const data = {}, storage = { get: async k => structuredClone({ [k]: data[k] }), set: async o => void Object.assign(data, structuredClone(o)) };
+  const facts = { fen: start, played: { move: 'e4' }, latest_sf_gap: 0.5 };
+  const keep = (game, path, text, more = {}) => keepReason(storage, game, path, { text, facts, concepts: null, ...more });
+  await keep('g1', 'aa', 'First. More.', { concepts: [{ concept: 'centre' }] });
+  await keep('g1', 'aabb', 'Second.');
+  await keep('g1', 'aabbcc', 'Side line.');
+  await keep('g1', 'aadd', 'Other branch.');
+  await keep('g2', 'aa', 'Other game.');
+  await keep(null, 'aa', 'No game.');
+  await keep('g1', 'aabbccee', '(the model declined to answer)');
+  await keep('g1', 'aabbccee', 'Equal.', { facts: { ...facts, latest_sf_gap: 0.1 } });
+  assert.deepEqual(await recentReasons(storage, 'g1', 'aabbccee'), [
+    { move: '1. e4', said: 'First.', ideas: ['centre'] }, { move: '1. e4', said: 'Second.', ideas: [] }, { move: '1. e4', said: 'Side line.', ideas: [] }]);
+  assert.deepEqual((await recentReasons(storage, 'g1', 'aabb')).map(r => r.said), ['First.']); // not its own
+  assert.deepEqual(await recentReasons(storage, 'g3', 'aabb'), []);
+  assert.deepEqual(await recentReasons(storage, null, 'aabb'), []);
+  await keep('g1', 'aabbccff', 'Fifth.');
+  assert.deepEqual(data.reasons.find(([g]) => g === 'g1')[1].map(e => e.said), ['Second.', 'Side line.', 'Other branch.', 'Fifth.']);
+  for (let i = 0; i < 50; i++) await keep(`n${i}`, 'aa', 'x.');
+  assert.deepEqual([data.reasons.length, data.reasons[0][0]], [50, 'n0']);
+}
+// answer(): the reasons go last in the writer's facts only, with their legend entry; without any, nothing changes
+{
+  for (const depth of [false, true]) {
+    const calls = [], llm = async (system, facts) => (calls.push([system, facts]), system === PROPOSER ? JSON.stringify(claims) : 'Fine.');
+    const recent = [{ move: '1. e4', said: 'First.', ideas: [] }];
+    await answer(cSheet, llm, { depth, recent });
+    await answer(cSheet, llm, { depth, recent: [] });
+    const [w, plain] = depth ? [calls[1], calls[3]] : [calls[0], calls[1]];
+    if (depth) assert.ok(!('recent_reasons' in calls[0][1]) && !('recent_reasons' in calls[2][1])); // the proposer's
+    assert.deepEqual(Object.keys(w[1]), [...Object.keys(plain[1]), 'recent_reasons']);
+    assert.deepEqual(w[1].recent_reasons, recent);
+    assert.equal(w[0], systemFor('claude-opus-5-5', depth, true));
+    assert.equal(plain[0], systemFor('claude-opus-5-5', depth));
+    assert.deepEqual(plain[1], depth ? (await withConcepts(cSheet, async () => JSON.stringify(claims))).facts : cSheet);
+  }
+}
+// the answer cache keys on the reasons sent: the same reasons reuse the answer, other ones ask afresh
+{
+  const data = {}, storage = { get: async k => structuredClone({ [k]: data[k] }), set: async o => void Object.assign(data, structuredClone(o)) };
+  const base = { user: 'fable6', fen: 'f', move: 'Nf3', best: null, model: 'm', depth: true, version: '0.62' };
+  let runs = 0;
+  const ask = async req => (await remembered(storage, req, async () => ({ result: { text: `x${++runs}` } }))).result.text;
+  await ask(base);
+  assert.deepEqual(data.answers.map(([k]) => k), ['f | Nf3 |  | m | depth | 0.62']);
+  await ask({ ...base, recent: [] }); // none sent: the plain key
+  const recent = [{ move: '1. e4', said: 'First.', ideas: [] }];
+  assert.deepEqual([await ask({ ...base, recent }), await ask({ ...base, recent }), runs], ['x2', 'x2', 2]);
+  assert.equal(data.answers[1][0], `f | Nf3 |  | m | depth | 0.62 | ${JSON.stringify(recent)}`);
 }
 // the sheets of the next moves, built ahead on fake engines. A search answers a millisecond later, or at once on `stop`,
 // with the first legal moves, scored by the position and by the searches the engine ran since ucinewgame (as its hash

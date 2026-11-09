@@ -174,10 +174,19 @@ const CONCEPTS = `
   and do not add what the facts do not show. A concept never overrides the engine lines: a threat, a tactic or a material
   swing in the lines still comes first.`;
 
+/** The legend entry for "recent_reasons", which a sheet has only when earlier moves of the same game line were explained
+    (repeats of the earlier move's point 40 -> 31 of 42, decisive and claims flat, A/B 2026-11-09). */
+const RECENT = `
+- "recent_reasons" (when not null) are reasons already given for earlier moves of this game ("said": the earlier answer's
+  first sentence; "ideas": its positional ideas). Do not repeat one unless it is the decisive point here, and then say so briefly.`;
+
 /** The explainer prompt for `model`: the legend and rules 1-15, the same for every model. A deeper read (`concepts`)
-    also gets the "verified_concepts" entry. */
-export function systemFor(model, concepts = false) {
-  return (concepts ? withConceptsEntry(LEGEND) : LEGEND) + RULES + SIZE + ADVICE;
+    also gets the "verified_concepts" entry, and a sheet with `recent` reasons the "recent_reasons" entry after it (or
+    after the pawn plan's). */
+export function systemFor(model, concepts = false, recent = false) {
+  const legend = concepts ? withConceptsEntry(LEGEND) : LEGEND;
+  const after = concepts ? CONCEPTS : PAWN_PLAN_END;
+  return (recent ? legend.replace(after, after + RECENT) : legend) + RULES + SIZE + ADVICE;
 }
 
 /** `prompt`, which holds the sheet legend (the explainer's, or a judge prompt), with the "verified_concepts" entry after

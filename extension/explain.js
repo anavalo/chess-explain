@@ -28,6 +28,7 @@ const EQUAL_GAP = 0.3; // pawns; below this both moves are called equal and the 
 const ALSO_GAP = 0.1; // pawns; a plan names the engine's second move as "about as good" below this
 const ANSWERS = 200; // saved Explain answers kept (see remembered), oldest dropped first
 const SHEETS = 20; // fact sheets a panel keeps (see sheetCache), oldest dropped first
+const GAMES = 50, REASONS = 4; // games whose reasons are kept (see keepReason), oldest dropped first, and moves per game
 const DECLINED = '(the model declined to answer)';
 const LEAF_PLIES = 6; // SF 15 terms are measured within this many plies of each line
 // centipawns the opponent must gain with a free move before the position's threat is reported. A free move is worth
@@ -780,10 +781,12 @@ export const aboutEqual = facts => Math.abs(facts.latest_sf_gap) < EQUAL_GAP;
 
 /** The answer for a fact sheet: a plain verdict when the moves are about equal (no LLM call), else the explainer's text,
     after a deeper read when `depth` is on. `llm(system, facts, model, onText)` is one LLM call: ask() with the key, or a
-    test stub. `onStep(words)` hears which call comes next; `onText` streams the explainer's text (see ask). Returns {text, facts, concepts, read}: facts as the explainer saw them;
+    test stub. `onStep(words)` hears which call comes next; `onText` streams the explainer's text (see ask). `recent`:
+    reasons given for earlier moves of the line (see recentReasons); when there are any, the explainer's facts (never the
+    proposer's) end with them as "recent_reasons". Returns {text, facts, concepts, read}: facts as the explainer saw them;
     concepts, the verified concepts (null when none held); read, whether the proposer's reply held a claim list
     (undefined when no deeper read ran). */
-export async function answer(facts, llm, { model = 'claude-opus-5-5', depth = false, onStep = () => {}, onText } = {}) {
+export async function answer(facts, llm, { model = 'claude-opus-5-5', depth = false, recent = null, onStep = () => {}, onText } = {}) {
   if (aboutEqual(facts)) {
     return { facts, concepts: null, text: `**${facts.played.move}** is about as good as **${facts.alternative.move}**: `
       + 'the engine sees no real difference between them. Either move is fine.' };
@@ -793,8 +796,10 @@ export async function answer(facts, llm, { model = 'claude-opus-5-5', depth = fa
     onStep('Looking for positional ideas');
     ({ facts, concepts, read } = await withConcepts(facts, llm));
   }
+  if (recent?.length) facts = { ...facts, recent_reasons: recent };
   onStep('Asking Claude');
-  return { text: await llm(systemFor(model, !!facts.verified_concepts), facts, model, onText), facts, concepts, read };
+  const system = systemFor(model, !!facts.verified_concepts, !!facts.recent_reasons);
+  return { text: await llm(system, facts, model, onText), facts, concepts, read };
 }
 
 /** One request from the panel: fair play first, then the engines, then `task(engines, llm)`, whose result it resolves
@@ -809,12 +814,12 @@ export async function request({ user, engines, llm, onStep = () => {} }, task) {
 }
 
 /** The Explain answers already given, in `storage` (chrome.storage.local in the panel) under `answers`: [[key, result]],
-    oldest first, at most ANSWERS. The key is the request: fen, move, best, model, depth and the extension's `version`,
-    so a new release asks afresh. A saved one resolves to {result, saved: true} once lichess confirms `user` is not in
+    oldest first, at most ANSWERS. The key is the request: fen, move, best, model, depth, the extension's `version`, so
+    a new release asks afresh, and the `recent` reasons sent, if any. A saved one resolves to {result, saved: true} once lichess confirms `user` is not in
     a game (fail closed: no engine, no LLM). Else, or when `fresh`, `run()` (a request()) answers and its result is
     saved over any old one, unless it has no text or the model declined. */
-export async function remembered(storage, { user, fen, move, best, model, depth, version }, run, { fresh = false } = {}) {
-  const key = [fen, move, best ?? '', model, depth ? 'depth' : '', version].join(' | ');
+export async function remembered(storage, { user, fen, move, best, model, depth, version, recent }, run, { fresh = false } = {}) {
+  const key = [fen, move, best ?? '', model, depth ? 'depth' : '', version, ...(recent?.length ? [JSON.stringify(recent)] : [])].join(' | ');
   const saved = async () => (await storage.get('answers')).answers ?? [];
   const hit = !fresh && (await saved()).find(([k]) => k === key);
   if (hit) {
@@ -832,6 +837,37 @@ export async function remembered(storage, { user, fen, move, best, model, depth,
     }
   }
   return got;
+}
+
+/** The first sentence of an answer: its first non-empty line, up to the first '.', '!' or '?' before a space or the end. */
+export const firstSentence = text => {
+  const line = text.split('\n').map(l => l.trim()).find(Boolean) ?? '';
+  return line.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? line;
+};
+
+/** `san`, played in `fen`, with its move number: '12. Nf3' for White, '12... Nf6' for Black. */
+export const moveLabel = (fen, san) => `${moveNo(position(fen))} ${san}`;
+
+/** The reasons given in `game` (a lichess game or study chapter id), in `storage` under `reasons`: [[game, entries]],
+    oldest first, at most GAMES, each game's entries [{path, move, said, ideas}] its last REASONS explained moves. */
+const reasonsOf = async storage => (await storage.get('reasons')).reasons ?? [];
+
+/** The reasons for earlier moves of `path`'s line in `game`: the entries whose path is a strict prefix of it, oldest
+    first, as {move, said, ideas}. Empty when the game is unknown or has none. */
+export async function recentReasons(storage, game, path) {
+  if (!game) return [];
+  const entries = (await reasonsOf(storage)).find(([g]) => g === game)?.[1] ?? [];
+  return entries.filter(e => e.path !== path && path.startsWith(e.path)).map(({ move, said, ideas }) => ({ move, said, ideas }));
+}
+
+/** Keeps the reason of a fresh answer `a` (explainMove's {text, facts, concepts}) for the position at `path` in `game`:
+    its first sentence and its verified concepts' names. Nothing for an unknown game, a decline or an about-equal verdict. */
+export async function keepReason(storage, game, path, { text, facts, concepts }) {
+  if (!game || !text || text === DECLINED || aboutEqual(facts)) return;
+  const entry = { path, move: moveLabel(facts.fen, facts.played.move), said: firstSentence(text), ideas: (concepts ?? []).map(c => c.concept) };
+  const all = await reasonsOf(storage), entries = all.find(([g]) => g === game)?.[1] ?? [];
+  const kept = [...entries.filter(e => e.path !== path), entry].slice(-REASONS);
+  await storage.set({ reasons: [...all.filter(([g]) => g !== game), [game, kept]].slice(-GAMES) });
 }
 
 /** A task's result is what the panel shows for it, in the words the user reads: {head, rows, text, lines, note, shapes}.

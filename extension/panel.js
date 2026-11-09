@@ -1,4 +1,6 @@
-import { explainMove, findPlan, llmWith, remembered, request, sanToUci, sheetCache, startEngines, uciEngine } from './explain.js';
+import {
+  explainMove, findPlan, keepReason, llmWith, recentReasons, remembered, request, sanToUci, sheetCache, startEngines, uciEngine,
+} from './explain.js';
 import { inTab, lichessBoard } from './lichess.js';
 import { linkMoves, md } from './md.js';
 
@@ -176,18 +178,20 @@ async function requested(b, apiKey, task) {
 }
 
 /** Explain for the board's position, or `again` ({b, req}): a saved answer's request, asked afresh. The board is
-    read either way, so its page rule and the logged-in user are the current ones. */
+    read either way, so its page rule and the logged-in user are the current ones. The reasons given for earlier moves
+    of b's line in this game go with the request (see recentReasons), and a fresh answer's reason is kept. */
 async function explain(apiKey, board, again) {
   const now = await board.read();
   const b = again ? { ...again.b, user: now.user } : now;
   const move = again?.req.move ?? (document.getElementById('move').value.trim() || b.next);
   if (!move) return error('No next game move here. Type a move to compare with.');
   const req = again ? { ...again.req, user: b.user }
-    : { user: b.user, fen: b.fen, move, best: b.best, model: model(), depth: deep.checked, version: chrome.runtime.getManifest().version };
+    : { user: b.user, fen: b.fen, move, best: b.best, model: model(), depth: deep.checked, version: chrome.runtime.getManifest().version,
+      recent: await recentReasons(chrome.storage.local, b.game, b.path) };
   // a saved answer waits on the fair-play check alone; a new one gets requested()'s spinner instead
   const s = spinner('Checking you are not in a game');
   // a new one shows its moves once the sheet is built, then the answer as it is written (redrawn once a frame at most)
-  const { result, saved } = await remembered(chrome.storage.local, req, () => (s.done(), requested(b, apiKey, (e, llm, step) => {
+  const got = await remembered(chrome.storage.local, req, () => (s.done(), requested(b, apiKey, (e, llm, step) => {
     step(`Analysing ${move}`);
     let card, lines, text = null, frame = 0;
     const onSheet = (rows, l) => { movesCard({ rows }); lines = l; card = answerCard('', lines, b); };
@@ -197,8 +201,10 @@ async function explain(apiKey, board, again) {
       frame ||= requestAnimationFrame(() => { frame = 0; card.innerHTML = linkMoves(md(text), lines); });
     };
     return explainMove(e, { fen: b.fen, move, best: b.best }, llm,
-      { model: req.model, depth: req.depth, onStep: step, onSheet, onText, sheet: sheets.get });
+      { model: req.model, depth: req.depth, recent: req.recent, onStep: step, onSheet, onText, sheet: sheets.get });
   })), { fresh: !!again }).finally(s.done);
+  const { result, saved } = got;
+  if (!saved) keepReason(chrome.storage.local, b.game, b.path, got).catch(console.error);
   out.replaceChildren();
   render(saved ? { ...result, note: [result.note, 'Saved answer.'].filter(Boolean).join(' ') } : result, b);
   if (saved) el('button', 'again', { text: 'Ask again' }).onclick = () => run((k, bd) => explain(k, bd, { b, req }), 'explain');
