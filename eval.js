@@ -145,8 +145,15 @@ const answers = readdirSync(out).filter(f => f.endsWith('.txt') && f !== 'summar
 // an LLM answer and verdicts for them, which are left out of every count so runs before and after compare
 const equal = new Set(answers.filter(n => { const r = readRun(out, n); return r && aboutEqual(JSON.parse(r.sheet)); }));
 const explained = answers.filter(n => !equal.has(n));
-if (pair) await pairAll(explained.filter(n => existsSync(`${pair}/${n}.txt`)));
-if (o.judge) await judgeAll(explained.filter(n => !existsSync(`${out}/${n}.judge.json`)));
+if (pair) {
+  const both = explained.filter(n => existsSync(`${pair}/${n}.txt`));
+  for (const n of both) for (const d of [out, pair]) explanationOnly(d, n, '--pair');
+  await pairAll(both);
+}
+if (o.judge) {
+  for (const n of explained) explanationOnly(out, n, '--judge');
+  await judgeAll(explained.filter(n => !existsSync(`${out}/${n}.judge.json`)));
+}
 if (o.masked) for (const n of explained) mask(n);
 const verdicts = [], recovered = [];
 let pastCount = 0;
@@ -275,6 +282,7 @@ async function pairAll(names) {
 function compare(dir) {
   const verdict = (d, n) => existsSync(`${d}/${n}.judge.json`) ? JSON.parse(readFileSync(`${d}/${n}.judge.json`, 'utf8')) : null;
   const names = readdirSync(out).filter(f => f.endsWith('.judge.json')).map(f => f.slice(0, -11)).filter(n => verdict(dir, n));
+  for (const n of names) for (const d of [dir, out]) explanationOnly(d, n, '--compare');
   const gate = n => { const s = JSON.parse(readRun(out, n).sheet); return s.sf15_total_gap != null && s.sf15_total_gap >= s.latest_sf_gap / 2; };
   const flips = (ns, hit) => {
     const pairs = ns.map(n => [hit(verdict(dir, n)), hit(verdict(out, n))]);
@@ -294,6 +302,15 @@ function compare(dir) {
     console.log(`${label} (${ns.length}): decisive yes ${flips(ns, v => v.decisive_point === 'yes')}`);
     console.log(`${' '.repeat(label.length + String(ns.length).length + 3)}  no false claim ${flips(ns, v => !v.false_claims.length)}`);
   }
+}
+
+/** Throws on a plan sheet in <dir>/<name>.txt (it has "best" and no "alternative"), naming the file: `flag` grades
+    explanations of two moves, and would grade a plan as one. */
+function explanationOnly(dir, name, flag) {
+  const sheet = readRun(dir, name)?.sheet;
+  if (!sheet) return;
+  const s = JSON.parse(sheet);
+  if (s.best && !s.alternative) throw new Error(`${dir}/${name}.txt is a plan sheet: ${flag} grades explanations of two moves`);
 }
 
 /** Reads <dir>/<name>.txt, the CLI output: the fact sheet JSON, a blank line and the answer (no answer with --no-llm).
