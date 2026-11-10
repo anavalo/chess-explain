@@ -532,20 +532,24 @@ async function otherBest(sf, pos, not, nodes) {
   return infos.map(i => i.pv[0]).find(m => m !== not);
 }
 
-/** `played` and `vs` are UCI moves; `vs` null means the engine's best other move.
-    The played move's line runs on `sf` and the alternative's on `sf2` at the same time. Each engine always gets the
+/** `played` and `vs` are UCI moves; `vs` null means the engine's best other move, and then the higher-scored of the
+    two is the sheet's alternative (see factSheet): the build never picks a worse better move itself.
+    One move's line runs on `sf` and the other's on `sf2` at the same time. Each engine always gets the
     same searches in the same order, so its hash table carries the same history and the lines stay the same every run.
     When the two moves are about equal the sheet stops at their scores, the only facts their answer needs. */
 async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
   const pos = position(fen);
-  const [before, other] = await Promise.all([
+  let [before, other] = await Promise.all([
     search(sf, pos, nodes).then(r => r[0].score),
     vs ?? otherBest(sf2, pos, played, nodes),
   ]);
   const [threat, threatFacts] = await opponentThreat(sf, pos, nodes, before, QUIET_THREAT);
   if (!played || !other) throw new Error('There is only one legal move here: nothing to compare.');
   // each move's own search comes first in its line, as it always has, so the about-equal check costs no extra search
-  const [rp, ra] = await Promise.all([[sf, played], [sf2, other]].map(([e, mv]) => search(e, pos, nodes, { moves: [mv] }).then(r => r[0])));
+  let [rp, ra] = await Promise.all([[sf, played], [sf2, other]].map(([e, mv]) => search(e, pos, nodes, { moves: [mv] }).then(r => r[0])));
+  // the move asked about outscores the best other move: it is the better move, and each move stays on its engine
+  let ep = sf, ea = sf2;
+  if (!vs && cpOf(ra.score) < cpOf(rp.score)) [played, other, rp, ra, ep, ea] = [other, played, ra, rp, ea, ep];
   const gap = round2((cpOf(ra.score) - cpOf(rp.score)) / 100);
   const side = pos.turn === 'white' ? 'White' : 'Black';
   const scored = (mv, { score }) => ({ move: san(pos, mv), latest_sf_eval: scoreStr(score), cp: cpOf(score) });
@@ -572,9 +576,9 @@ async function buildFacts({ sf, sf2, sf15 }, fen, played, vs, nodes = NODES) {
   const lines = {};
   let prep;
   await Promise.all([
-    line(sf, played, rp).then(l => (lines.played = l)),
-    line(sf2, other, ra).then(async l => {
-      prep = await prepares(sf2, pos, other, played, l.cp, lineNodes);
+    line(ep, played, rp).then(l => (lines.played = l)),
+    line(ea, other, ra).then(async l => {
+      prep = await prepares(ea, pos, other, played, l.cp, lineNodes);
       lines.alternative = l;
     }),
   ]);
@@ -698,7 +702,11 @@ export async function checkNotPlaying(user) {
   if (status.some(s => s.playing)) throw new Refused('You are playing a game on lichess. No engine help during games.');
 }
 
-/** The fact sheet for `move` (SAN or UCI) in `fen`, against `best` (optional; else the best other move). The panel,
+/** The fact sheet for the compared move `move` (SAN or UCI) in `fen`, against `best` (optional; else the best other
+    move). Its `alternative` is the better move: `best` as named, even where it scores lower (the caller owns that
+    claim); with no `best`, the higher-scored of `move` and the engine's best other move. So its `played` is `move`,
+    unless `move` is itself the better one (it is `best`, or it outscores the best other move): then `played` is the
+    best other move, and the sheet says why `move` beats it. The panel,
     the CLI and so the eval all build it here, so they all see the same sheet. `signal` stops the build (see abortable):
     it then rejects with an AbortError once the engines are idle, and the next build's ucinewgame leaves no trace of it. */
 export async function factSheet(engines, fen, move, best = null, nodes = NODES, { signal } = {}) {
@@ -823,7 +831,7 @@ export async function request({ user, engines, llm, onStep = () => {} }, task) {
     `version`, so each model keeps its own answer and a new release asks afresh. It does not hold the `recent` reasons
     sent: those change after every answer, and a position seen again must find its answer. A request finds the answer that
     compares its two moves, as a sheetCache serves a sheet: with a `best`, the one saved for that best, or the one
-    saved without a best whose engine move it is; without one, the latest saved for any best. A saved one resolves to
+    saved without a best whose engine move it is, whichever is the later; without one, the latest saved for any best. A saved one resolves to
     {result, saved: true} once lichess confirms `user` is not in a game (fail closed: no engine, no LLM). Else, or when
     `fresh`, `run()` (a request()) answers and its result is saved over any old one, unless it has no text, the model
     declined or the moves are about equal (no LLM wrote that verdict: the sheet says it again). */
@@ -833,7 +841,7 @@ export async function remembered(storage, { user, fen, move, best, depth, model 
   const saved = async () => (await storage.get('answers')).answers ?? [];
   // a result's first row is its sheet's alternative (see explainRows)
   const hit = !fresh && (best
-    ? (await saved()).find(([k, r]) => k === key || k === head + tail && r.rows?.[0] && uci(r.rows[0].move) === uci(best))
+    ? (await saved()).findLast(([k, r]) => k === key || k === head + tail && r.rows?.[0] && uci(r.rows[0].move) === uci(best))
     : (await saved()).findLast(([k]) => k.startsWith(head) && k.endsWith(tail)));
   if (hit) {
     await checkNotPlaying(user);
@@ -873,11 +881,13 @@ export async function recentReasons(storage, game, path) {
   return entries.filter(e => e.path !== path && path.startsWith(e.path)).map(({ move, said, ideas }) => ({ move, said, ideas }));
 }
 
-/** Keeps the reason of a fresh answer `a` (explainMove's {text, facts, concepts}) for the position at `path` in `game`:
+/** Keeps the reason of a fresh answer `a` (explainMove's {text, facts, concepts}) for the position at `path` in `game`,
+    under the compared move `move` (SAN or UCI; the sheet's `played` is another move when `move` is the better one):
     its first sentence and its verified concepts' names. Nothing for an unknown game, a decline or an about-equal verdict. */
-export async function keepReason(storage, game, path, { text, facts, concepts }) {
+export async function keepReason(storage, game, path, move, { text, facts, concepts }) {
   if (!game || !text || text === DECLINED || aboutEqual(facts)) return;
-  const entry = { path, move: moveLabel(facts.fen, facts.played.move), said: firstSentence(text), ideas: (concepts ?? []).map(c => c.concept) };
+  const compared = san(position(facts.fen), sanToUci(facts.fen, [move])[0]);
+  const entry = { path, move: moveLabel(facts.fen, compared), said: firstSentence(text), ideas: (concepts ?? []).map(c => c.concept) };
   const all = await reasonsOf(storage), entries = all.find(([g]) => g === game)?.[1] ?? [];
   const kept = [...entries.filter(e => e.path !== path), entry].slice(-REASONS);
   await storage.set({ reasons: [...all.filter(([g]) => g !== game), [game, kept]].slice(-GAMES) });
@@ -896,7 +906,7 @@ export async function explainRequest(storage, b, move, { depth, model = MODEL, v
     onStep(`Analysing ${move}`);
     return explainMove(e, { fen: b.fen, move, best: b.best }, llm, { depth, model, recent, onStep, onSheet, onText, sheet });
   })), { fresh });
-  if (!got.saved) await keepReason(storage, b.game, b.path, got).catch(console.error);
+  if (!got.saved) await keepReason(storage, b.game, b.path, move, got).catch(console.error);
   return { result: got.result, saved: !!got.saved };
 }
 

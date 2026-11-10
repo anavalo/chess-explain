@@ -5,8 +5,16 @@ Explains to a club player why one chess move is better than another, from engine
 ## Explaining
 
 **Fact sheet**:
-The engine facts about one position and two candidate moves that the explainer is given, and the only ground truth it may use.
+The engine facts about one position and two candidate moves that the explainer is given, and the only ground truth it may use. The two moves are the better move and the move it is set against: the compared move, or the engine's best other move when the compared move is itself the better one.
 _Avoid_: facts block, sheet JSON
+
+**Compared move**:
+The move an Explain request asks about: the next move of the game, or one the user types.
+_Avoid_: played move (it may never have been played), asked move
+
+**Better move**:
+The stronger of a fact sheet's two moves: the best move the request names, else the higher-scored of the compared move and the engine's best other move. A named best stays the better move even where the engine scores it lower.
+_Avoid_: engine move, best move
 
 **Label**:
 A short worded fact attached to a move or position on the fact sheet (a pin, an outpost, a pawn island change).

@@ -225,6 +225,13 @@ assert.deepEqual(render(cSheet, v), [{ concept: 'centre', claim: 'd4 takes the c
   'after 1.d4: d4: your pawn', 'after 1.e4: d4: empty', 'after 1.d4 d5: your pieces attacking e5: 1'] }]);
 // a sheet without the field the concepts go after fails loudly, before any LLM call
 await assert.rejects(withConcepts({ fen: start }, () => assert.fail('called the LLM')), /pawn_plan_only_in_better_line/);
+// a sheet that holds an earlier read's concepts (the eval's --facts on a --deep run): the proposer never sees them,
+// and the new ones take their place
+{
+  const seen = [], again = await withConcepts({ ...cSheet, verified_concepts: ['old'] }, async (system, facts) => (seen.push(facts), JSON.stringify(claims)));
+  assert.deepEqual([seen[0], again.facts.verified_concepts], [cSheet, again.concepts]);
+  assert.equal(again.concepts[0].concept, 'centre');
+}
 // Find plan's deeper read: best:N / best_leaf name the plan line's positions; an idea keeps only targets its checks name
 const pSheet = {
   fen: start, side_to_move: 'White', plan_kind: 'positional',
@@ -510,6 +517,10 @@ const xSheet = { ...cSheet, played: { ...cSheet.played, move: 'e4', latest_sf_ev
   assert.deepEqual(await explain({ ...unset, best: 'd2d4' }), served);
   assert.deepEqual(await explain({ ...unset, best: 'c2c4' }), fresh);
   assert.deepEqual(await explain(unset), served);
+  // Ask again with a best: its answer, saved beside the one without a best, is the one both requests find next
+  reply = 'Again.';
+  assert.deepEqual(await explain({ ...unset, best: 'd2d4' }, { fresh: true }), ['Again.', false, ['lichess.org', 'api.anthropic.com'], 1]);
+  assert.deepEqual([(await explain({ ...unset, best: 'd2d4' }))[0], (await explain(unset))[0]], ['Again.', 'Again.']);
   const equal = { sheet: async () => ({ ...xSheet, latest_sf_gap: 0.1 }) };
   for (let i = 0; i < 2; i++)
     assert.deepEqual((await explain({ ...base, fen: 'an equal fen' }, equal)).slice(1), [false, ['lichess.org'], 1]);
@@ -542,7 +553,7 @@ assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '
 {
   const data = {}, storage = { get: async k => structuredClone({ [k]: data[k] }), set: async o => void Object.assign(data, structuredClone(o)) };
   const facts = { fen: start, played: { move: 'e4' }, latest_sf_gap: 0.5 };
-  const keep = (game, path, text, more = {}) => keepReason(storage, game, path, { text, facts, concepts: null, ...more });
+  const keep = (game, path, text, more = {}) => keepReason(storage, game, path, 'e4', { text, facts, concepts: null, ...more });
   await keep('g1', 'aa', 'First. More.', { concepts: [{ concept: 'centre' }] });
   await keep('g1', 'aabb', 'Second.');
   await keep('g1', 'aabbcc', 'Side line.');
@@ -558,6 +569,9 @@ assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '
   assert.deepEqual(await recentReasons(storage, null, 'aabb'), []);
   await keep('g1', 'aabbccff', 'Fifth.');
   assert.deepEqual(data.reasons.find(([g]) => g === 'g1')[1].map(e => e.said), ['Second.', 'Side line.', 'Other branch.', 'Fifth.']);
+  // the compared move was the better one: the sheet's played is the best other move, the reason is the compared move's
+  await keepReason(storage, 'g4', 'aa', 'd2d4', { text: 'Better.', facts: { ...facts, alternative: { move: 'd4' } }, concepts: null });
+  assert.deepEqual(await recentReasons(storage, 'g4', 'aabb'), [{ move: '1. d4', said: 'Better.', ideas: [] }]);
   for (let i = 0; i < 50; i++) await keep(`n${i}`, 'aa', 'x.');
   assert.deepEqual([data.reasons.length, data.reasons[0][0]], [50, 'n0']);
 }
@@ -700,6 +714,17 @@ assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '
   ctl.abort();
   await assert.rejects(early, { name: 'AbortError' });
   assert.deepEqual(await factSheet(eng, start, 'd4'), refStart);
+  // no best (lichess's engine off, or a sheet built ahead): the better move is the higher-scored of the compared move
+  // and the engine's best other move (a3 here), so a compared move that outscores it is the engine move, as when
+  // lichess names it. A best that is named stays the better move, even where it scores lower
+  const rows = async (move, best = null) => (await explainMove(eng, { fen: start, move, best }, llm)).result.rows.map(r => r.move);
+  assert.deepEqual([await rows('e4'), await rows('Nc3'), await rows('Nc3', 'a2a3')], [['a3', 'e4'], ['Nc3', 'a3'], ['a3', 'Nc3']]);
+  // such a sheet, built ahead, serves the request that names the compared move as lichess's best
+  const top = sheetCache();
+  await top.prepare(eng, 'fable6', [{ fen: start, path: 'zz', next: 'Nc3' }]);
+  s0 = searches();
+  const better = await top.get(eng, start, 'Nc3', 'b1c3');
+  assert.deepEqual([better.alternative.move, better.played.move, better.latest_sf_gap > 0, searches()], ['Nc3', 'a3', true, s0]);
 }
 delete globalThis.fetch; // nothing past here may call out
 

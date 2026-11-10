@@ -175,8 +175,8 @@ export function claimsIn(reply) {
     verify() keeps those whose checks all hold, and they go in as "verified_concepts" right after ANCHOR, the slot the
     concepts A/B tested. Returns {facts, concepts, read} (concepts null when no claim survived; read false when the reply
     held no claim list). Throws when the sheet has no ANCHOR, so a renamed field fails the tests instead of dropping
-    the concepts. */
-export async function withConcepts(facts, llm, model = MODEL) {
+    the concepts. A sheet that already holds an earlier read's concepts loses them first: the proposer never sees them. */
+export async function withConcepts({ verified_concepts: old, ...facts }, llm, model = MODEL) {
   if (!(ANCHOR in facts)) throw new Error(`the fact sheet has no "${ANCHOR}" to put the verified concepts after`);
   const claims = claimsIn(await llm(PROPOSER, facts, model));
   const concepts = claims ? render(facts, verify(facts, claims)) : null;
