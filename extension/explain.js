@@ -645,28 +645,34 @@ export async function ask(system, facts, apiKey, model, onText) {
   if (r.status === 401) throw new Error('Anthropic rejected the API key. Check it in the panel settings.');
   if (!r.ok) throw new Error(`Anthropic API error ${r.status}: ${body.error?.message ?? r.statusText}`);
   if (body.stop_reason === 'refusal') return DECLINED;
+  if (!body.content) throw new Error('Could not read the reply from the Anthropic API. Try again.');
   return body.content.filter(b => b.type === 'text').map(b => b.text).join('');
 }
 
 /** Reads ask()'s server-sent events into the reply as an unstreamed call returns it: {stop_reason, content}. The text
     is every text delta in order, across text blocks: a decline mid-stream adds a fallback block and the fallback model
-    goes on, so the text before it stands. An error event, or a stream cut off before its stop reason, throws. */
+    goes on, so the text before it stands. An error event, a stream that stops arriving (the timeout) or one cut off
+    before its stop reason throws, and the connection is closed. */
 async function streamed(stream, onText) {
   const reader = stream.getReader(), utf8 = new TextDecoder();
   let buf = '', text = '', stop_reason = null;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += utf8.decode(value, { stream: true });
-    let end;
-    while ((end = buf.indexOf('\n\n')) >= 0) { // one event per blank-line-ended block; its JSON is on the data line
-      const data = buf.slice(0, end).match(/^data: (.*)$/m)?.[1];
-      buf = buf.slice(end + 2);
-      const e = data ? JSON.parse(data) : {};
-      if (e.type === 'error') throw new Error(`Anthropic API error: ${e.error?.message ?? e.error?.type}`);
-      if (e.delta?.type === 'text_delta') onText(text += e.delta.text);
-      stop_reason = e.delta?.stop_reason ?? stop_reason;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read().catch(e => { throw new Error(`The answer stopped arriving (${e.message}). Try again.`); });
+      if (done) break;
+      buf += utf8.decode(value, { stream: true });
+      let end;
+      while ((end = buf.indexOf('\n\n')) >= 0) { // one event per blank-line-ended block; its JSON is on the data line
+        const data = buf.slice(0, end).match(/^data: (.*)$/m)?.[1];
+        buf = buf.slice(end + 2);
+        const e = data ? JSON.parse(data) : {};
+        if (e.type === 'error') throw new Error(`Anthropic API error: ${e.error?.message ?? e.error?.type}`);
+        if (e.delta?.type === 'text_delta') onText(text += e.delta.text);
+        stop_reason = e.delta?.stop_reason ?? stop_reason;
+      }
     }
+  } finally {
+    reader.cancel().catch(() => {});
   }
   if (!stop_reason) throw new Error('The answer was cut off. Try again.');
   return { stop_reason, content: [{ type: 'text', text }] };
@@ -728,11 +734,12 @@ function abortable(engines, signal) {
   return { sf: wrap(engines.sf), sf2: wrap(engines.sf2), sf15: wrap(engines.sf15), idle: () => Promise.allSettled(out) };
 }
 
-/** The fact sheets one panel has built, by `fen | move`, as promises, at most SHEETS: a request's (when it has no
-    `best`) and the next moves' built ahead. One engine job at a time.
+/** The fact sheets one panel has built, by `fen | move`, as promises, at most SHEETS: the requests' and the next
+    moves' built ahead. One engine job at a time.
     - get(engines, fen, move, best): factSheet()'s sheet. A kept one serves when `best` is unset or is its alternative
       (a sheet built ahead has best = null: the engine's best other move); one still being built is waited for. Else
-      the builds ahead stop and, once the engines are idle, the sheet is built. A failed or stopped build never serves.
+      the builds ahead stop and, once the engines are idle, the sheet is built and kept in the old one's place. A
+      failed or stopped build never serves.
     - prepare(engines, user, ahead): builds the sheets for `ahead` ([{fen, next}]) one at a time, each once lichess
       confirms `user` is not in a game (fail closed: a refusal or an error ends it). Sheets only, never an LLM call.
     - stop(): stops the builds ahead; resolves once the engines are idle. */
@@ -751,11 +758,9 @@ export function sheetCache() {
   return {
     async get(engines, fen, move, best = null) {
       const key = `${fen} | ${move}`, sheet = await sheets.get(key)?.catch(() => null);
-      // b.best === the played move never matches: the alternative is never the played move
       if (sheet && (!best || sanToUci(fen, [best])[0] === sanToUci(fen, [sheet.alternative.move])[0])) return sheet;
       ctl.abort();
-      const p = after(() => factSheet(engines, fen, move, best));
-      return best ? p : keep(key, p);
+      return keep(key, after(() => factSheet(engines, fen, move, best)));
     },
     async prepare(engines, user, ahead) {
       ctl.abort();
@@ -816,14 +821,20 @@ export async function request({ user, engines, llm, onStep = () => {} }, task) {
 /** The Explain answers already given, in `storage` (chrome.storage.local in the panel) under `answers`: [[key, result]],
     oldest first, at most ANSWERS. The key is the position's request: fen, move, best, depth and the extension's
     `version`, so a new release asks afresh. It holds neither the model (there is one) nor the `recent` reasons sent:
-    those change after every answer, and a position seen again must find its answer. A saved one resolves to
+    those change after every answer, and a position seen again must find its answer. A request finds the answer that
+    compares its two moves, as a sheetCache serves a sheet: with a `best`, the one saved for that best, or the one
+    saved without a best whose engine move it is; without one, the latest saved for any best. A saved one resolves to
     {result, saved: true} once lichess confirms `user` is not in a game (fail closed: no engine, no LLM). Else, or when
-    `fresh`, `run()` (a request()) answers and its result is saved over any old one, unless it has no text or the
-    model declined. */
+    `fresh`, `run()` (a request()) answers and its result is saved over any old one, unless it has no text, the model
+    declined or the moves are about equal (no LLM wrote that verdict: the sheet says it again). */
 export async function remembered(storage, { user, fen, move, best, depth, version }, run, { fresh = false } = {}) {
-  const key = [fen, move, best ?? '', depth ? 'depth' : '', version].join(' | ');
+  const head = `${fen} | ${move} | `, tail = ` | ${depth ? 'depth' : ''} | ${version}`, key = head + (best ?? '') + tail;
+  const uci = m => sanToUci(fen, [m])[0];
   const saved = async () => (await storage.get('answers')).answers ?? [];
-  const hit = !fresh && (await saved()).find(([k]) => k === key);
+  // a result's first row is its sheet's alternative (see explainRows)
+  const hit = !fresh && (best
+    ? (await saved()).find(([k, r]) => k === key || k === head + tail && r.rows?.[0] && uci(r.rows[0].move) === uci(best))
+    : (await saved()).findLast(([k]) => k.startsWith(head) && k.endsWith(tail)));
   if (hit) {
     await checkNotPlaying(user);
     return { result: hit[1], saved: true };
@@ -831,7 +842,7 @@ export async function remembered(storage, { user, fen, move, best, depth, versio
   const got = await run();
   const { text } = got.result;
   // a failed save (get or set) must not lose the answer just paid for
-  if (text && text !== DECLINED) {
+  if (text && text !== DECLINED && !aboutEqual(got.facts)) {
     try {
       await storage.set({ answers: [...(await saved()).filter(([k]) => k !== key), [key, got.result]].slice(-ANSWERS) });
     } catch (e) {

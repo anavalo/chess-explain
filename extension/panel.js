@@ -58,7 +58,12 @@ deep.onchange = () => chrome.storage.local.set({ deep: deep.checked });
 // Another tab stops a build under way. Closing the panel ends them all.
 const sheets = sheetCache();
 chrome.tabs.onActivated.addListener(() => sheets.stop());
-const buttons = [document.getElementById('go'), document.getElementById('plan')];
+// One request at a time: while one runs, every button that starts one is disabled, a saved answer's Ask again too.
+let busy = false;
+const setBusy = on => {
+  busy = on;
+  for (const b of document.querySelectorAll('#go, #plan, .again')) b.disabled = on;
+};
 
 // Builds an element; `html` is only ever our own markup or md() output, which escapes the model's text.
 function el(tag, cls, { text, html } = {}, parent = out) {
@@ -216,7 +221,9 @@ async function prepareNext(board, b) {
   const { user, path, fen } = await now.read();
   // the board must still be on b's line (b, or one of b.ahead): another game or chapter, or an old saved b, builds nothing
   if (![b, ...b.ahead].some(a => a.path === path && a.fen === fen)) return;
-  await sheets.prepare(await ready(), user, b.ahead.filter(a => a.path.startsWith(path)));
+  const e = await ready();
+  if (busy) return; // a request started meanwhile: a build begun now would run beside it (a plan stops only earlier ones)
+  await sheets.prepare(e, user, b.ahead.filter(a => a.path.startsWith(path)));
 }
 
 async function plan(apiKey, board) {
@@ -236,7 +243,8 @@ async function plan(apiKey, board) {
 /** One request at a time: Explain or Find plan, each in its own view (`name`). Clears that view's last answer first,
     and for a new plan the board's shapes. */
 async function run(task, name) {
-  buttons.forEach(b => (b.disabled = true));
+  if (busy) return;
+  setBusy(true);
   out = outs[name];
   out.replaceChildren();
   if (name === 'plan') shapes = null;
@@ -252,7 +260,7 @@ async function run(task, name) {
     out.replaceChildren();
     error(e.message);
   } finally {
-    buttons.forEach(b => (b.disabled = false));
+    setBusy(false);
   }
 }
 

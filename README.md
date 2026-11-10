@@ -146,8 +146,8 @@ to a call. So an explanation costs about 5 to 10 cents with positional depth, an
 
 The system prompt is cached for 5 minutes, so a second explanation within 5 minutes pays about 1.6 cents
 less for its input; the first pays about 0.4 cents more to write the cache. Asking about the same move
-again (same position, move, model and depth, and the same extension version) shows the saved answer, for
-free. A plan is two calls: one to the strongest model for the ideas, one to the writer for the text.
+again (the same position, the same two moves compared, the same depth and extension version) shows the saved
+answer, for free. A plan is two calls: one to the strongest model for the ideas, one to the writer for the text.
 
 ## Development
 

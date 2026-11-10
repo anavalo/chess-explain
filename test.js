@@ -370,14 +370,16 @@ assert.deepEqual([sent.model, sent.system, sent.messages], ['claude-opus-5-5', c
 }
 // streaming: with onText the reply comes as server-sent events, cut here at awkward bytes (mid-line, mid-event, inside
 // a UTF-8 character). onText hears the text so far after each piece; thinking and the fallback block add none; the text
-// returned is the unstreamed one. An error event throws; a refusal stop is the decline, as unstreamed.
+// returned is the unstreamed one. An error event throws and closes the connection; a refusal stop is the decline, as
+// unstreamed. A stream that stops arriving says so; so does a reply that cannot be read.
 {
   const parts = ['**Nf3** keeps ', 'the knight — and ', 'wins the e5 pawn.'];
   const sse = events => {
     const bytes = new TextEncoder().encode(events.map(([type, data]) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`).join(''));
     const cuts = [...Array(Math.ceil(bytes.length / 9)).keys()].map(i => i * 9).concat(bytes.indexOf(0xe2) + 1, bytes.length).sort((a, b) => a - b);
-    return new ReadableStream({ start(c) { cuts.slice(1).forEach((end, i) => c.enqueue(bytes.slice(cuts[i], end))); c.close(); } });
+    return new ReadableStream({ start(c) { cuts.slice(1).forEach((end, i) => c.enqueue(bytes.slice(cuts[i], end))); c.close(); }, cancel() { cancelled++; } });
   };
+  let cancelled = 0;
   const delta = (index, delta) => ['content_block_delta', { index, delta }];
   const transcript = (stop, mid = []) => [
     ['message_start', { message: { id: 'msg', role: 'assistant', content: [] } }],
@@ -408,10 +410,16 @@ assert.deepEqual([sent.model, sent.system, sent.messages], ['claude-opus-5-5', c
   assert.deepEqual([streamedReq.stream, streamedReq.fallbacks, streamedReq.system], [true, 'default', cached(PROPOSER)]);
   events = transcript('end_turn', [['error', { error: { type: 'overloaded_error', message: 'Overloaded' } }]]);
   await assert.rejects(anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5', () => {}), /Anthropic API error: Overloaded/);
+  assert.equal(cancelled, 1);
   events = transcript('refusal');
   assert.equal(await anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5', () => {}), '(the model declined to answer)');
   events = transcript('end_turn').slice(0, -2); // cut off before its stop reason: not an answer
   await assert.rejects(anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5', () => {}), /cut off/);
+  assert.equal(cancelled, 1); // a stream read to its end has nothing left to close
+  globalThis.fetch = async () => new Response(new ReadableStream({ pull(c) { c.error(new Error('timed out')); } }));
+  await assert.rejects(anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5', () => {}), /stopped arriving \(timed out\)/);
+  globalThis.fetch = async () => new Response('<html>');
+  await assert.rejects(anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5'), /Could not read the reply/);
 }
 // the deeper read's prompt is the plain one plus the "verified_concepts" entry
 assert.ok(systemFor(true).includes('"verified_concepts"') && systemFor(true)
@@ -467,7 +475,8 @@ for (const user of [undefined, 'in_a_game'])
 const xSheet = { ...cSheet, played: { ...cSheet.played, move: 'e4', latest_sf_eval: '+0.30' }, alternative: { ...cSheet.alternative, move: 'd4', latest_sf_eval: '+0.30' } };
 // the answer cache, through explainRequest: the same request again shows the saved result after lichess's status check
 // alone (no engine, no LLM); a game in progress still refuses it; another best, depth or version asks afresh; so does
-// Ask again
+// Ask again. The same two moves are the same request: no best finds the answer saved for a best, and a best finds the
+// one saved without, when it is that answer's engine move. An about-equal verdict is never saved
 {
   const status = globalThis.fetch, data = {};
   const storage = { get: async k => structuredClone({ [k]: data[k] }), set: async o => void Object.assign(data, structuredClone(o)) };
@@ -487,8 +496,18 @@ const xSheet = { ...cSheet, played: { ...cSheet.played, move: 'e4', latest_sf_ev
   assert.deepEqual(await explain(base), ['Saved.', true, ['lichess.org'], 0]);
   await assert.rejects(explain({ ...base, user: 'in_a_game' }), Refused);
   assert.deepEqual([asked, started], [['lichess.org'], 0]);
-  for (const other of [{ best: null }, { depth: false }, { version: '0.63' }])
+  for (const other of [{ best: 'e2e4' }, { depth: false }, { version: '0.63' }])
     assert.deepEqual(await explain({ ...base, ...other }), fresh);
+  const served = ['Saved.', true, ['lichess.org'], 0];
+  assert.deepEqual(await explain({ ...base, best: null }), served);
+  const unset = { ...base, fen: start, move: 'e4', best: null }; // xSheet compares e4 with d4
+  assert.deepEqual(await explain(unset), fresh);
+  assert.deepEqual(await explain({ ...unset, best: 'd2d4' }), served);
+  assert.deepEqual(await explain({ ...unset, best: 'c2c4' }), fresh);
+  assert.deepEqual(await explain(unset), served);
+  const equal = { sheet: async () => ({ ...xSheet, latest_sf_gap: 0.1 }) };
+  for (let i = 0; i < 2; i++)
+    assert.deepEqual((await explain({ ...base, fen: 'an equal fen' }, equal)).slice(1), [false, ['lichess.org'], 1]);
   reply = 'Asked again.';
   assert.deepEqual(await explain(base, { fresh: true }), ['Asked again.', false, ['lichess.org', 'api.anthropic.com'], 1]);
   assert.deepEqual((await explain(base))[0], 'Asked again.'); // the fresh answer replaced the saved one
@@ -498,14 +517,14 @@ const xSheet = { ...cSheet, played: { ...cSheet.played, move: 'e4', latest_sf_ev
   assert.deepEqual(await explain(declined), ['(the model declined to answer)', false, ['lichess.org', 'api.anthropic.com'], 1]);
   assert.equal((await explain(declined))[1], false);
   // at most 200 answers, the oldest dropped first
-  for (let i = 0; i < 200; i++) await remembered(storage, { ...base, fen: i }, async () => ({ result: { text: 'x' } }));
+  for (let i = 0; i < 200; i++) await remembered(storage, { ...base, fen: i }, async () => ({ result: { text: 'x' }, facts: xSheet }));
   assert.deepEqual([data.answers.length, data.answers[0][0], data.answers.at(-1)[0]],
     [200, '0 | Nf3 | d2d4 | depth | 0.62', '199 | Nf3 | d2d4 | depth | 0.62']);
   // a storage that fails (get or set) still shows the answer just paid for
   const logged = console.error, gone = async () => { throw new Error('gone'); };
   console.error = () => {};
   for (const broken of [{ get: gone, set: gone }, { ...storage, set: gone }])
-    assert.equal((await remembered(broken, base, async () => ({ result: { text: 'x' } }), { fresh: true })).result.text, 'x');
+    assert.equal((await remembered(broken, base, async () => ({ result: { text: 'x' }, facts: xSheet }), { fresh: true })).result.text, 'x');
   console.error = logged;
 }
 // remembered reasons: an answer's first sentence and its move with its number
@@ -626,16 +645,20 @@ assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '
   await cache.prepare(eng, 'fable6', next);
   let s0 = searches();
   assert.deepEqual((await explainMove(eng, { fen: afterE4, move: 'e5', best: null }, llm, { sheet: cache.get })).facts, ref);
-  // lichess's best move served too when it is the sheet's alternative; not when it is another move or the played one
+  // lichess's best move served too when it is the sheet's alternative. Another move, or the played one, is built and
+  // kept in the old sheet's place: the same request again searches nothing
   const alt = sanToUci(afterE4, [ref.alternative.move])[0];
   assert.equal(await cache.get(eng, afterE4, 'e5', alt), await cache.get(eng, afterE4, 'e5'));
   assert.equal(searches(), s0);
   for (const best of [legal(pos(afterE4)).find(m => m !== alt && m !== 'e7e5'), 'e7e5']) {
     s0 = searches();
-    assert.notEqual(await cache.get(eng, afterE4, 'e5', best), await cache.get(eng, afterE4, 'e5'));
+    const built = await cache.get(eng, afterE4, 'e5', best);
     assert.ok(searches() > s0, best);
+    s0 = searches();
+    assert.equal(await cache.get(eng, afterE4, 'e5', best), built);
+    assert.equal(searches(), s0);
   }
-  // the same request again: its own sheet (kept, as it had no best)
+  // the same request again: its own sheet (kept)
   s0 = searches();
   assert.deepEqual(await cache.get(eng, start, 'e4'), first.facts);
   assert.equal(searches(), s0);
