@@ -33,7 +33,8 @@ import { basename } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
-import { NODES, aboutEqual, answer, linePlies, llmWith, nodeEngines, planAnswer, play, position, san, sanToUci, search } from './extension/explain.js';
+import { NODES, aboutEqual, linePlies, llmWith, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
+import { answer, planAnswer } from './extension/request.js';
 import { JUDGE, MODEL, PAIR, PLANNER, PLAN_SYSTEM, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
 
 // ---- the judge (its prompts are in extension/prompt.js) ----

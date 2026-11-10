@@ -1,6 +1,5 @@
-import {
-  explainRequest, findPlan, llmWith, request, sanToUci, sheetCache, startEngines, uciEngine,
-} from './explain.js';
+import { llmWith, sanToUci, startEngines, uciEngine } from './explain.js';
+import { explainRequest, findPlan, request, sheetCache } from './request.js';
 import { inTab, lichessBoard } from './lichess.js';
 import { linkMoves, md } from './md.js';
 

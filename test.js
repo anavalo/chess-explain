@@ -8,8 +8,11 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { Chess, makeUci, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  Refused, answer, ask as anthropic, checkNotPlaying, explainMove, explainRequest, factSheet, findPlan, firstSentence, keepReason, llmWith, moveLabel, planAnswer, recentReasons, remembered, request, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, sheetCache, trapped,
+  ask as anthropic, factSheet, llmWith, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
 } from './extension/explain.js';
+import {
+  Refused, answer, checkNotPlaying, explainMove, explainRequest, findPlan, firstSentence, keepReason, moveLabel, planAnswer, recentReasons, remembered, request, sheetCache,
+} from './extension/request.js';
 import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { lichessBoard } from './extension/lichess.js';
 import { linkMoves, md } from './extension/md.js';
