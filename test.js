@@ -11,7 +11,7 @@ import {
   ask as anthropic, factSheet, llmWith, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
 } from './extension/explain.js';
 import {
-  Refused, answer, checkNotPlaying, explainMove, explainRequest, findPlan, firstSentence, keepReason, moveLabel, planAnswer, recentReasons, remembered, request, sheetCache,
+  Refused, answer, checkNotPlaying, explainMove, explainRequest, findPlan, firstSentence, keepReason, moveLabel, panelRequests, planAnswer, recentReasons, remembered, request, sheetCache,
 } from './extension/request.js';
 import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { lichessBoard } from './extension/lichess.js';
@@ -728,6 +728,85 @@ assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '
   s0 = searches();
   const better = await top.get(eng, start, 'Nc3', 'b1c3');
   assert.deepEqual([better.alternative.move, better.played.move, better.latest_sf_gap > 0, searches()], ['Nc3', 'a3', true, s0]);
+
+  // the panel's requests (panelRequests), on a board stub, these engines and a storage; the tab in front is found a
+  // moment later, as chrome.tabs answers
+  {
+    const data = {}, storage = { get: async k => structuredClone({ [k]: data[k] }), set: async o => void Object.assign(data, structuredClone(o)) };
+    const at = (fen, path, more) => ({ fen, path, best: undefined, next: undefined, user: 'fable6', game: 'g1', ahead: [], ...more });
+    const log = [];
+    let here, front = 1;
+    const board = { tab: 1, read: async () => (log.push('read'), here), play: async (...line) => void log.push(['play', ...line]) };
+    const requests = panelRequests({ storage, version: '0.71', engines: async () => eng,
+      activeBoard: async () => (await new Promise(setImmediate), { ...board, tab: front }) }); // another tab may show the same game
+    const asked = [], writer = async (system, facts, model) => (asked.push(model), `Answer ${asked.length}.`);
+    const explain = (ask, hear) => requests.explain(board, writer, { move: '', depth: false, model: 'm1', ...ask }, hear);
+    const done = async p => { const got = await p; await got?.ahead; return got; }; // the request, then its build ahead
+    // the board's next game move unless one is typed; neither is an error, and the next request still runs
+    here = at(start, '');
+    await assert.rejects(explain(), /No next game move here/);
+    here = at(start, '', { next: 'e4' });
+    const heard = [], first = await done(explain({}, { onSheet: (rows, lines, b) => heard.push(b) }));
+    assert.deepEqual([first.result.rows.map(r => r.move), first.result.text, first.saved, first.again, first.b, heard],
+      [['a3', 'e4'], 'Answer 1.', false, null, here, [here]]);
+    assert.deepEqual((await done(explain({ move: 'Nc3' }))).result.rows.map(r => r.move), ['Nc3', 'a3']);
+    // the same request again: the saved answer, which says so and offers its request again
+    const saved = await done(explain());
+    assert.deepEqual([saved.result.text, saved.result.note, saved.saved, saved.again],
+      ['Answer 1.', 'Saved answer.', true, { b: here, move: 'e4', depth: false, model: 'm1' }]);
+    // asked again from another position, with other settings and another user logged in: the first request, afresh,
+    // for the user the board shows now
+    here = at(afterE4, 'aa', { next: 'e5', user: 'other_user' });
+    const again = await done(explain({ move: 'Nf6', depth: true, model: 'm2', again: saved.again }));
+    assert.deepEqual([again.result.rows.map(r => r.move), again.result.text, again.saved, again.again, again.b, asked],
+      [['a3', 'e4'], 'Answer 3.', false, null, { ...saved.b, user: 'other_user' }, ['m1', 'm1', 'm1']]);
+    // the next move's sheet is built once the request is over (a step forward then searches nothing), but only while
+    // the board is on its line in the tab in front, and never once another request has started
+    const from = move => at(start, '', { next: 'h4', ahead: [{ fen: afterE5, path: 'aabb', next: move }] });
+    const built = async move => { here = at(afterE5, 'aabb', { next: move }); s0 = searches(); await done(explain()); return searches() === s0; };
+    here = from('d4');
+    await done(explain());
+    assert.equal(await built('d4'), true);
+    [here, front] = [from('a4'), 2];
+    await done(explain());
+    front = 1;
+    assert.equal(await built('a4'), false, 'another tab in front');
+    here = from('b4');
+    let got = await explain();
+    here = at(afterE4, ''); // another game, at its first position: the same path, another board
+    await got.ahead;
+    assert.equal(await built('b4'), false, 'the board left the line');
+    // one request at a time: a plan under way makes the next one resolve to null, before it reads the board
+    here = from('c4');
+    got = await explain();
+    log.length = 0;
+    const failing = requests.plan(board, writer, { model: 'm1' });
+    assert.deepEqual([requests.busy(), await explain()], [true, null]);
+    await assert.rejects(failing, /Could not read the plan ideas in the reply/);
+    assert.deepEqual([requests.busy(), log.filter(l => l === 'read').length], [false, 2]); // the plan's read, the build ahead's
+    await got.ahead;
+    assert.equal(await built('c4'), false, 'a request started meanwhile');
+    // a plan stops a build ahead under way before its own searches start, and the sheet half built is never served
+    here = from('g4');
+    got = await explain();
+    s0 = searches();
+    while (searches() === s0) await new Promise(r => setTimeout(r, 1));
+    const mark = sent.length;
+    await assert.rejects(requests.plan(board, writer, { model: 'm1' }), /Could not read the plan ideas in the reply/);
+    assert.ok(sent.slice(mark).indexOf('stop') >= 0 && sent.slice(mark).indexOf('stop') < sent.slice(mark).indexOf('ucinewgame'), 'stop comes before the plan sheet starts');
+    await got.ahead;
+    assert.equal(await built('g4'), false, 'stopped by a plan');
+    // Find plan for an about-equal verdict's position: the board goes there before it is read
+    const idea = JSON.stringify([{ concept: 'home', claim: 'The e-pawn is still at home.', targets: [],
+      checks: [{ pos: 'start', op: 'piece_on', args: { square: 'e2' }, expect: 'white pawn' }] }]);
+    here = at(start, '');
+    log.length = 0;
+    const steps = [], planned = await requests.plan(board, async system => (system === PLANNER ? idea : 'The plan.'),
+      { model: 'm1', at: { fen: start, path: '' } }, { onStep: s => steps.push(s) });
+    assert.deepEqual(log, [['play', start, '', []], 'read']);
+    assert.deepEqual([planned.result.head.label, planned.result.text, planned.b, steps], ['Plan for White', 'The plan.', here,
+      ['Checking you are not in a game', 'Starting Stockfish', "Finding the engine's plan", 'Looking for plan ideas', 'Asking Claude']]);
+  }
 }
 delete globalThis.fetch; // nothing past here may call out
 

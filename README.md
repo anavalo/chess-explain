@@ -160,10 +160,11 @@ The extension is about 1,000 lines of plain JavaScript, with no framework and no
 | Path                       | What it is                                                                 |
 | -------------------------- | -------------------------------------------------------------------------- |
 | `extension/explain.js`     | The core: engine I/O, the fact builder and the Claude call. Runs in the side panel and in Node. |
+| `extension/request.js`     | From a sheet to the answer or the plan, and the panel's requests: fair play, saved answers, the sheets built ahead. |
 | `extension/features.js`    | The pawn and piece features, the one table that words them as labels, and the imbalances built from them. |
 | `extension/prompt.js`      | The explainer prompt (sheet legend and rules), the concept proposer's prompt and the rule checks the eval runs on each answer. |
 | `extension/concepts.js`    | The deeper read: the board checks behind each positional idea the proposer suggests, and their wording on the fact sheet. |
-| `extension/panel.js`       | The side panel UI: runs a request and renders the answer.                  |
+| `extension/panel.js`       | The side panel UI: the settings, the spinners and the rendering of a request's result. |
 | `extension/lichess.js`     | The lichess board: reads the position, plays a line, draws a plan's shapes. |
 | `extension/md.js`          | The small Markdown renderer and the move links in the answer.              |
 | `extension/background.js`  | Shows the side panel on lichess tabs only; clears a plan's shapes when it closes. |

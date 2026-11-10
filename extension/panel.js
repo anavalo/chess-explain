@@ -1,5 +1,5 @@
 import { llmWith, sanToUci, startEngines, uciEngine } from './explain.js';
-import { explainRequest, findPlan, request, sheetCache } from './request.js';
+import { panelRequests } from './request.js';
 import { inTab, lichessBoard } from './lichess.js';
 import { linkMoves, md } from './md.js';
 
@@ -62,10 +62,6 @@ settings.onchange = e => e.target.name === 'model' && chrome.storage.local.set({
 const deep = document.getElementById('deep');
 chrome.storage.local.get('deep').then(({ deep: on }) => (deep.checked = on !== false));
 deep.onchange = () => chrome.storage.local.set({ deep: deep.checked });
-// the fact sheets this panel has built, and those of the next moves, built while the user reads (see prepareNext).
-// Another tab stops a build under way. Closing the panel ends them all.
-const sheets = sheetCache();
-chrome.tabs.onActivated.addListener(() => sheets.stop());
 // One request at a time: while one runs, every button that starts one is disabled, a saved answer's Ask again too.
 let busy = false;
 const setBusy = on => {
@@ -171,33 +167,20 @@ function staged() {
   return { step: stage => (log(stage), s.set(stage)), done: () => (log('done'), s.done()) };
 }
 
-/** One request for the position `b` the board gave, under a staged() spinner: `task(engines, llm, step)` runs once
-    fair play has passed and the engines have started, and `step` names its stages on the spinner. */
-async function requested(b, apiKey, task) {
-  const s = staged();
-  try {
-    return await request({ user: b.user, engines: ready, llm: llmWith(apiKey), onStep: s.step }, (e, llm) => task(e, llm, s.step));
-  } finally {
-    s.done();
-  }
-}
+// This panel's requests (see panelRequests): Explain and Find plan, the fact sheets they build and those of the next
+// moves, built while the user reads. Another tab stops a build under way. Closing the panel ends them all.
+const requests = panelRequests({ storage: chrome.storage.local, version: chrome.runtime.getManifest().version, engines: ready, activeBoard });
+chrome.tabs.onActivated.addListener(() => requests.stopAhead());
 
-/** Explain for the board's position, or `again` ({b, move, depth, model}): a saved answer's request, asked afresh. The board
-    is read either way, so its page rule and the logged-in user are the current ones. explainRequest() sends the
-    reasons given earlier in the game, serves a saved answer and keeps a fresh answer's reason. */
-async function explain(apiKey, board, again) {
-  const now = await board.read();
-  const b = again ? { ...again.b, user: now.user } : now;
-  const move = again?.move ?? (document.getElementById('move').value.trim() || b.next);
-  if (!move) return error('No next game move here. Type a move to compare with.');
-  const depth = again?.depth ?? deep.checked, m = again?.model ?? model();
+/** Explain for the board's position, or `again`: a saved answer's request (see panelRequests), asked afresh. */
+async function explain(llm, board, again) {
   // a saved answer waits on the fair-play check alone; a new run gets a staged() spinner instead
   const check = spinner('Checking you are not in a game');
   let s = null;
   const step = stage => s.step(stage);
   // a new one shows its moves once the sheet is built, then the answer as it is written (redrawn once a frame at most)
   let card, lines, text = null, frame = 0;
-  const onSheet = (rows, l) => { movesCard({ rows }); lines = l; card = answerCard('', lines, b); };
+  const onSheet = (rows, l, b) => { movesCard({ rows }); lines = l; card = answerCard('', lines, b); };
   const onText = t => {
     if (text === null) step('Writing');
     text = t;
@@ -205,52 +188,39 @@ async function explain(apiKey, board, again) {
   };
   let got;
   try {
-    got = await explainRequest(chrome.storage.local, b, move, {
-      depth, model: m, version: chrome.runtime.getManifest().version, fresh: !!again, engines: ready, llm: llmWith(apiKey),
-      sheet: sheets.get, onRun: () => (check.done(), (s = staged())), onStep: step, onSheet, onText });
+    got = await requests.explain(board, llm, { move: document.getElementById('move').value.trim(), depth: deep.checked, model: model(), again },
+      { onRun: () => (check.done(), (s = staged())), onStep: step, onSheet, onText });
   } finally {
     check.done();
     s?.done();
   }
-  const { result, saved } = got;
+  if (!got) return;
+  const { result, b } = got;
   out.replaceChildren();
-  render(saved ? { ...result, note: [result.note, 'Saved answer.'].filter(Boolean).join(' ') } : result, b);
-  if (saved) el('button', 'again', { text: 'Ask again' }).onclick = () => run((k, bd) => explain(k, bd, { b, move, depth, model: m }), 'explain');
+  render(result, b);
+  if (got.again) el('button', 'again', { text: 'Ask again' }).onclick = () => run((l, bd) => explain(l, bd, got.again), 'explain');
   // about equal: no reason to give, but a plan for the position may say what to aim at. Asked only on this click.
   if (result.equal) {
     el('button', 'again', { text: 'Find a plan for this position' }).onclick = () => {
       document.querySelector('input[name="view"][value="plan"]').click();
-      run(async (k, bd) => { await bd.play(b.fen, b.path, []); await plan(k, bd); }, 'plan');
+      run((l, bd) => plan(l, bd, b), 'plan');
     };
   }
-  prepareNext(board, b).catch(() => {}); // fail closed: an error builds nothing
 }
 
-/** After an Explain of `b` on `board`, while its tab is still the active one: the sheets of the next game moves on b's
-    line (b.ahead), built in the background, so a step forward answers without waiting for the engines. The board is
-    read again first (its page rule), and each build waits for the fair-play check (see sheetCache). */
-async function prepareNext(board, b) {
-  if (!engines) return;
-  const now = await activeBoard();
-  if (now?.tab !== board.tab) return;
-  const { user, path, fen } = await now.read();
-  // the board must still be on b's line (b, or one of b.ahead): another game or chapter, or an old saved b, builds nothing
-  if (![b, ...b.ahead].some(a => a.path === path && a.fen === fen)) return;
-  const e = await ready();
-  if (busy) return; // a request started meanwhile: a build begun now would run beside it (a plan stops only earlier ones)
-  await sheets.prepare(e, user, b.ahead.filter(a => a.path.startsWith(path)));
-}
-
-async function plan(apiKey, board) {
-  const b = await board.read();
-  await sheets.stop(); // the plan's searches never run beside a build ahead
-  const { result } = await requested(b, apiKey, (e, llm, step) => {
-    step("Finding the engine's plan");
-    return findPlan(e, b.fen, llm, { model: model(), onStep: step });
-  });
+/** Find plan for the board's position, or for `at`, an about-equal verdict's position: the board goes there first. */
+async function plan(llm, board, at) {
+  const s = staged();
+  let got;
+  try {
+    got = await requests.plan(board, llm, { model: model(), at }, { onStep: s.step });
+  } finally {
+    s.done();
+  }
+  if (!got) return;
   out.replaceChildren();
-  render(result, b);
-  shapes = [b.fen, result.shapes];
+  render(got.result, got.b);
+  shapes = [got.b.fen, got.result.shapes];
   planBoard = board;
   await syncShapes();
 }
@@ -269,7 +239,7 @@ async function run(task, name) {
     const board = await activeBoard();
     if (!board) return error('Open a lichess analysis board.');
     await syncShapes();
-    await task(apiKey, board);
+    await task(llmWith(apiKey), board);
   } catch (e) {
     console.error(e);
     out.replaceChildren();

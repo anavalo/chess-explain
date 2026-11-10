@@ -255,3 +255,71 @@ export async function findPlan(engines, fen, llm, { nodes = NODES, ...opts } = {
     shapes: planShapes(a.facts, a.ideas, a.text),
   } };
 }
+
+/** One side panel's requests: Explain and Find plan, one at a time, each on the lichess `board` it is handed ({read,
+    play, tab}: a lichessBoard with its tab's id). It holds what no single request can: whether one runs, the sheets
+    built ahead, and the order that keeps two engine jobs apart. `storage` keeps the saved answers and the reasons
+    (chrome.storage.local), `version` is the extension's, `engines()` resolves to the started engines or throws, and
+    `activeBoard()` to the board of the tab in front, or null.
+    - busy(): whether a request runs. One asked for meanwhile resolves to null and does nothing.
+    - explain(board, llm, {move, depth, model, again}, hear): an explainRequest() for the board's position and `move`,
+      or its next game move when `move` is empty (neither: throws). `again` is an earlier call's `again`: that request
+      asked afresh, on the position it was first asked for, by the user the board shows now. `hear`: explainRequest()'s
+      onRun, onStep, onText and onSheet, which also gets the position. Resolves to {result, saved, b, again, ahead}:
+      a saved result's note says so, and `again` (null unless saved) asks it afresh; b is the position explained;
+      `ahead` resolves once the build ahead is over.
+      Then, with the request over, the sheets of the next game moves on b's line (b.ahead) are built, so a step forward
+      answers without waiting for the engines: only while the board is still on b's line in the tab in front (it is
+      read again: its page rule), and never once another request has started. Fail closed: an error builds nothing.
+    - plan(board, llm, {model, at}, {onStep}): a Find plan request for the board's position; with `at` ({fen, path},
+      an about-equal verdict's position) the board goes there first. The builds ahead are stopped before its searches
+      start, and none starts while it runs. Resolves to {result, b}.
+    - stopAhead(): stops the builds ahead (another tab came to the front). */
+export function panelRequests({ storage, version, engines, activeBoard }) {
+  const sheets = sheetCache();
+  let busy = false;
+  const one = async job => {
+    if (busy) return null;
+    busy = true;
+    try { return await job(); } finally { busy = false; }
+  };
+  const buildAhead = async (board, b) => {
+    const now = await activeBoard();
+    if (now?.tab !== board.tab) return;
+    const { user, path, fen } = await now.read();
+    // the board must still be on b's line (b, or one of b.ahead): another game or chapter, or an old saved b, builds nothing
+    if (![b, ...b.ahead].some(a => a.path === path && a.fen === fen)) return;
+    const e = await engines();
+    if (busy) return; // a request started meanwhile: a build begun now would run beside it (a plan stops only earlier ones)
+    await sheets.prepare(e, user, b.ahead.filter(a => a.path.startsWith(path)));
+  };
+  return {
+    busy: () => busy,
+    stopAhead: () => sheets.stop(),
+    async explain(board, llm, { move, depth, model, again = null }, { onSheet, ...hear } = {}) {
+      const got = await one(async () => {
+        // the board is read either way, so its page rule and the logged-in user are the current ones
+        const now = await board.read();
+        const asked = again ? { ...again, b: { ...again.b, user: now.user } } : { b: now, move: move || now.next, depth, model };
+        if (!asked.move) throw new Error('No next game move here. Type a move to compare with.');
+        const { result, saved } = await explainRequest(storage, asked.b, asked.move, {
+          depth: asked.depth, model: asked.model, version, fresh: !!again, engines, llm, sheet: sheets.get,
+          ...hear, onSheet: onSheet && ((rows, lines) => onSheet(rows, lines, asked.b)) });
+        return { result: saved ? { ...result, note: [result.note, 'Saved answer.'].filter(Boolean).join(' ') } : result,
+          saved, b: asked.b, again: saved ? asked : null };
+      });
+      // only now, with the request over: a build ahead never starts while one runs
+      return got && { ...got, ahead: buildAhead(board, got.b).catch(() => {}) };
+    },
+    plan: (board, llm, { model, at = null }, { onStep = () => {} } = {}) => one(async () => {
+      if (at) await board.play(at.fen, at.path, []);
+      const b = await board.read();
+      await sheets.stop(); // the plan's searches never run beside a build ahead
+      const { result } = await request({ user: b.user, engines, llm, onStep }, (e, llm) => {
+        onStep("Finding the engine's plan");
+        return findPlan(e, b.fen, llm, { model, onStep });
+      });
+      return { result, b };
+    }),
+  };
+}
