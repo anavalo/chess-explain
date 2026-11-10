@@ -41,7 +41,7 @@ An optional step before the explainer writes: the concept proposer suggests posi
 _Avoid_: deep mode, concept mode, second pass
 
 **Concept proposer**:
-The strongest-model call in a deeper read that names positional ideas for a fact sheet, each as a claim sentence plus board checks.
+The call in a deeper read, to the picked model, that names positional ideas for a fact sheet, each as a claim sentence plus board checks.
 _Avoid_: coach, concept LLM
 
 **Board check**:
@@ -59,7 +59,7 @@ The engine facts about one position and the engine's best line from it, which th
 _Avoid_: plan facts, fact sheet (that one compares two moves)
 
 **Planner**:
-The strongest-model call that proposes plan ideas for a plan sheet, each as a claim sentence plus board checks.
+The call, to the picked model, that proposes plan ideas for a plan sheet, each as a claim sentence plus board checks.
 _Avoid_: coach, plan LLM
 
 **Plan idea**:

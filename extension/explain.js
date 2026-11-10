@@ -633,7 +633,7 @@ export async function ask(system, facts, apiKey, model, onText) {
       output_config: { effort: 'high' },
       fallbacks: 'default',
       ...onText && { stream: true },
-      // cached for 5 minutes: a write costs 1.25x input, a read 0.20 $/MTok (Opus 5.5, Sonnet 5.5), so one call in 5
+      // cached for 5 minutes: a write costs 1.25x input, a read 0.20 $/MTok (Opus 5.5, Fable 5.2), so one call in 5
       // minutes pays the write premium and two or more save. A prompt under 512 tokens is simply not cached.
       system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
       messages: [{ role: 'user', content: JSON.stringify(facts, null, 1) }],
@@ -799,7 +799,7 @@ export async function answer(facts, llm, { model = MODEL, depth = false, recent 
   let concepts = null, read;
   if (depth) {
     onStep('Looking for positional ideas');
-    ({ facts, concepts, read } = await withConcepts(facts, llm));
+    ({ facts, concepts, read } = await withConcepts(facts, llm, model));
   }
   if (recent?.length) facts = { ...facts, recent_reasons: recent };
   onStep('Asking Claude');
@@ -819,16 +819,16 @@ export async function request({ user, engines, llm, onStep = () => {} }, task) {
 }
 
 /** The Explain answers already given, in `storage` (chrome.storage.local in the panel) under `answers`: [[key, result]],
-    oldest first, at most ANSWERS. The key is the position's request: fen, move, best, depth and the extension's
-    `version`, so a new release asks afresh. It holds neither the model (there is one) nor the `recent` reasons sent:
-    those change after every answer, and a position seen again must find its answer. A request finds the answer that
+    oldest first, at most ANSWERS. The key is the position's request: fen, move, best, depth, model and the extension's
+    `version`, so each model keeps its own answer and a new release asks afresh. It does not hold the `recent` reasons
+    sent: those change after every answer, and a position seen again must find its answer. A request finds the answer that
     compares its two moves, as a sheetCache serves a sheet: with a `best`, the one saved for that best, or the one
     saved without a best whose engine move it is; without one, the latest saved for any best. A saved one resolves to
     {result, saved: true} once lichess confirms `user` is not in a game (fail closed: no engine, no LLM). Else, or when
     `fresh`, `run()` (a request()) answers and its result is saved over any old one, unless it has no text, the model
     declined or the moves are about equal (no LLM wrote that verdict: the sheet says it again). */
-export async function remembered(storage, { user, fen, move, best, depth, version }, run, { fresh = false } = {}) {
-  const head = `${fen} | ${move} | `, tail = ` | ${depth ? 'depth' : ''} | ${version}`, key = head + (best ?? '') + tail;
+export async function remembered(storage, { user, fen, move, best, depth, model = MODEL, version }, run, { fresh = false } = {}) {
+  const head = `${fen} | ${move} | `, tail = ` | ${depth ? 'depth' : ''} | ${model} | ${version}`, key = head + (best ?? '') + tail;
   const uci = m => sanToUci(fen, [m])[0];
   const saved = async () => (await storage.get('answers')).answers ?? [];
   // a result's first row is its sheet's alternative (see explainRows)
@@ -886,15 +886,15 @@ export async function keepReason(storage, game, path, { text, facts, concepts })
 /** One Explain request for the board read `b` ({user, fen, path, game, best}) and `move`: the reasons given for
     earlier moves of b's line in b.game go with it (recentReasons); a saved answer is served when there is one, unless
     `fresh` (remembered); else request() runs explainMove() and the fresh answer's reason is kept (keepReason; a failed
-    save is logged and never loses the answer). `engines`, `llm` and `onStep` go to request(); `depth`, `sheet`,
+    save is logged and never loses the answer). `engines`, `llm` and `onStep` go to request(); `depth`, `model`, `sheet`,
     `onSheet` and `onText` to explainMove(). `onRun()` hears that a new run starts, before its fair-play check.
     Returns {result, saved}. */
-export async function explainRequest(storage, b, move, { depth, version, fresh = false, engines, llm, sheet, onRun = () => {}, onStep = () => {}, onSheet, onText } = {}) {
+export async function explainRequest(storage, b, move, { depth, model = MODEL, version, fresh = false, engines, llm, sheet, onRun = () => {}, onStep = () => {}, onSheet, onText } = {}) {
   const recent = await recentReasons(storage, b.game, b.path);
-  const req = { user: b.user, fen: b.fen, move, best: b.best, depth, version };
+  const req = { user: b.user, fen: b.fen, move, best: b.best, depth, model, version };
   const got = await remembered(storage, req, () => (onRun(), request({ user: b.user, engines, llm, onStep }, (e, llm) => {
     onStep(`Analysing ${move}`);
-    return explainMove(e, { fen: b.fen, move, best: b.best }, llm, { depth, recent, onStep, onSheet, onText, sheet });
+    return explainMove(e, { fen: b.fen, move, best: b.best }, llm, { depth, model, recent, onStep, onSheet, onText, sheet });
   })), { fresh });
   if (!got.saved) await keepReason(storage, b.game, b.path, got).catch(console.error);
   return { result: got.result, saved: !!got.saved };
@@ -985,15 +985,15 @@ export async function planFacts({ sf, sf2, sf15 }, fen, nodes = NODES) {
   };
 }
 
-/** The plan for a plan sheet, as answer() is for a fact sheet: the strongest model's plan ideas checked on the board
-    (withPlan), then `model` writes the plan from the ideas that held. No idea held, or no idea list in the planner's
+/** The plan for a plan sheet, as answer() is for a fact sheet: `model`'s plan ideas checked on the board
+    (withPlan), then it writes the plan from the ideas that held. No idea held, or no idea list in the planner's
     reply: throws, saying which, and the writer is never called. Returns {text, facts, ideas}. The eval starts here
     from a saved sheet. */
 export async function planAnswer(sheet, llm, { model = MODEL, onStep = () => {} } = {}) {
   onStep('Looking for plan ideas');
   // the planner plans the best line only; the writer gets the about-as-good move for one sentence
   const { also_good = null, ...rest } = sheet;
-  const { facts: planned, ideas, read } = await withPlan(rest, llm);
+  const { facts: planned, ideas, read } = await withPlan(rest, llm, model);
   if (!ideas) throw new Error(read ? 'No clear plan found here.' : 'Could not read the plan ideas in the reply.');
   const facts = { ...planned, also_good };
   onStep('Asking Claude');

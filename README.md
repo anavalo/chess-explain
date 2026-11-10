@@ -56,7 +56,7 @@ browser for Anthropic (the explanation) and lichess (the fair-play check).
    evaluates with a neural network, which is brilliant and completely unable to explain itself, so the
    old hand-written terms are brought back to do the explaining. They are rescaled to match Stockfish
    15.1's values.
-4. **Claude** (Opus 5.5) turns that fact sheet into a short explanation. The prompt forbids it from
+4. **Claude** (Opus 5.5, or Fable 5.2 if you pick it in the settings) turns that fact sheet into a short explanation. The prompt forbids it from
    inventing moves or squares that are not in the facts. Chess commentary is a field with a long
    tradition of confident nonsense; we try not to add to it.
 
@@ -66,7 +66,7 @@ profile only) and does not repeat them unless they decide the move.
 When both moves are within 0.3 pawns, it says so and skips the rest of the analysis and the LLM call. Sometimes the honest answer is
 "either move is fine".
 
-With the **Positional depth** switch on (under the Explain button, on by default), the extension first asks the strongest Claude model for the positional ideas behind the better
+With the **Positional depth** switch on (under the Explain button, on by default), the extension first asks the model for the positional ideas behind the better
 move (a weak square, a bad bishop, an open file), each backed by board checks: which piece stands where,
 what it attacks, whether a pawn can ever cover a square. The extension runs every check on the board and
 throws away any idea with a check that does not hold, then writes the answer with the ideas that passed.
@@ -82,7 +82,7 @@ Sometimes there is no blunder to explain, only a position and the question of wh
 
 1. **Stockfish 19** finds the best move and its line, with the same labels as above, and what the
    opponent threatens.
-2. The strongest Claude model proposes one to three plan ideas (a weak pawn to attack, a square for a
+2. The model proposes one to three plan ideas (a weak pawn to attack, a square for a
    knight, a file to take), each backed by board checks. The extension runs every check on the board
    and throws away any idea with a check that does not hold.
 3. The same model writes the plan from the ideas that passed: a goal, two or three steps with the
@@ -135,7 +135,7 @@ sent only to lichess, for the fair-play check. See [PRIVACY.md][privacy-link].
 
 You pay Anthropic for what you use. An explanation is written by Claude Opus 5.5, with effort set to high
 so it thinks the facts through before it writes. With positional depth on, as it is by default, the
-strongest model is first asked for the positional ideas, so an explanation is two calls. The engines do the
+model is first asked for the positional ideas, so an explanation is two calls. The engines do the
 heavy lifting for free on your own machine; the model only has to put a one-page fact sheet into words.
 
 At Anthropic's prices as of October 2026 ($4 per million input tokens, $20 per million output tokens), the
@@ -144,10 +144,14 @@ call that writes the answer sends about 6,100 tokens, 4,300 of them the system p
 cents. The model's thinking comes on top and was not measured; each 1,000 thinking tokens adds about 2 cents
 to a call. So an explanation costs about 5 to 10 cents with positional depth, and about 3 to 6 without it.
 
+The settings also offer Claude Fable 5.2, which then makes every call. It costs twice as much per token ($8
+per million input tokens, $40 per million output tokens) and takes longer. Its cost per explanation was
+not measured; expect about twice the figures above.
+
 The system prompt is cached for 5 minutes, so a second explanation within 5 minutes pays about 1.6 cents
 less for its input; the first pays about 0.4 cents more to write the cache. Asking about the same move
-again (the same position, the same two moves compared, the same depth and extension version) shows the saved
-answer, for free. A plan is two calls: one to the strongest model for the ideas, one to the writer for the text.
+again (the same position, the same two moves compared, the same depth, model and extension version) shows the
+saved answer, for free. A plan is two calls to the model: one for the ideas, one for the text.
 
 ## Development
 

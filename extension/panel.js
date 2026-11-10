@@ -49,8 +49,17 @@ document.getElementById('key-form').onsubmit = async e => {
 };
 showKeyStatus();
 
-// positional depth: before the answer, the strongest model proposes positional ideas, the board checks them, and the
-// answer is written with the ideas that held. One more call; on unless turned off, and the setting is remembered.
+// the model is a setting too: every call of a request uses the picked one. A saved model the picker does not offer
+// becomes the default.
+const model = () => document.querySelector('input[name="model"]:checked').value;
+chrome.storage.local.get('model').then(({ model: m }) => {
+  const radio = m && document.querySelector(`input[name="model"][value="${CSS.escape(m)}"]`);
+  if (radio) radio.checked = true;
+  else if (m) chrome.storage.local.set({ model: model() });
+});
+settings.onchange = e => e.target.name === 'model' && chrome.storage.local.set({ model: e.target.value });
+// positional depth: before the answer, the picked model proposes positional ideas, the board checks them, and the
+// answer is written with the ideas that held. One more call; on unless turned off, remembered like the model.
 const deep = document.getElementById('deep');
 chrome.storage.local.get('deep').then(({ deep: on }) => (deep.checked = on !== false));
 deep.onchange = () => chrome.storage.local.set({ deep: deep.checked });
@@ -174,7 +183,7 @@ async function requested(b, apiKey, task) {
   }
 }
 
-/** Explain for the board's position, or `again` ({b, move, depth}): a saved answer's request, asked afresh. The board
+/** Explain for the board's position, or `again` ({b, move, depth, model}): a saved answer's request, asked afresh. The board
     is read either way, so its page rule and the logged-in user are the current ones. explainRequest() sends the
     reasons given earlier in the game, serves a saved answer and keeps a fresh answer's reason. */
 async function explain(apiKey, board, again) {
@@ -182,7 +191,7 @@ async function explain(apiKey, board, again) {
   const b = again ? { ...again.b, user: now.user } : now;
   const move = again?.move ?? (document.getElementById('move').value.trim() || b.next);
   if (!move) return error('No next game move here. Type a move to compare with.');
-  const depth = again?.depth ?? deep.checked;
+  const depth = again?.depth ?? deep.checked, m = again?.model ?? model();
   // a saved answer waits on the fair-play check alone; a new run gets a staged() spinner instead
   const check = spinner('Checking you are not in a game');
   let s = null;
@@ -198,7 +207,7 @@ async function explain(apiKey, board, again) {
   let got;
   try {
     got = await explainRequest(chrome.storage.local, b, move, {
-      depth, version: chrome.runtime.getManifest().version, fresh: !!again, engines: ready, llm: llmWith(apiKey),
+      depth, model: m, version: chrome.runtime.getManifest().version, fresh: !!again, engines: ready, llm: llmWith(apiKey),
       sheet: sheets.get, onRun: () => (check.done(), (s = staged())), onStep: step, onSheet, onText });
   } finally {
     check.done();
@@ -207,7 +216,7 @@ async function explain(apiKey, board, again) {
   const { result, saved } = got;
   out.replaceChildren();
   render(saved ? { ...result, note: [result.note, 'Saved answer.'].filter(Boolean).join(' ') } : result, b);
-  if (saved) el('button', 'again', { text: 'Ask again' }).onclick = () => run((k, bd) => explain(k, bd, { b, move, depth }), 'explain');
+  if (saved) el('button', 'again', { text: 'Ask again' }).onclick = () => run((k, bd) => explain(k, bd, { b, move, depth, model: m }), 'explain');
   // about equal: no reason to give, but a plan for the position may say what to aim at. Asked only on this click.
   if (result.equal) {
     el('button', 'again', { text: 'Find a plan for this position' }).onclick = () => {
@@ -238,7 +247,7 @@ async function plan(apiKey, board) {
   await sheets.stop(); // the plan's searches never run beside a build ahead
   const { result } = await requested(b, apiKey, (e, llm, step) => {
     step("Finding the engine's plan");
-    return findPlan(e, b.fen, llm, { onStep: step });
+    return findPlan(e, b.fen, llm, { model: model(), onStep: step });
   });
   out.replaceChildren();
   render(result, b);

@@ -59,6 +59,7 @@
   .seg input { position: absolute; opacity: 0; pointer-events: none; }
   .seg span { display: grid; gap: 1px; padding: 7px 10px; border-radius: 7px; text-align: center; color: var(--muted); }
   .seg b { font-size: 14px; font-weight: 600; }
+  .seg small { font-size: 12px; }
   .seg input:checked + span { background: var(--card); color: var(--text); box-shadow: 0 0 0 1px var(--border), 0 1px 3px rgb(0 0 0 / .1); }
   .seg input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: -2px; }
   #form { margin-bottom: 10px; }
@@ -93,7 +94,14 @@
       <input id="key" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
       <button>Save</button>
     </form>
-    <p class="note">Kept in this browser only and sent only to Anthropic. About 3–6¢ an answer. Save an empty key to remove it.</p>
+    <p class="note">Kept in this browser only and sent only to Anthropic. About 3–6¢ an answer with Opus 5.5. Save an empty key to remove it.</p>
+  </div>
+  <div class="field">
+    <span class="label" id="model-label">Model</span>
+    <div class="seg" role="radiogroup" aria-labelledby="model-label">
+      <label><input type="radio" name="model" value="claude-opus-5-5" autocomplete="off" checked><span><b>Opus 5.5</b><small>Default</small></span></label>
+      <label><input type="radio" name="model" value="claude-fable-5-2" autocomplete="off"><span><b>Fable 5.2</b><small>About twice the cost, slower</small></span></label>
+    </div>
   </div>
 </section>
 <div id="view" class="seg" role="radiogroup" aria-label="View">
@@ -106,7 +114,7 @@
     <input id="move" placeholder="Compare with (default: next game move)" autocomplete="off">
     <button id="go">Explain</button>
   </form>
-  <label class="toggle"><span><b>Positional depth</b><small>Board-checked positional ideas · one more call, about 2–4¢</small></span><input id="deep" type="checkbox" role="switch" checked></label>
+  <label class="toggle"><span><b>Positional depth</b><small>Board-checked positional ideas · one more call</small></span><input id="deep" type="checkbox" role="switch" checked></label>
   <div id="out-explain" aria-live="polite"></div>
 </section>
 <section data-view="plan" hidden>

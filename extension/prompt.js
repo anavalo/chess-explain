@@ -1,7 +1,7 @@
 // The explainer prompt (sheet legend + rules) and the rule checks that test an answer against the rules.
 // explain.js sends the prompt; eval.js runs the checks and sends the judge prompts, which carry the legend only.
 
-/** The one model every call uses, the strongest. Here, in a leaf module, so the explain.js/concepts.js import cycle
+/** The default model: every call uses it unless the panel's picker (or --model) names another. Here, in a leaf module, so the explain.js/concepts.js import cycle
     cannot reach it before it is set. */
 export const MODEL = 'claude-opus-5-5';
 
@@ -255,7 +255,7 @@ const CHECK_LINES = `Checks (op, args -> value):
 - legal_moves {square} -> legal moves of that piece (only meaningful when its side is to move in that position)
 Sides are "white" or "black" (not "you"). "expect" is the exact value, or {"min": n} / {"max": n} for numbers.`;
 
-/** The concept proposer (Opus) behind the deeper read: it gets the fact sheet and replies with claims for verify(). */
+/** The concept proposer (the picked model) behind the deeper read: it gets the fact sheet and replies with claims for verify(). */
 export const PROPOSER = `You are a strong chess coach. You get a fact sheet (JSON) about one position: the side to move ("you") played the move in
 "played" and the engine prefers the move in "alternative". The sheet holds the engine lines with labels, but its labels
 cover only some positional ideas. Your job: name the positional concept (or two or three) that best explains why the better
@@ -285,7 +285,7 @@ function part(text, from, to) {
   return text.slice(a, b);
 }
 
-/** The planner (the strongest model) behind Find plan: it gets the plan sheet and replies with plan ideas for verify(),
+/** The planner (the picked model) behind Find plan: it gets the plan sheet and replies with plan ideas for verify(),
     each with the board squares the plan aims at. */
 export const PLANNER = `You are a strong chess coach. You get a fact sheet (JSON) about one position: the side to move ("you") is to play,
 and "best" holds the engine's best move and its main line ("line_with_evals", with labels). Your job: name the plan (one to

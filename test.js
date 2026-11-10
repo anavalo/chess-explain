@@ -248,8 +248,8 @@ assert.deepEqual([unread.ideas, unread.read, noneHeld.ideas, noneHeld.read], [nu
 assert.equal(pr.read, true);
 // a saved plan sheet to its plan, as the eval's --facts does: the planner, then the writer, both with their own prompt
 const pCalls = [];
-const pa = await planAnswer(pSheet, (system, f, model) => (pCalls.push([system, model]), system === PLANNER ? planner : 'Play 1.e4.'), { model: 'claude-opus-5-5' });
-assert.deepEqual(pCalls, [[PLANNER, 'claude-opus-5-5'], [PLAN_SYSTEM, 'claude-opus-5-5']]);
+const pa = await planAnswer(pSheet, (system, f, model) => (pCalls.push([system, model]), system === PLANNER ? planner : 'Play 1.e4.'), { model: 'claude-fable-5-2' });
+assert.deepEqual(pCalls, [[PLANNER, 'claude-fable-5-2'], [PLAN_SYSTEM, 'claude-fable-5-2']]); // the picked model plans and writes
 assert.deepEqual([pa.text, pa.ideas, pa.facts.verified_plan_ideas], ['Play 1.e4.', pr.ideas, pr.ideas]);
 await assert.rejects(planAnswer(pSheet, async () => 'No plan.'), /Could not read the plan ideas in the reply/);
 await assert.rejects(planAnswer(pSheet, async () => '[]'), /No clear plan found here/);
@@ -493,7 +493,7 @@ const xSheet = { ...cSheet, played: { ...cSheet.played, move: 'e4', latest_sf_ev
   const explain = async (req, opts) => {
     asked = [], started = 0;
     const got = await explainRequest(storage, { user: req.user, fen: req.fen, path: '', game: null, best: req.best }, req.move,
-      { depth: req.depth, version: req.version, engines: async () => (started++, 'the engines'), llm: llmWith('key'), sheet: async () => xSheet, ...opts });
+      { depth: req.depth, model: req.model, version: req.version, engines: async () => (started++, 'the engines'), llm: llmWith('key'), sheet: async () => xSheet, ...opts });
     return [got.result.text, got.saved, [...new Set(asked)], started]; // a deeper read asks the API twice
   };
   const fresh = ['Saved.', false, ['lichess.org', 'api.anthropic.com'], 1];
@@ -501,7 +501,7 @@ const xSheet = { ...cSheet, played: { ...cSheet.played, move: 'e4', latest_sf_ev
   assert.deepEqual(await explain(base), ['Saved.', true, ['lichess.org'], 0]);
   await assert.rejects(explain({ ...base, user: 'in_a_game' }), Refused);
   assert.deepEqual([asked, started], [['lichess.org'], 0]);
-  for (const other of [{ best: 'e2e4' }, { depth: false }, { version: '0.63' }])
+  for (const other of [{ best: 'e2e4' }, { depth: false }, { model: 'claude-fable-5-2' }, { version: '0.63' }])
     assert.deepEqual(await explain({ ...base, ...other }), fresh);
   const served = ['Saved.', true, ['lichess.org'], 0];
   assert.deepEqual(await explain({ ...base, best: null }), served);
@@ -524,7 +524,7 @@ const xSheet = { ...cSheet, played: { ...cSheet.played, move: 'e4', latest_sf_ev
   // at most 200 answers, the oldest dropped first
   for (let i = 0; i < 200; i++) await remembered(storage, { ...base, fen: i }, async () => ({ result: { text: 'x' }, facts: xSheet }));
   assert.deepEqual([data.answers.length, data.answers[0][0], data.answers.at(-1)[0]],
-    [200, '0 | Nf3 | d2d4 | depth | 0.62', '199 | Nf3 | d2d4 | depth | 0.62']);
+    [200, '0 | Nf3 | d2d4 | depth | claude-opus-5-5 | 0.62', '199 | Nf3 | d2d4 | depth | claude-opus-5-5 | 0.62']);
   // a storage that fails (get or set) still shows the answer just paid for
   const logged = console.error, gone = async () => { throw new Error('gone'); };
   console.error = () => {};
@@ -798,9 +798,9 @@ try {
     { concept: 'king', claim: 'Your king is on g1.', checks: [{ pos: 'start', op: 'king_square', args: { side: 'white' }, expect: 'g1' }] },
     { concept: 'wrong', claim: 'x', checks: [{ pos: 'start', op: 'king_square', args: { side: 'white' }, expect: 'h1' }] }])}`;
   r = await ask('2rq1rk1/R2n1ppp/4p3/2pb4/5B2/6P1/1Q2PPBP/3R2K1 w - - 0 21', 'e4', 'b2a1',
-    { model: 'claude-opus-5-5', depth: true, onStep: t => steps.push(t), onSheet: (...a) => sheetSeen.push([calls.length, ...a]), onText: 'the onText' });
-  // only the explainer streams; the panel gets the rows and lines before any LLM call
-  assert.deepEqual(calls, [[PROPOSER, 'claude-opus-5-5'], [systemFor(true), 'claude-opus-5-5', 'the onText']]);
+    { model: 'claude-fable-5-2', depth: true, onStep: t => steps.push(t), onSheet: (...a) => sheetSeen.push([calls.length, ...a]), onText: 'the onText' });
+  // the picked model proposes and writes; only the explainer streams; the panel gets the rows and lines before any LLM call
+  assert.deepEqual(calls, [[PROPOSER, 'claude-fable-5-2'], [systemFor(true), 'claude-fable-5-2', 'the onText']]);
   assert.deepEqual(sheetSeen, [[0, r.result.rows, r.result.lines]]);
   assert.deepEqual(steps, ['Looking for positional ideas', 'Asking Claude']);
   assert.deepEqual([r.read, r.concepts], [true, [{ concept: 'king', claim: 'Your king is on g1.', checked: ['now, before your move: your king on g1'] }]]);
