@@ -58,16 +58,16 @@ Other product facts:
 - **Fair play.** Before every explanation the panel asks lichess whether the account is playing a game.
   If it is, or if the panel cannot tell, it refuses.
 - **About equal.** When the two moves are within 0.3 pawns the panel says so and skips the rest of the
-  analysis and the model call.
+  analysis and the model call. Under the verdict it offers Find plan for the position; nothing runs
+  until the user clicks.
 - **No evaluation numbers in answers.** Answers use words, not centipawns.
 - **The panel names no model.** There is no model picker; docs say "the strongest model".
 - Plain JavaScript, no framework, no build step. Everything the extension needs is committed.
 - An explanation takes about half a minute. The wait is a product fact, not a defect to hide.
 - Terminology is fixed in `GLOSSARY.md` (fact sheet, label, feature, imbalance, explainer).
 
-Undecided:
-
-- Whether a whole-game review workflow is added.
+- **No whole-game review** (decided 2026-11-10). A row of chips for a game's mistakes was built and
+  removed by the owner; lichess already marks them.
 
 ## Brand Commitments
 

@@ -900,10 +900,12 @@ export async function explainRequest(storage, b, move, { depth, version, fresh =
   return { result: got.result, saved: !!got.saved };
 }
 
-/** A task's result is what the panel shows for it, in the words the user reads: {head, rows, text, lines, note, shapes}.
+/** A task's result is what the panel shows for it, in the words the user reads: {head, rows, text, lines, note, shapes,
+    equal}.
     head: {label, pill} over the rows, or null. rows: [{kind: best|compared, label, move, eval}]. text: the answer or
     the plan (markdown). lines: the sheet lines a move link in the text may play, each from the request's position.
-    note: a sentence under the text, or null. shapes: for the lichess board, or null. */
+    note: a sentence under the text, or null. shapes: for the lichess board, or null. equal: true on Explain's
+    about-equal verdict, where the panel offers Find plan for the position. */
 const row = (kind, label, line) => ({ kind, label, move: line.move, eval: line.latest_sf_eval });
 const explainRows = ({ played, alternative }) => [row('best', 'engine move', alternative), row('compared', 'compared', played)];
 // every line that starts at the explained position (prepares.follow_up_fails starts mid-line, so it is left out)
@@ -927,6 +929,7 @@ export async function explainMove(engines, req, llm, { onSheet = () => {}, sheet
     note: a.read === undefined || a.concepts ? null
       : a.read ? 'No positional idea passed the board checks.' : 'Could not read the positional ideas in the reply.',
     shapes: null,
+    equal: aboutEqual(a.facts),
   } };
 }
 

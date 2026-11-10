@@ -38,12 +38,14 @@ function readPage() {
 
 /** In the lichess tab: puts the board back on the position a read returned (tree path `path`, FEN `fen`) and plays
     `ucis` from there, as a click on a move of lichess's engine line does. Lichess adds the moves all at once and sounds
-    each one, so the sounds are held back and only the last one plays. Returns an error message, or nothing. */
+    each one, so the sounds are held back and only the last one plays. With no `ucis` it only goes to the position.
+    Returns an error message, or nothing. */
 function playLine(fen, path, ucis) {
   const ctrl = window.site?.analysis;
   if (!ctrl?.node) return 'Open a lichess analysis board or study to play the line on the board.';
   if (ctrl.node.fen !== fen) ctrl.userJumpIfCan(path);
   if (ctrl.node.fen !== fen) return 'Could not go back to the explained position. Go there and click the move again.';
+  if (!ucis.length) return;
   const sound = window.site.sound, move = sound?.move;
   let last;
   if (move) sound.move = (...args) => (last = args);
@@ -87,7 +89,8 @@ function showShapes(fen, shapes) {
     inTab() in the extension, a direct call on a fake page in the tests.
     - read(): {fen, path, best, next, user, ahead, game}; throws, with the reason worded for the user, where there is no analysis
       board or the rule (see readPage) says no. The one place that rule is decided.
-    - play(fen, path, ucis): plays a line from a position a read returned; throws when the board cannot get back there.
+    - play(fen, path, ucis): plays a line from a position a read returned, or with no moves only goes there; throws
+      when the board cannot get back there.
     - draw(fen, shapes) / clear(): the plan's shapes, shown while the board is on `fen`. */
 export function lichessBoard(run) {
   return {

@@ -208,6 +208,13 @@ async function explain(apiKey, board, again) {
   out.replaceChildren();
   render(saved ? { ...result, note: [result.note, 'Saved answer.'].filter(Boolean).join(' ') } : result, b);
   if (saved) el('button', 'again', { text: 'Ask again' }).onclick = () => run((k, bd) => explain(k, bd, { b, move, depth }), 'explain');
+  // about equal: no reason to give, but a plan for the position may say what to aim at. Asked only on this click.
+  if (result.equal) {
+    el('button', 'again', { text: 'Find a plan for this position' }).onclick = () => {
+      document.querySelector('input[name="view"][value="plan"]').click();
+      run(async (k, bd) => { await bd.play(b.fen, b.path, []); await plan(k, bd); }, 'plan');
+    };
+  }
   prepareNext(board, b).catch(() => {}); // fail closed: an error builds nothing
 }
 

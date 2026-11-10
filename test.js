@@ -335,6 +335,11 @@ assert.equal(planShapes(pSheet, many, 'a3 b3 c3 d3 f3').length, 5);
   assert.deepEqual(page.sounds, ['after e2e4e7e5']);
   assert.equal(globalThis.window.site.sound.move, soundMove);
   await assert.rejects(board.play('8/8/8/8/8/8/8/8 w - - 0 1', '', ['e2e4']), /Could not go back to the explained position/);
+  // no moves: the board only goes to the position (the about-equal verdict's Find plan)
+  page = fakePage();
+  await board.play(other, 'zz', []);
+  assert.equal(page.ctrl.path, 'zz');
+  assert.deepEqual(page.sounds, []);
   // shapes: added to lichess's own on the position they belong to, kept when lichess rebuilds the board, then cleared
   page = fakePage();
   const arrow = { orig: 'e2', dest: 'e4', brush: 'green' };
@@ -756,6 +761,7 @@ try {
   calls = [];
   r = await ask('r4rk1/p1p2pp1/1pnb1q1p/3p1b2/P2P4/1NP2N2/1P2BPPP/R2QR1K1 b - - 0 13', 'Rfe8', 'c6e7', { depth: true });
   assert.match(r.text, /about as good as/); // equal moves: no LLM call, plain verdict, even with depth on
+  assert.equal(r.result.equal, true); // and the panel offers Find plan
   assert.deepEqual([calls, r.concepts, r.read], [[], null, undefined]);
   assert.deepEqual([r.result.rows.map(m => m.move), r.result.lines, r.result.note], [['Ne7', 'Rfe8'], [], null]);
   assert.deepEqual(Object.keys(r.facts), ['fen', 'side_to_move', 'played', 'alternative', 'latest_sf_gap']); // stops at the scores
