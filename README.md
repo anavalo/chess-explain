@@ -148,6 +148,11 @@ The settings also offer Claude Fable 5.2, which then makes every call. It costs 
 per million input tokens, $40 per million output tokens) and takes longer. Its cost per explanation was
 not measured; expect about twice the figures above.
 
+A third setting splits the work: Fable 5.2 makes the ideas call (the positional ideas, or the plan ideas),
+Opus 5.5 writes. Only the ideas call pays Fable's price. With positional depth off an explanation has no
+ideas call, so this setting then equals Opus 5.5. On the command line it is
+`--model claude-fable-5-2+claude-opus-5-5`.
+
 The system prompt is cached for 5 minutes, so a second explanation within 5 minutes pays about 1.6 cents
 less for its input; the first pays about 0.4 cents more to write the cache. Asking about the same move
 again (the same position, the same two moves compared, the same depth, model and extension version) shows the

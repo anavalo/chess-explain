@@ -61,8 +61,9 @@ Other product facts:
   analysis and the model call. Under the verdict it offers Find plan for the position; nothing runs
   until the user clicks.
 - **No evaluation numbers in answers.** Answers use words, not centipawns.
-- **Two models, named only in the picker.** The settings offer Claude Opus 5.5 (the default) and Claude
-  Fable 5.2; the picked model makes every call of a request. Other panel text says "the model".
+- **Two models, named only in the picker.** The settings offer Claude Opus 5.5 (the default), Claude
+  Fable 5.2, and a split: Fable 5.2 for the ideas call, Opus 5.5 for the writing. A single pick makes every
+  call of a request. Other panel text says "the model".
 - Plain JavaScript, no framework, no build step. Everything the extension needs is committed.
 - An explanation takes about half a minute. The wait is a product fact, not a defect to hide.
 - Terminology is fixed in `GLOSSARY.md` (fact sheet, label, feature, imbalance, explainer).

@@ -48,8 +48,8 @@ document.getElementById('key-form').onsubmit = async e => {
 };
 showKeyStatus();
 
-// the model is a setting too: every call of a request uses the picked one. A saved model the picker does not offer
-// becomes the default.
+// the model is a setting too: a pick is one model for every call of a request, or one for the ideas call and one for
+// the writer (see stepModels). A saved pick the picker does not offer becomes the default.
 const model = () => document.querySelector('input[name="model"]:checked').value;
 chrome.storage.local.get('model').then(({ model: m }) => {
   const radio = m && document.querySelector(`input[name="model"][value="${CSS.escape(m)}"]`);

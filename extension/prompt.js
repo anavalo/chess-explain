@@ -4,6 +4,14 @@
 /** The default model: every call uses it unless the panel's picker (or --model) names another. */
 export const MODEL = 'claude-opus-5-5';
 
+/** The models a pick stands for, by step: {ideas, writer}. A pick (the panel's picker, --model) is one model id, which
+    makes every call, or two joined by '+': the first makes the ideas call (the Concept proposer, the Planner), the
+    second writes the answer or the plan. */
+export const stepModels = pick => {
+  const [ideas, writer = ideas] = pick.split('+');
+  return { ideas, writer };
+};
+
 /** The sheet legend: what each fact sheet field and label means. The judge gets it too, so put new writing rules in
     RULES, where a rule under A/B test cannot bias the judge. */
 export const LEGEND = `You are a chess coach for club players (around 1200-1800 rating).

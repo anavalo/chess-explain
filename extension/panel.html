@@ -55,6 +55,7 @@
   .settings form { margin: 0; }
   .note { margin: 0; font-size: 12px; line-height: 1.45; color: var(--muted); }
   .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; background: var(--bg); border: 1px solid var(--border); border-radius: 10px; }
+  .seg.stack { grid-template-columns: 1fr; }
   .seg label { cursor: pointer; }
   .seg input { position: absolute; opacity: 0; pointer-events: none; }
   .seg span { display: grid; gap: 1px; padding: 7px 10px; border-radius: 7px; text-align: center; color: var(--muted); }
@@ -98,8 +99,9 @@
   </div>
   <div class="field">
     <span class="label" id="model-label">Model</span>
-    <div class="seg" role="radiogroup" aria-labelledby="model-label">
+    <div class="seg stack" role="radiogroup" aria-labelledby="model-label">
       <label><input type="radio" name="model" value="claude-opus-5-5" autocomplete="off" checked><span><b>Opus 5.5</b><small>Default</small></span></label>
+      <label><input type="radio" name="model" value="claude-fable-5-2+claude-opus-5-5" autocomplete="off"><span><b>Fable 5.2 for the ideas, Opus 5.5 writes</b><small>Fable's price for the ideas call only</small></span></label>
       <label><input type="radio" name="model" value="claude-fable-5-2" autocomplete="off"><span><b>Fable 5.2</b><small>About twice the cost, slower</small></span></label>
     </div>
   </div>

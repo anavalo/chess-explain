@@ -16,7 +16,7 @@ import {
 import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { lichessBoard } from './extension/lichess.js';
 import { linkMoves, md } from './extension/md.js';
-import { JUDGE, LEGEND, PAIR, PLANNER, PLAN_SYSTEM, PROPOSER, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
+import { JUDGE, LEGEND, PAIR, PLANNER, PLAN_SYSTEM, PROPOSER, checkAnswer, stepModels, systemFor, withConceptsEntry } from './extension/prompt.js';
 import { CHECKS, claimsIn, planShapes, render, verify, withConcepts, withPlan } from './extension/concepts.js';
 
 const pos = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
@@ -260,6 +260,11 @@ assert.equal(pr.read, true);
 const pCalls = [];
 const pa = await planAnswer(pSheet, (system, f, model) => (pCalls.push([system, model]), system === PLANNER ? planner : 'Play 1.e4.'), { model: 'claude-fable-5-2' });
 assert.deepEqual(pCalls, [[PLANNER, 'claude-fable-5-2'], [PLAN_SYSTEM, 'claude-fable-5-2']]); // the picked model plans and writes
+// a pick of two models, joined by '+': the first makes the ideas call, the second writes
+assert.deepEqual([stepModels('m1'), stepModels('m1+m2')], [{ ideas: 'm1', writer: 'm1' }, { ideas: 'm1', writer: 'm2' }]);
+pCalls.length = 0;
+await planAnswer(pSheet, (system, f, model) => (pCalls.push([system, model]), system === PLANNER ? planner : 'Play 1.e4.'), { model: 'm1+m2' });
+assert.deepEqual(pCalls, [[PLANNER, 'm1'], [PLAN_SYSTEM, 'm2']]);
 assert.deepEqual([pa.text, pa.ideas, pa.facts.verified_plan_ideas], ['Play 1.e4.', pr.ideas, pr.ideas]);
 await assert.rejects(planAnswer(pSheet, async () => 'No plan.'), /Could not read the plan ideas in the reply/);
 await assert.rejects(planAnswer(pSheet, async () => '[]'), /No clear plan found here/);
@@ -910,6 +915,11 @@ try {
   assert.deepEqual(calls, [[PROPOSER, 'claude-fable-5-2'], [systemFor(true), 'claude-fable-5-2', 'the onText']]);
   assert.deepEqual(sheetSeen, [[0, r.result.rows, r.result.lines]]);
   assert.deepEqual(steps, ['Looking for positional ideas', 'Asking Claude']);
+  // a pick of two models: the first proposes, the second writes; with depth off only the writer is called
+  const split = [], by = (system, f, model) => (split.push([system, model]), system === PROPOSER ? proposer : '(stub)');
+  await answer(r.facts, by, { model: 'm1+m2', depth: true });
+  await answer(r.facts, by, { model: 'm1+m2' });
+  assert.deepEqual(split, [[PROPOSER, 'm1'], [systemFor(true), 'm2'], [systemFor(true), 'm2']]);
   assert.deepEqual([r.read, r.concepts], [true, [{ concept: 'king', claim: 'Your king is on g1.', checked: ['now, before your move: your king on g1'] }]]);
   assert.equal(r.result.note, null);
   assert.equal(r.facts, facts);

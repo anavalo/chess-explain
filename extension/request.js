@@ -6,7 +6,7 @@
 
 import { DECLINED, NODES, aboutEqual, factSheet, moveNo, planFacts, position, san, sanToUci } from './explain.js';
 import { planShapes, withConcepts, withPlan } from './concepts.js';
-import { MODEL, PLAN_SYSTEM, systemFor } from './prompt.js';
+import { MODEL, PLAN_SYSTEM, stepModels, systemFor } from './prompt.js';
 
 const ANSWERS = 200; // saved Explain answers kept (see remembered), oldest dropped first
 const SHEETS = 20; // fact sheets a panel keeps (see sheetCache), oldest dropped first
@@ -77,7 +77,7 @@ export function sheetCache() {
 
 /** The answer for a fact sheet: a plain verdict when the moves are about equal (no LLM call), else the explainer's text,
     after a deeper read when `depth` is on. `llm(system, facts, model, onText)` is one LLM call: ask() with the key, or a
-    test stub. `onStep(words)` hears which call comes next; `onText` streams the explainer's text (see ask). `recent`:
+    test stub. `model` is a pick (see stepModels): its ideas model makes the deeper read, its writer the text. `onStep(words)` hears which call comes next; `onText` streams the explainer's text (see ask). `recent`:
     reasons given for earlier moves of the line (see recentReasons); when there are any, the explainer's facts (never the
     proposer's) end with them as "recent_reasons". Returns {text, facts, concepts, read}: facts as the explainer saw them;
     concepts, the verified concepts (null when none held); read, whether the proposer's reply held a claim list
@@ -87,15 +87,16 @@ export async function answer(facts, llm, { model = MODEL, depth = false, recent 
     return { facts, concepts: null, text: `**${facts.played.move}** is about as good as **${facts.alternative.move}**: `
       + 'the engine sees no real difference between them. Either move is fine.' };
   }
+  const { ideas, writer } = stepModels(model);
   let concepts = null, read;
   if (depth) {
     onStep('Looking for positional ideas');
-    ({ facts, concepts, read } = await withConcepts(facts, llm, model));
+    ({ facts, concepts, read } = await withConcepts(facts, llm, ideas));
   }
   if (recent?.length) facts = { ...facts, recent_reasons: recent };
   onStep('Asking Claude');
   const system = systemFor(!!facts.verified_concepts, !!facts.recent_reasons);
-  return { text: await llm(system, facts, model, onText), facts, concepts, read };
+  return { text: await llm(system, facts, writer, onText), facts, concepts, read };
 }
 
 /** One request from the panel: fair play first, then the engines, then `task(engines, llm)`, whose result it resolves
@@ -226,19 +227,20 @@ export async function explainMove(engines, req, llm, { onSheet = () => {}, sheet
   } };
 }
 
-/** The plan for a plan sheet, as answer() is for a fact sheet: `model`'s plan ideas checked on the board
-    (withPlan), then it writes the plan from the ideas that held. No idea held, or no idea list in the planner's
+/** The plan for a plan sheet, as answer() is for a fact sheet: the plan ideas of `model`'s ideas model (a pick, see
+    stepModels) checked on the board (withPlan), then its writer writes the plan from the ideas that held. No idea held, or no idea list in the planner's
     reply: throws, saying which, and the writer is never called. Returns {text, facts, ideas}. The eval starts here
     from a saved sheet. */
 export async function planAnswer(sheet, llm, { model = MODEL, onStep = () => {} } = {}) {
   onStep('Looking for plan ideas');
   // the planner plans the best line only; the writer gets the about-as-good move for one sentence
   const { also_good = null, ...rest } = sheet;
-  const { facts: planned, ideas, read } = await withPlan(rest, llm, model);
+  const by = stepModels(model);
+  const { facts: planned, ideas, read } = await withPlan(rest, llm, by.ideas);
   if (!ideas) throw new Error(read ? 'No clear plan found here.' : 'Could not read the plan ideas in the reply.');
   const facts = { ...planned, also_good };
   onStep('Asking Claude');
-  return { text: await llm(PLAN_SYSTEM, facts, model), facts, ideas };
+  return { text: await llm(PLAN_SYSTEM, facts, by.writer), facts, ideas };
 }
 
 /** The Find plan task: the plan sheet and its planAnswer(), plus its result (see explainMove), whose shapes are
