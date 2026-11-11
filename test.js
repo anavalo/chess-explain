@@ -247,7 +247,7 @@ const planner = JSON.stringify([
     checks: [{ pos: 'best:1', op: 'piece_on', args: { square: 'e4' }, expect: 'white pawn' }, { pos: 'best_leaf', op: 'attacks', args: { from: 'f3', to: 'e5' }, expect: true },
       { pos: 'best_leaf', op: 'file_state', args: { file: 'e' }, expect: 'closed' }] },
   { concept: 'wrong', claim: 'x', targets: [{ square: 'd4', kind: 'occupy' }], checks: [{ pos: 'start', op: 'piece_on', args: { square: 'd4' }, expect: 'white pawn' }] }]);
-const pr = await withPlan(pSheet, (system, f, model) => (assert.deepEqual([system, model], [PLANNER, 'claude-opus-5-5']), planner));
+const pr = await withPlan(pSheet, (system, f, model) => (assert.deepEqual([system, model], [PLANNER, 'claude-fable-5-2']), planner)); // the default pick's ideas model
 assert.deepEqual(pr.ideas, [{ concept: 'centre', claim: 'e4 takes the centre and the knight hits e5.',
   checked: ['after 1.e4: e4: your pawn', 'after 1.e4 e5 2.Nf3: the piece on f3 attacks e5: yes', 'after 1.e4 e5 2.Nf3: e-file: closed'],
   targets: [{ square: 'e5', kind: 'attack' }, { square: 'e4', kind: 'occupy' }] }]);
@@ -935,7 +935,7 @@ try {
   calls = [];
   proposer = 'No ideas.';
   r = await ask('r4rkb/ppR5/3Np1pp/4n3/5N2/4Q3/q4PPP/3R2K1 w - - 2 24', 'Re7', 'd1f1', { depth: true });
-  assert.deepEqual(calls, [[PROPOSER, 'claude-opus-5-5'], [systemFor(), 'claude-opus-5-5']]);
+  assert.deepEqual(calls, [[PROPOSER, 'claude-fable-5-2'], [systemFor(), 'claude-opus-5-5']]); // the default pick: one model for the ideas, one writes
   assert.deepEqual([r.read, r.concepts, 'verified_concepts' in facts, facts.verified_concepts], [false, null, true, null]);
   assert.equal(r.result.note, 'Could not read the positional ideas in the reply.');
   assert.ok(!r.result.lines.includes(facts.prepares.follow_up_fails)); // it starts mid-line: a link could not play it
@@ -956,7 +956,7 @@ try {
   toHole('c5', [holeChecks('c5')[1]]), toHole('b6', holeChecks('b6')), toHole('d6', holeChecks('d6', 'more than 4'))]);
   const planStub = (system, f, model) => (planCalls.push([system, model]), system === PLANNER ? kingside : (sheets.push(f), 'Push to **f4** with 1.f4.'));
   const plan = await findPlan(engines, quiet, planStub, { onStep: t => planSteps.push(t) });
-  assert.deepEqual(planCalls, [[PLANNER, 'claude-opus-5-5'], [PLAN_SYSTEM, 'claude-opus-5-5']]);
+  assert.deepEqual(planCalls, [[PLANNER, 'claude-fable-5-2'], [PLAN_SYSTEM, 'claude-opus-5-5']]); // the default pick
   assert.deepEqual(planSteps, ['Looking for plan ideas', 'Asking Claude']);
   assert.deepEqual([plan.facts.plan_kind, plan.facts.side_to_move], ['positional', 'White']);
   assert.match(plan.facts.best.line_with_evals, /^1\. you f4 \[pawn gains space/);

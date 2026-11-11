@@ -1,8 +1,10 @@
 // The explainer prompt (sheet legend + rules) and the rule checks that test an answer against the rules.
 // explain.js sends the prompt; eval.js runs the checks and sends the judge prompts, which carry the legend only.
 
-/** The default model: every call uses it unless the panel's picker (or --model) names another. */
-export const MODEL = 'claude-opus-5-5';
+/** The default pick, used unless the panel's picker (or --model) names another: Fable 5.2 makes the ideas call, Opus
+    5.5 writes. On the book positions this gave the book's reason as often as Fable 5.2 for every call, and more often
+    than Opus 5.5 for every call. */
+export const MODEL = 'claude-fable-5-2+claude-opus-5-5';
 
 /** The models a pick stands for, by step: {ideas, writer}. A pick (the panel's picker, --model) is one model id, which
     makes every call, or two joined by '+': the first makes the ideas call (the Concept proposer, the Planner), the

@@ -95,14 +95,14 @@
       <input id="key" type="password" placeholder="sk-ant-..." autocomplete="off" spellcheck="false">
       <button>Save</button>
     </form>
-    <p class="note">Kept in this browser only and sent only to Anthropic. About 3–6¢ an answer with Opus 5.5. Save an empty key to remove it.</p>
+    <p class="note">Kept in this browser only and sent only to Anthropic. About 3–6¢ an answer with Opus 5.5 and positional depth off; more with depth or Fable 5.2. Save an empty key to remove it.</p>
   </div>
   <div class="field">
     <span class="label" id="model-label">Model</span>
     <div class="seg stack" role="radiogroup" aria-labelledby="model-label">
-      <label><input type="radio" name="model" value="claude-opus-5-5" autocomplete="off" checked><span><b>Opus 5.5</b><small>Default</small></span></label>
-      <label><input type="radio" name="model" value="claude-fable-5-2+claude-opus-5-5" autocomplete="off"><span><b>Fable 5.2 for the ideas, Opus 5.5 writes</b><small>Fable's price for the ideas call only</small></span></label>
-      <label><input type="radio" name="model" value="claude-fable-5-2" autocomplete="off"><span><b>Fable 5.2</b><small>About twice the cost, slower</small></span></label>
+      <label><input type="radio" name="model" value="claude-fable-5-2+claude-opus-5-5" autocomplete="off" checked><span><b>Fable 5.2 for the ideas, Opus 5.5 writes</b><small>Default</small></span></label>
+      <label><input type="radio" name="model" value="claude-opus-5-5" autocomplete="off"><span><b>Opus 5.5</b><small>Lowest cost</small></span></label>
+      <label><input type="radio" name="model" value="claude-fable-5-2" autocomplete="off"><span><b>Fable 5.2</b><small>Highest cost, slowest</small></span></label>
     </div>
   </div>
 </section>

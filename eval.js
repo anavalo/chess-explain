@@ -35,7 +35,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
 import { NODES, aboutEqual, linePlies, llmWith, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
 import { answer, planAnswer } from './extension/request.js';
-import { JUDGE, MODEL, PAIR, PLANNER, PLAN_SYSTEM, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
+import { JUDGE, PAIR, PLANNER, PLAN_SYSTEM, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
 
 // ---- the judge (its prompts are in extension/prompt.js) ----
 
@@ -219,6 +219,8 @@ function judge(facts, answer, ref) {
   return claude(legend(JUDGE), `Fact sheet:\n${facts}\n\nAnswer:\n${answer}${ref ? `\n\nReference reason:\n${ref}` : ''}`, ref ? WITH_REFERENCE : VERDICT);
 }
 
+const JUDGE_MODEL = 'claude-opus-5-5'; // the judge is one model, whatever the explainer's pick is
+
 /** One Opus call with a cached system prompt and a JSON schema; returns the parsed JSON plus usage. */
 async function claude(system, content, schema) {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
@@ -231,7 +233,7 @@ async function claude(system, content, schema) {
       'anthropic-beta': 'server-side-fallback-2026-07-01',
     },
     body: JSON.stringify({
-      model: MODEL,
+      model: JUDGE_MODEL,
       max_tokens: 16000,
       fallbacks: 'default',
       output_config: { effort: 'high', format: { type: 'json_schema', schema } },

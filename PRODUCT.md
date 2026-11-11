@@ -61,9 +61,9 @@ Other product facts:
   analysis and the model call. Under the verdict it offers Find plan for the position; nothing runs
   until the user clicks.
 - **No evaluation numbers in answers.** Answers use words, not centipawns.
-- **Two models, named only in the picker.** The settings offer Claude Opus 5.5 (the default), Claude
-  Fable 5.2, and a split: Fable 5.2 for the ideas call, Opus 5.5 for the writing. A single pick makes every
-  call of a request. Other panel text says "the model".
+- **Two models, named only in the picker.** The settings offer a split (the default): Claude Fable 5.2
+  for the ideas call, Claude Opus 5.5 for the writing. They also offer each model alone, which then makes
+  every call of a request. Other panel text says "the model".
 - Plain JavaScript, no framework, no build step. Everything the extension needs is committed.
 - An explanation takes about half a minute. The wait is a product fact, not a defect to hide.
 - Terminology is fixed in `GLOSSARY.md` (fact sheet, label, feature, imbalance, explainer).
@@ -88,7 +88,8 @@ Other product facts:
 - Positional depth on 39 positions from Silman's *How to Reassess Your Chess*: the book's reason given
   in 34 of 78 answers, up from 14, with no clear rise in false claims (README, How it works).
 - Cost with Opus 5.5: about 5 to 10 cents an explanation with positional depth (on by default), about 3
-  to 6 without. Fable 5.2 costs twice as much per token and was not measured (README, Cost).
+  to 6 without. Fable 5.2 costs twice as much per token; the default split pays that on the ideas call only.
+  Neither was measured (README, Cost).
 - `PRIVACY.md`: what leaves the browser and where it goes.
 - There are no testimonials, user counts, or press. Future work must not invent them.
 

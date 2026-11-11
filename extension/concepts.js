@@ -4,7 +4,7 @@
 import { SquareSet, attacks, between, opposite, parseSquare, makeSquare, squareFile, squareRank } from './vendor/chessops.js';
 import { linePlies, position, play, sanToUci } from './explain.js';
 import { enemyPawnCanAttack, isOutpost, route } from './features.js';
-import { MODEL, PLANNER, PROPOSER } from './prompt.js';
+import { MODEL, PLANNER, PROPOSER, stepModels } from './prompt.js';
 
 const LIGHT = SquareSet.lightSquares();
 const VALUE = { pawn: 1, knight: 3, bishop: 3, rook: 5, queen: 9, king: 0 };
@@ -176,7 +176,7 @@ export function claimsIn(reply) {
     concepts A/B tested. Returns {facts, concepts, read} (concepts null when no claim survived; read false when the reply
     held no claim list). Throws when the sheet has no ANCHOR, so a renamed field fails the tests instead of dropping
     the concepts. A sheet that already holds an earlier read's concepts loses them first: the proposer never sees them. */
-export async function withConcepts({ verified_concepts: old, ...facts }, llm, model = MODEL) {
+export async function withConcepts({ verified_concepts: old, ...facts }, llm, model = stepModels(MODEL).ideas) {
   if (!(ANCHOR in facts)) throw new Error(`the fact sheet has no "${ANCHOR}" to put the verified concepts after`);
   const claims = claimsIn(await llm(PROPOSER, facts, model));
   const concepts = claims ? render(facts, verify(facts, claims)) : null;
@@ -192,7 +192,7 @@ const ANCHOR = 'pawn_plan_only_in_better_line';
     {facts, ideas, read}: ideas is null when no idea held; read is false when the reply held no claim list. One idea may
     be a manoeuvre the engine line does not play ("beyond_line": true); it counts only with a route check, and a second
     one is dropped. */
-export async function withPlan(facts, llm, model = MODEL) {
+export async function withPlan(facts, llm, model = stepModels(MODEL).ideas) {
   const claims = claimsIn(await llm(PLANNER, facts, model));
   // one manoeuvre beyond the engine line at most: the first that holds and shows its route on the board
   let beyond = 0;

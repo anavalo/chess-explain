@@ -56,7 +56,7 @@ browser for Anthropic (the explanation) and lichess (the fair-play check).
    evaluates with a neural network, which is brilliant and completely unable to explain itself, so the
    old hand-written terms are brought back to do the explaining. They are rescaled to match Stockfish
    15.1's values.
-4. **Claude** (Opus 5.5, or Fable 5.2 if you pick it in the settings) turns that fact sheet into a short explanation. The prompt forbids it from
+4. **Claude** (Opus 5.5 by default; the settings offer Fable 5.2 too) turns that fact sheet into a short explanation. The prompt forbids it from
    inventing moves or squares that are not in the facts. Chess commentary is a field with a long
    tradition of confident nonsense; we try not to add to it.
 
@@ -134,8 +134,9 @@ sent only to lichess, for the fair-play check. See [PRIVACY.md][privacy-link].
 ## Cost
 
 You pay Anthropic for what you use. An explanation is written by Claude Opus 5.5, with effort set to high
-so it thinks the facts through before it writes. With positional depth on, as it is by default, the
-model is first asked for the positional ideas, so an explanation is two calls. The engines do the
+so it thinks the facts through before it writes. With positional depth on, as it is by default, a
+model is first asked for the positional ideas, so an explanation is two calls. By default that first call
+goes to Claude Fable 5.2 (see below); the figures here are for Opus 5.5 making both calls. The engines do the
 heavy lifting for free on your own machine; the model only has to put a one-page fact sheet into words.
 
 At Anthropic's prices as of October 2026 ($4 per million input tokens, $20 per million output tokens), the
@@ -144,14 +145,17 @@ call that writes the answer sends about 6,100 tokens, 4,300 of them the system p
 cents. The model's thinking comes on top and was not measured; each 1,000 thinking tokens adds about 2 cents
 to a call. So an explanation costs about 5 to 10 cents with positional depth, and about 3 to 6 without it.
 
-The settings also offer Claude Fable 5.2, which then makes every call. It costs twice as much per token ($8
-per million input tokens, $40 per million output tokens) and takes longer. Its cost per explanation was
-not measured; expect about twice the figures above.
-
-A third setting splits the work: Fable 5.2 makes the ideas call (the positional ideas, or the plan ideas),
-Opus 5.5 writes. Only the ideas call pays Fable's price. With positional depth off an explanation has no
-ideas call, so this setting then equals Opus 5.5. On the command line it is
+The default setting splits the work: Fable 5.2 makes the ideas call (the positional ideas, or the plan
+ideas), Opus 5.5 writes. Fable 5.2 costs twice as much per token ($8 per million input tokens, $40 per
+million output tokens) and takes longer, and only the ideas call pays that. At the token counts above the
+ideas call then costs about 3 cents instead of 1.5, before thinking; the cost per explanation was not
+measured. On 126 positions from three chess books this setting gave the book's reason more often than Opus
+5.5 making both calls, with no rise in false claims; its answers run a little longer. With positional
+depth off an explanation has no ideas call, so the setting then equals Opus 5.5. On the command line it is
 `--model claude-fable-5-2+claude-opus-5-5`.
+
+The settings also offer each model alone: Opus 5.5 for every call (the figures above), or Fable 5.2 for
+every call (not measured; expect about twice those figures).
 
 The system prompt is cached for 5 minutes, so a second explanation within 5 minutes pays about 1.6 cents
 less for its input; the first pays about 0.4 cents more to write the cache. Asking about the same move
@@ -216,7 +220,7 @@ ANTHROPIC_API_KEY=... node eval.js [out-dir] [--no-llm] [--model ID] [--deep] [-
 This explains the 132 quiet positions in `eval-sets/quiet-132.json`, from lichess games, where the better move
 wins on position rather than with a tactic, and writes one fact sheet and answer per position to `out-dir` (default `eval-out/`). Run
 it before and after a change and diff the two folders. `--no-llm` writes the fact sheets only.
-`--model ID` picks the Claude model (default Opus 5.5). `--deep` checks positional ideas before each answer, as the
+`--model ID` picks the Claude model, or two as `IDEAS+WRITER` (default: Fable 5.2 for the ideas, Opus 5.5 writes). `--deep` checks positional ideas before each answer, as the
 **Positional depth** switch does, and tells the judge what the checked ideas on a sheet mean; to compare a deep run
 with a plain one, judge both with `--deep`. `--facts DIR` reuses the fact sheets in `DIR`
 instead of running the engines, so a prompt or model change takes a minute or two instead of half an hour.
@@ -237,7 +241,7 @@ many answers go over 120 words.
 node eval.js --print explainer|judge|pair [--model ID] [--set FILE] [--deep]
 ```
 
-prints that prompt exactly and exits: the explainer prompt for `--model` (default Opus 5.5), or a judge prompt with the
+prints that prompt exactly and exits: the explainer prompt for `--model` (default: Opus 5.5 writes), or a judge prompt with the
 JSON schema its verdict must match. Use it to run the explainer and judge as Claude Code subagents instead of through
 the API.
 
