@@ -1,10 +1,12 @@
 // The deeper read, run before the answer when the panel's positional depth switch is on: the picked model proposes
 // concepts for a fact sheet, each backed by board checks; verify() runs the checks and drops a claim unless every one
 // holds; render() turns the survivors into the sheet field "verified_concepts" (checks in words, sides as your/opp's).
+// withRule() picks the rule line that closes an answer, checked the same way.
 import { SquareSet, attacks, between, opposite, parseSquare, makeSquare, squareFile, squareRank } from './vendor/chessops.js';
 import { linePlies, position, play, sanToUci } from './explain.js';
 import { enemyPawnCanAttack, isOutpost, route } from './features.js';
-import { MODEL, PLANNER, PROPOSER, stepModels } from './prompt.js';
+import { MODEL, PICKER, PLANNER, PROPOSER, stepModels } from './prompt.js';
+import { RULE_POOL } from './rules.js';
 
 const LIGHT = SquareSet.lightSquares();
 const VALUE = { pawn: 1, knight: 3, bishop: 3, rook: 5, queen: 9, king: 0 };
@@ -185,6 +187,27 @@ export async function withConcepts({ verified_concepts: old, ...facts }, llm, mo
   return { facts: out, concepts, read: claims !== null };
 }
 const ANCHOR = 'pawn_plan_only_in_better_line';
+
+/** The rule line that closes an answer: the picker, `model`, picks at most one rule of RULE_POOL for `facts` (one
+    `llm(PICKER, facts, model)` call, see answer()). A pick counts only with a pool id, kind "follows" or "bent", a
+    "here" tie of 1 to 12 words and board checks that all hold (verify()); a followed rule comes before a bent one.
+    Returns "Rule: <the pool's sentence>\nHere: <tie>" ("Rule bent: ..." for a bent one), or null when no pick holds or
+    anything fails: the picker never fails an answer. */
+export async function withRule(facts, llm, model = stepModels(MODEL).ideas) {
+  try {
+    const words = s => String(s ?? '').trim().split(/\s+/).filter(Boolean).length;
+    const picks = (claimsIn(await llm(PICKER, facts, model)) ?? [])
+      .filter(c => (c.kind === 'follows' || c.kind === 'bent') && RULES.has(c.rule) && words(c.here) >= 1 && words(c.here) <= 12);
+    const held = verify(facts, picks).filter(c => c.verified);
+    const pick = held.find(c => c.kind === 'follows') ?? held.find(c => c.kind === 'bent');
+    if (!pick) return null;
+    const rule = RULES.get(pick.rule);
+    return `${pick.kind === 'follows' ? 'Rule' : 'Rule bent'}: ${rule[0].toLowerCase()}${rule.slice(1)}\nHere: ${String(pick.here).trim()}`;
+  } catch {
+    return null;
+  }
+}
+const RULES = new Map(RULE_POOL.map(r => [r.id, r.rule]));
 
 /** Find plan's deeper read: `model` proposes plan ideas for the plan sheet `facts` (PLANNER), verify() keeps
     those whose checks all hold, and they go in as "verified_plan_ideas" before "pawn_pushes_in_line". An idea's targets

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { Chess, makeUci, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  ask as anthropic, factSheet, llmWith, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
+  DECLINED, ask as anthropic, factSheet, llmWith, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
 } from './extension/explain.js';
 import {
   Refused, answer, checkNotPlaying, explainMove, explainRequest, findPlan, firstSentence, keepReason, moveLabel, panelRequests, planAnswer, recentReasons, remembered, request, sheetCache,
@@ -16,8 +16,9 @@ import {
 import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { lichessBoard } from './extension/lichess.js';
 import { linkMoves, md } from './extension/md.js';
-import { JUDGE, LEGEND, PAIR, PLANNER, PLAN_SYSTEM, PROPOSER, checkAnswer, stepModels, systemFor, withConceptsEntry } from './extension/prompt.js';
-import { CHECKS, claimsIn, planShapes, render, verify, withConcepts, withPlan } from './extension/concepts.js';
+import { JUDGE, LEGEND, PAIR, PICKER, PLANNER, PLAN_SYSTEM, PROPOSER, checkAnswer, stepModels, systemFor, withConceptsEntry } from './extension/prompt.js';
+import { CHECKS, claimsIn, planShapes, render, verify, withConcepts, withPlan, withRule } from './extension/concepts.js';
+import { RULE_POOL } from './extension/rules.js';
 
 const pos = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
 
@@ -59,6 +60,11 @@ assert.deepEqual(failed('Your king is in check.'), [5]);
 assert.deepEqual(failed('White must take back.'), [5]);
 assert.deepEqual(failed('12.Nf3 keeps +0.3, half a pawn (0.5) or 30 cp better.'), [14]);
 assert.deepEqual(failed('Stockfish likes 12.Nf3.'), [14]);
+// the rule line in place of "Next time:": the pool's sentence is not the writer's (no story word or move check reads
+// it); its "Here:" tie is checked with the text, and flagged over 12 words
+assert.deepEqual(failed('After 12.Nf3 Nc6 your rook reaches the 7th rank.\nRule: we keep the initiative with Nbd7.\nHere: your rook on the 7th rank.'), []);
+assert.deepEqual(failed('12.Nf3 wins.\nRule bent: we trade.\nHere: your +0.3 edge.'), [14]);
+assert.deepEqual(failed(`12.Nf3 wins.\nRule: we trade.\nHere: ${'word '.repeat(13)}`), [15]);
 // a still-losing better move called an edge or winning; "winning a pawn" is a capture, and a positive eval may say edge
 const losing = { ...sheet, alternative: { cp: -40 } };
 assert.deepEqual(checkAnswer('12.Nf3 is a small edge and winning.', losing).map(c => c.problem), ['absolute eval: a small edge winning']);
@@ -220,6 +226,12 @@ assert.match(one(start, { op: 'toString', args: {}, expect: 'x' }).error, /unkno
 const told = prompt => [...prompt.matchAll(/^- ([a-z_]+) \{/gm)].map(m => m[1]).sort();
 assert.deepEqual(told(PLANNER), Object.keys(CHECKS).sort());
 assert.deepEqual(told(PROPOSER), Object.keys(CHECKS).filter(op => op !== 'route').sort());
+// the rule picker gets the proposer's check rows word for word, and every rule of the pool; the pool has at most the
+// 231 rules stage 0 tested, unique ids and no source
+const rowLines = prompt => prompt.split('\n').filter(l => /^- [a-z_]+ \{/.test(l));
+assert.deepEqual(rowLines(PICKER), rowLines(PROPOSER));
+assert.ok(RULE_POOL.length > 0 && RULE_POOL.length <= 231 && new Set(RULE_POOL.map(r => r.id)).size === RULE_POOL.length);
+assert.ok(!/flores/i.test(JSON.stringify(RULE_POOL)) && RULE_POOL.every(r => PICKER.includes(`\n${r.id}: ${r.rule}\n`)));
 // the claim list is found past brackets in the reasoning; no list at all is told apart from an empty one
 assert.deepEqual(claimsIn('The sheet says [takes pawn]. Claims:\n[{"concept": "a"}]\nDone [ok].'), [{ concept: 'a' }]);
 assert.deepEqual([claimsIn('none [here]'), claimsIn('[]')], [null, []]);
@@ -379,14 +391,14 @@ globalThis.fetch = async (url, { body }) => ((sent = JSON.parse(body)),
 assert.equal(await anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5'), 'Fine.');
 const cached = text => [{ type: 'text', text, cache_control: { type: 'ephemeral' } }];
 assert.deepEqual([sent.model, sent.system, sent.messages], ['claude-opus-5-5', cached(PROPOSER), [{ role: 'user', content: JSON.stringify(cSheet, null, 1) }]]);
-// prompt caching: with depth on, the proposer's prompt and then the explainer's go as one cached block each
+// prompt caching: with depth on, the proposer's prompt and then the explainer's and the rule picker's go as one cached block each
 {
   const seen = [];
   globalThis.fetch = async (url, { body }) => (seen.push(JSON.parse(body).system), Response.json({ stop_reason: 'end_turn',
     content: [{ type: 'text', text: seen.length === 1 ? JSON.stringify(claims) : 'Fine.' }] }));
   const r = await answer(cSheet, llmWith('key'), { model: 'claude-opus-5-5', depth: true });
   assert.deepEqual([r.text, r.concepts.length], ['Fine.', 1]);
-  assert.deepEqual(seen, [cached(PROPOSER), cached(systemFor(true))]);
+  assert.deepEqual(seen, [cached(PROPOSER), cached(systemFor(true)), cached(PICKER)]);
 }
 // streaming: with onText the reply comes as server-sent events, cut here at awkward bytes (mid-line, mid-event, inside
 // a UTF-8 character). onText hears the text so far after each piece; thinking and the fallback block add none; the text
@@ -586,18 +598,62 @@ assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '
 // answer(): the reasons go last in the writer's facts only, with their legend entry; without any, nothing changes
 {
   for (const depth of [false, true]) {
-    const calls = [], llm = async (system, facts) => (calls.push([system, facts]), system === PROPOSER ? JSON.stringify(claims) : 'Fine.');
+    const calls = [], picked = [];
+    const llm = async (system, facts) => (system === PICKER ? (picked.push(facts), '[]') : (calls.push([system, facts]), system === PROPOSER ? JSON.stringify(claims) : 'Fine.'));
     const recent = [{ move: '1. e4', said: 'First.', ideas: [] }];
     await answer(cSheet, llm, { depth, recent });
     await answer(cSheet, llm, { depth, recent: [] });
     const [w, plain] = depth ? [calls[1], calls[3]] : [calls[0], calls[1]];
     if (depth) assert.ok(!('recent_reasons' in calls[0][1]) && !('recent_reasons' in calls[2][1])); // the proposer's
+    assert.deepEqual(picked, [plain[1], plain[1]]); // the rule picker's: the writer's facts, without the reasons
     assert.deepEqual(Object.keys(w[1]), [...Object.keys(plain[1]), 'recent_reasons']);
     assert.deepEqual(w[1].recent_reasons, recent);
     assert.equal(w[0], systemFor(depth, true));
     assert.equal(plain[0], systemFor(depth));
     assert.deepEqual(plain[1], depth ? (await withConcepts(cSheet, async () => JSON.stringify(claims))).facts : cSheet);
   }
+}
+// the rule line (withRule): a pool rule whose checks all hold, as "Rule:" / "Here:", a followed rule before a bent one;
+// a failing check, no check, an unknown id, another kind, an empty tie or one over 12 words, no list or a picker that
+// throws: null
+{
+  const d4 = [{ pos: 'better:1', op: 'piece_on', args: { square: 'd4' }, expect: 'white pawn' }];
+  const pick = (rule, kind = 'follows', here = 'your d4 pawn', checks = d4) => ({ rule, kind, here, checks });
+  const line = (...picks) => withRule(cSheet, async (system, f, model) => (assert.deepEqual([system, f, model], [PICKER, cSheet, 'claude-fable-5-2']), JSON.stringify(picks)));
+  const [a, b] = RULE_POOL, said = r => r.rule[0].toLowerCase() + r.rule.slice(1);
+  assert.equal(await line(pick(a.id)), `Rule: ${said(a)}\nHere: your d4 pawn`);
+  assert.equal(await line(pick(a.id, 'bent'), pick(b.id)), `Rule: ${said(b)}\nHere: your d4 pawn`);
+  assert.equal(await line(pick(a.id, 'bent')), `Rule bent: ${said(a)}\nHere: your d4 pawn`);
+  for (const bad of [pick(a.id, 'follows', 'x', [{ ...d4[0], expect: 'empty' }]), pick(a.id, 'follows', 'x', []), pick('Z9-999'), pick(a.id, 'maybe'),
+    pick(a.id, 'follows', ' '), pick(a.id, 'follows', 'word '.repeat(13))])
+    assert.equal(await line(bad), null);
+  assert.equal(await withRule(cSheet, async () => 'No rule.'), null);
+  assert.equal(await withRule(cSheet, async () => { throw new Error('down'); }), null);
+  // in answer(): the rule line takes the place of the "Next time:" line, or closes a text that has none; no rule line
+  // (a failing check, an unknown id, a picker that throws) leaves the text as written, and a decline stays a decline
+  const text = 'd4 takes the centre.\nNext time: ask what e4 gives up.', rule = `Rule: ${said(a)}\nHere: your d4 pawn`;
+  const good = JSON.stringify([pick(a.id)]);
+  const run = async (reply, written = text) => (await answer(cSheet, async system => {
+    if (system !== PICKER) return written;
+    if (reply instanceof Error) throw reply;
+    return reply;
+  })).text;
+  assert.equal(await run(good), `d4 takes the centre.\n${rule}`);
+  assert.equal(await run(good, 'd4 takes the centre.\n\n**Next time:** ask.\n'), `d4 takes the centre.\n\n${rule}`);
+  assert.equal(await run(good, 'd4 takes the centre.'), `d4 takes the centre.\n${rule}`);
+  for (const reply of [JSON.stringify([pick(a.id, 'follows', 'x', [{ ...d4[0], expect: 'empty' }])]), JSON.stringify([pick('Z9-999')]), new Error('down')])
+    assert.equal(await run(reply), text);
+  assert.equal(await run(good, DECLINED), DECLINED);
+  // the stream: until the picker settles (after the writer's last piece), nothing from "Next time:" on shows, nor a
+  // last line that may yet become it; then the closed text, once
+  let settle;
+  const heard = [], pieces = ['d4 takes', ' the centre.\nN', 'ext ti', 'me: ask what e4 gives up.'];
+  const streamed = answer(cSheet, (system, f, model, onText) => (system === PICKER ? new Promise(r => { settle = () => r(good); })
+    : (async () => { let t = ''; for (const p of pieces) onText(t += p); return t; })()), { onText: t => heard.push(t) });
+  await new Promise(setImmediate);
+  assert.deepEqual(heard, ['d4 takes', 'd4 takes the centre.\n', 'd4 takes the centre.\n', 'd4 takes the centre.\n']);
+  settle();
+  assert.deepEqual([(await streamed).text, heard.slice(4)], [`d4 takes the centre.\n${rule}`, [`d4 takes the centre.\n${rule}`]]);
 }
 // a walk through a game with explainRequest: each position is paid for once, though the reasons sent with it change
 // after every answer. Forward 1 to 6, back 6 to 1, forward again, then move 7 three times: 7 paid runs of 21 requests.
@@ -606,7 +662,7 @@ assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '
   const data = {}, storage = { get: async k => structuredClone({ [k]: data[k] }), set: async o => void Object.assign(data, structuredClone(o)) };
   globalThis.fetch = async url => Response.json([{ id: new URL(url).searchParams.get('ids'), playing: false }]);
   const paid = [], steps = [];
-  const llm = async (system, facts) => (paid.push(facts.recent_reasons?.map(r => r.said) ?? []), `Reason ${paid.length}.`);
+  const llm = async (system, facts) => (system === PICKER ? '[]' : (paid.push(facts.recent_reasons?.map(r => r.said) ?? []), `Reason ${paid.length}.`));
   const explain = async path => (await explainRequest(storage, { user: 'fable6', fen: `fen@${path}`, path, game: 'g1', best: null }, 'e4',
     { depth: false, version: '0.64', engines: async () => 'the engines', llm, sheet: async () => xSheet, onRun: () => steps.push('run'), onStep: s => steps.push(s) }));
   const p = n => 'aabbccddeeffgghh'.slice(0, n * 2), plies = [1, 2, 3, 4, 5, 6];
@@ -744,7 +800,7 @@ assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '
     const board = { tab: 1, read: async () => (log.push('read'), here), play: async (...line) => void log.push(['play', ...line]) };
     const requests = panelRequests({ storage, version: '0.71', engines: async () => eng,
       activeBoard: async () => (await new Promise(setImmediate), { ...board, tab: front }) }); // another tab may show the same game
-    const asked = [], writer = async (system, facts, model) => (asked.push(model), `Answer ${asked.length}.`);
+    const asked = [], writer = async (system, facts, model) => (system === PICKER ? '[]' : (asked.push(model), `Answer ${asked.length}.`));
     const explain = (ask, hear) => requests.explain(board, writer, { move: '', depth: false, model: 'm1', ...ask }, hear);
     const done = async p => { const got = await p; await got?.ahead; return got; }; // the request, then its build ahead
     // the board's next game move unless one is typed; neither is an error, and the next request still runs
@@ -852,9 +908,11 @@ function recordedEngines() {
 const engines = record ? await recordingEngines() : recordedEngines();
 let facts;
 const sheets = [];
-// the LLM stub: logs each call; the proposer gets `proposer`, the explainer's sheet is kept in `facts`
-let calls = [], proposer = null;
-const stub = (system, f, model, onText) => (calls.push([system, model, ...onText ? [onText] : []]), system === PROPOSER ? proposer : (sheets.push(facts = f), '(stub)'));
+// the LLM stub: logs each call (and whether it streams); the proposer gets `proposer`, the rule picker `picker`, the
+// explainer's sheet is kept in `facts`
+let calls = [], proposer = null, picker = '[]';
+const stub = (system, f, model, onText) => (calls.push([system, model, ...onText ? ['streams'] : []]),
+  system === PROPOSER ? proposer : system === PICKER ? picker : (sheets.push(facts = f), '(stub)'));
 const ask = (fen, move, best, opts) => explainMove(engines, { fen, move, best }, stub, opts);
 try {
   const fen = 'r3k2r/1p1bbpp1/pqn1p2p/2ppP3/3P4/2PB1N2/PP1N1PPP/R2Q1RK1 w kq - 2 11';
@@ -872,7 +930,7 @@ try {
   assert.ok(r.result.lines.includes(facts.alternative.if_opp_plays_the_threat_at_once)); // a link may play the threat line too
   calls = [];
   r = await ask('r4rk1/p1p2pp1/1pnb1q1p/3p1b2/P2P4/1NP2N2/1P2BPPP/R2QR1K1 b - - 0 13', 'Rfe8', 'c6e7', { depth: true });
-  assert.match(r.text, /about as good as/); // equal moves: no LLM call, plain verdict, even with depth on
+  assert.match(r.text, /about as good as/); // equal moves: no LLM call (no rule picker either), plain verdict, even with depth on
   assert.equal(r.result.equal, true); // and the panel offers Find plan
   assert.deepEqual([calls, r.concepts, r.read], [[], null, undefined]);
   assert.deepEqual([r.result.rows.map(m => m.move), r.result.lines, r.result.note], [['Ne7', 'Rfe8'], [], null]);
@@ -910,16 +968,17 @@ try {
     { concept: 'king', claim: 'Your king is on g1.', checks: [{ pos: 'start', op: 'king_square', args: { side: 'white' }, expect: 'g1' }] },
     { concept: 'wrong', claim: 'x', checks: [{ pos: 'start', op: 'king_square', args: { side: 'white' }, expect: 'h1' }] }])}`;
   r = await ask('2rq1rk1/R2n1ppp/4p3/2pb4/5B2/6P1/1Q2PPBP/3R2K1 w - - 0 21', 'e4', 'b2a1',
-    { model: 'claude-fable-5-2', depth: true, onStep: t => steps.push(t), onSheet: (...a) => sheetSeen.push([calls.length, ...a]), onText: 'the onText' });
-  // the picked model proposes and writes; only the explainer streams; the panel gets the rows and lines before any LLM call
-  assert.deepEqual(calls, [[PROPOSER, 'claude-fable-5-2'], [systemFor(true), 'claude-fable-5-2', 'the onText']]);
+    { model: 'claude-fable-5-2', depth: true, onStep: t => steps.push(t), onSheet: (...a) => sheetSeen.push([calls.length, ...a]), onText: () => {} });
+  // the picked model proposes, writes and picks the rule line; only the explainer streams; the panel gets the rows and
+  // lines before any LLM call
+  assert.deepEqual(calls, [[PROPOSER, 'claude-fable-5-2'], [systemFor(true), 'claude-fable-5-2', 'streams'], [PICKER, 'claude-fable-5-2']]);
   assert.deepEqual(sheetSeen, [[0, r.result.rows, r.result.lines]]);
   assert.deepEqual(steps, ['Looking for positional ideas', 'Asking Claude']);
-  // a pick of two models: the first proposes, the second writes; with depth off only the writer is called
+  // a pick of two models: the first proposes and picks the rule line, the second writes; with depth off the proposer is not called
   const split = [], by = (system, f, model) => (split.push([system, model]), system === PROPOSER ? proposer : '(stub)');
   await answer(r.facts, by, { model: 'm1+m2', depth: true });
   await answer(r.facts, by, { model: 'm1+m2' });
-  assert.deepEqual(split, [[PROPOSER, 'm1'], [systemFor(true), 'm2'], [systemFor(true), 'm2']]);
+  assert.deepEqual(split, [[PROPOSER, 'm1'], [systemFor(true), 'm2'], [PICKER, 'm1'], [systemFor(true), 'm2'], [PICKER, 'm1']]);
   assert.deepEqual([r.read, r.concepts], [true, [{ concept: 'king', claim: 'Your king is on g1.', checked: ['now, before your move: your king on g1'] }]]);
   assert.equal(r.result.note, null);
   assert.equal(r.facts, facts);
@@ -935,7 +994,7 @@ try {
   calls = [];
   proposer = 'No ideas.';
   r = await ask('r4rkb/ppR5/3Np1pp/4n3/5N2/4Q3/q4PPP/3R2K1 w - - 2 24', 'Re7', 'd1f1', { depth: true });
-  assert.deepEqual(calls, [[PROPOSER, 'claude-fable-5-2'], [systemFor(), 'claude-opus-5-5']]); // the default pick: one model for the ideas, one writes
+  assert.deepEqual(calls, [[PROPOSER, 'claude-fable-5-2'], [systemFor(), 'claude-opus-5-5'], [PICKER, 'claude-fable-5-2']]); // the default pick: one model for the ideas and the rule, one writes
   assert.deepEqual([r.read, r.concepts, 'verified_concepts' in facts, facts.verified_concepts], [false, null, true, null]);
   assert.equal(r.result.note, 'Could not read the positional ideas in the reply.');
   assert.ok(!r.result.lines.includes(facts.prepares.follow_up_fails)); // it starts mid-line: a link could not play it

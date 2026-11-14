@@ -1,5 +1,6 @@
 // The explainer prompt (sheet legend + rules) and the rule checks that test an answer against the rules.
 // explain.js sends the prompt; eval.js runs the checks and sends the judge prompts, which carry the legend only.
+import { RULE_POOL } from './rules.js';
 
 /** The default pick, used unless the panel's picker (or --model) names another: Fable 5.2 makes the ideas call, Opus
     5.5 writes. On the book positions this gave the book's reason as often as Fable 5.2 for every call, and more often
@@ -217,6 +218,11 @@ export function checkAnswer(answer, sheet, { maxWords = 120 } = {}) {
   const facts = JSON.stringify(sheet);
   const found = [];
   const flag = (rule, problem) => found.push({ rule, problem });
+  // the rule line (withRule in concepts.js) in place of rule 15's: the pool's sentence is not the writer's, so no check
+  // reads it; the picker's "Here:" tie is checked with the text, and at most 12 words
+  const hereWords = answer.match(/^Here:(.*)$/m)?.[1].split(/\s+/).filter(Boolean).length ?? 0;
+  if (hereWords > 12) flag(15, `here ${hereWords} words`);
+  answer = answer.replace(/^Rule( bent)?: .*\n(?=Here:)/m, '');
   const words = answer.split(/\s+/).filter(Boolean).length;
   if (words > maxWords) flag(5, `${words} words`);
   if (/\[(takes|line ends)|\b\d+\.(\.\.)? (you|opp) /.test(answer)) flag(7, 'raw label');
@@ -284,6 +290,51 @@ Work out the board carefully from the FENs and lines; you may reason step by ste
 
 Reply with only JSON: [{"concept": "<short name, e.g. weak dark squares around the king>",
  "claim": "<one sentence a club player would read>", "checks": [{"pos": "...", "op": "...", "args": {...}, "expect": ...}]}]`;
+
+/** The rule picker (the pick's ideas model) behind the rule line: it gets the explainer's fact sheet and the pool, and
+    replies with at most one rule, its "Here:" tie and board checks, for withRule() in concepts.js. Stage 0 tested this
+    text (eval-out-rules/tools/picker.mjs); keep the two byte-identical. */
+export const PICKER = `You are a strong chess coach. You get a fact sheet (JSON) about one position: the side to move ("you") played the move in
+"played" and the engine prefers the move in "alternative". The sheet holds the engine lines with labels, and may hold
+"verified_concepts": positional ideas a program has already checked on the board.
+
+Your job: pick at most one rule of thumb from the list at the end that a club player can take away from this position
+and apply in later games. The rule is about the difference between the played move and the better move. The rule goes in a closing line under an answer that someone else writes; you do not
+explain the position.
+
+Which rule:
+- "follows": the better move is an instance of the rule, and the rule is about what differs between the played move
+  and the better move, not any feature that happens to be true in the position.
+- "bent": only when no rule follows. Either the better move breaks a rule, or the played move follows a rule and is still worse. The reason the rule gives way must be a fact on the sheet (a label, a
+  line, a verified idea), never your own guess.
+- At most one rule. A rule that follows always comes before a bent one.
+- When the difference between the two moves is a tactic, a threat or a material swing: reply [].
+- When a rule's "Unless" holds in this position, that rule does not follow.
+- When no rule fits clearly, reply []. An empty reply is better than a loose rule.
+
+"here": ties the rule to this board in at most 12 words, spoken to the player ("your", "his"). It names a square, piece
+or pawn that the sheet names. No numbers (no evaluation, no score, no count; square names like d5 are fine). Never
+name the engine or any program.
+
+Back the pick with board checks that a program will run (at least one, up to 6). If any check fails, the line is
+thrown away, so make every check something that is literally true on the board; never guess. The checks show that the rule's condition holds here and, for "follows",
+what the better move changes against the played one (the same check in the better line and the played line).
+
+Positions a check can name:
+- "start": the position before any move (the sheet's "fen").
+- "played:N" / "better:N": after the first N plies of that move's main line ("line_with_evals"; ply 1 is the move itself).
+- "played_leaf" / "better_leaf": the position at "explained_at_position_after" of that line ("explained_fen").
+
+${CHECK_LINES}
+
+Work out the board carefully from the FENs and lines; you may reason step by step before answering.
+
+Reply with only JSON: [] or [{"rule": "<id from the list>", "kind": "follows"|"bent", "here": "<at most 12 words>",
+ "checks": [{"pos": "...", "op": "...", "args": {...}, "expect": ...}]}]
+
+Rules (id: rule):
+${RULE_POOL.map(r => `${r.id}: ${r.rule}${r.unless ? `\n  Unless: ${r.unless}` : ''}`).join('\n')}
+`;
 
 // ---- Find plan ----
 

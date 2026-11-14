@@ -70,6 +70,12 @@ With the **Positional depth** switch on (under the Explain button, on by default
 move (a weak square, a bad bishop, an open file), each backed by board checks: which piece stands where,
 what it attacks, whether a pawn can ever cover a square. The extension runs every check on the board and
 throws away any idea with a check that does not hold, then writes the answer with the ideas that passed.
+
+An explanation may end with a rule of thumb from the chess books, when one fits what differs between the two
+moves: a `Rule:` line with the rule, and a `Here:` line that ties it to a square, piece or pawn on the board. A
+separate call picks at most one rule from a fixed list of 231 and backs it with the same kind of board checks;
+the extension drops the rule when a check does not hold. When no rule fits, as with a tactic, the answer ends
+with its "Next time:" line as before. The call runs with the positional depth switch on or off.
 On 39 positions from Silman's *How to Reassess Your Chess*, this took Opus from giving the book's reason in
 14 of 78 answers to 34, with no clear rise in false claims.
 
@@ -144,6 +150,8 @@ call that writes the answer sends about 6,100 tokens, 4,300 of them the system p
 150. The call for the positional ideas sends about 2,300 and gets back about 270. That comes to about 4
 cents. The model's thinking comes on top and was not measured; each 1,000 thinking tokens adds about 2 cents
 to a call. So an explanation costs about 5 to 10 cents with positional depth, and about 3 to 6 without it.
+The call that picks the rule line comes on top: it sends the list of rules, about 6,000 tokens, and the fact
+sheet, and was not measured.
 
 The default setting splits the work: Fable 5.2 makes the ideas call (the positional ideas, or the plan
 ideas), Opus 5.5 writes. Fable 5.2 costs twice as much per token ($8 per million input tokens, $40 per
@@ -173,6 +181,7 @@ The extension is about 1,000 lines of plain JavaScript, with no framework and no
 | `extension/features.js`    | The pawn and piece features, the one table that words them as labels, and the imbalances built from them. |
 | `extension/prompt.js`      | The explainer prompt (sheet legend and rules), the concept proposer's prompt and the rule checks the eval runs on each answer. |
 | `extension/concepts.js`    | The deeper read: the board checks behind each positional idea the proposer suggests, and their wording on the fact sheet. |
+| `extension/rules.js`       | The 231 book rules of thumb the rule line is picked from.                  |
 | `extension/panel.js`       | The side panel UI: the settings, the spinners and the rendering of a request's result. |
 | `extension/lichess.js`     | The lichess board: reads the position, plays a line, draws a plan's shapes. |
 | `extension/md.js`          | The small Markdown renderer and the move links in the answer.              |
@@ -226,7 +235,8 @@ with a plain one, judge both with `--deep`. `--facts DIR` reuses the fact sheets
 instead of running the engines, so a prompt or model change takes a minute or two instead of half an hour.
 `out-dir/summary.txt` lists the rule checks each answer fails: over 120 words, raw labels, a space after a move
 number, a check or move that is not in the fact sheet, story words, evals or other numbers, naming the engine, and a
-"Next time:" line that is not last or runs over 15 words. `--summary` re-checks
+"Next time:" line that is not last or runs over 15 words, and a rule line whose "Here:" runs over 12 words.
+`--summary` re-checks
 an existing `out-dir` without a run. `--judge` also has Claude Opus grade each answer against its fact sheet:
 whether it finds the decisive point, which of its claims the facts do not support, and whether it invents a
 cause for a term difference. The judge gets the sheet legend but not the rules, so a rule change under test does not

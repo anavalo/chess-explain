@@ -13,7 +13,7 @@
 // a pairwise pick is steadier than two separate grades. Kept in <name>.pair-<DIR name>.json; picks are always in out-dir/DIR terms.
 // --sample N --month YYYY-MM draws N fresh positions from that month's lichess database into eval-sets/holdout-YYYY-MM.json
 // (gitignored, run it with --set). Never tune on them: a new month per release.
-// --print explainer|judge|pair prints that prompt and exits (judge and pair: with the verdict schema, the reference
+// --print explainer|judge|pair|picker prints that prompt and exits (judge and pair: with the verdict schema, the reference
 // variant with --set), for subagent runs that write <name>.txt and <name>.judge.json without the API.
 // --compare DIR pairs out-dir's judge verdicts with DIR's by position (A = DIR, B = out-dir) and prints the flips with
 // their noise, overall and by the SF 15 gate; run it on two samples of the same arm first to see the noise floor.
@@ -35,7 +35,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
 import { NODES, aboutEqual, linePlies, llmWith, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
 import { answer, planAnswer } from './extension/request.js';
-import { JUDGE, PAIR, PLANNER, PLAN_SYSTEM, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
+import { JUDGE, PAIR, PICKER, PLANNER, PLAN_SYSTEM, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
 
 // ---- the judge (its prompts are in extension/prompt.js) ----
 
@@ -104,8 +104,9 @@ if (o.print) {
     pair: () => withSchema(legend(PAIR), ref ? PAIR_WITH_REFERENCE : PAIR_VERDICT),
     planner: () => PLANNER,
     plan: () => PLAN_SYSTEM,
+    picker: () => PICKER,
   };
-  if (!prompts[o.print]) throw new Error('--print takes explainer, judge, pair, planner or plan');
+  if (!prompts[o.print]) throw new Error('--print takes explainer, judge, pair, planner, plan or picker');
   process.stdout.write(prompts[o.print]());
   process.exit(0);
 }
