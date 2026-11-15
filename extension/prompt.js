@@ -282,24 +282,21 @@ Work out the board carefully from the FENs and lines; you may reason step by ste
 Reply with only JSON: [{"concept": "<short name, e.g. weak dark squares around the king>",
  "claim": "<one sentence a club player would read>", "checks": [{"pos": "...", "op": "...", "args": {...}, "expect": ...}]}]`;
 
-/** The rule picker (the pick's ideas model) behind the rule line: it gets the explainer's fact sheet and the pool, and
-    replies with at most one rule, its "Here:" tie and board checks, for the rule line in closing.js. Stage 0 tested this
-    text (eval-out-rules/tools/picker.mjs); keep the two byte-identical. */
-export const PICKER = `You are a strong chess coach. You get a fact sheet (JSON) about one position: the side to move ("you") played the move in
-"played" and the engine prefers the move in "alternative". The sheet holds the engine lines with labels, and may hold
-"verified_concepts": positional ideas a program has already checked on the board.
+/** The rule picker's prompt for a fact sheet (PICKER) or a plan sheet (PLAN_PICKER): one text, with the pieces that
+    differ between the two put in. Stage 0 tested both texts (eval-out-rules/tools/picker.mjs builds them the same way);
+    keep each byte-identical to its stage 0 file. */
+const picker = ({ sheet, job, follows, bent, tactic, pos, show }) => `You are a strong chess coach. ${sheet}
 
 Your job: pick at most one rule of thumb from the list at the end that a club player can take away from this position
-and apply in later games. The rule is about the difference between the played move and the better move. The rule goes in a closing line under an answer that someone else writes; you do not
+and apply in later games. ${job} The rule goes in a closing line under an answer that someone else writes; you do not
 explain the position.
 
 Which rule:
-- "follows": the better move is an instance of the rule, and the rule is about what differs between the played move
-  and the better move, not any feature that happens to be true in the position.
-- "bent": only when no rule follows. Either the better move breaks a rule, or the played move follows a rule and is still worse. The reason the rule gives way must be a fact on the sheet (a label, a
+- "follows": ${follows}
+- "bent": only when no rule follows. ${bent} The reason the rule gives way must be a fact on the sheet (a label, a
   line, a verified idea), never your own guess.
 - At most one rule. A rule that follows always comes before a bent one.
-- When the difference between the two moves is a tactic, a threat or a material swing: reply [].
+- ${tactic} reply [].
 - When a rule's "Unless" holds in this position, that rule does not follow.
 - When no rule fits clearly, reply []. An empty reply is better than a loose rule.
 
@@ -308,13 +305,9 @@ or pawn that the sheet names. No numbers (no evaluation, no score, no count; squ
 name the engine or any program.
 
 Back the pick with board checks that a program will run (at least one, up to 6). If any check fails, the line is
-thrown away, so make every check something that is literally true on the board; never guess. The checks show that the rule's condition holds here and, for "follows",
-what the better move changes against the played one (the same check in the better line and the played line).
+thrown away, so make every check something that is literally true on the board; never guess. ${show}
 
-Positions a check can name:
-- "start": the position before any move (the sheet's "fen").
-- "played:N" / "better:N": after the first N plies of that move's main line ("line_with_evals"; ply 1 is the move itself).
-- "played_leaf" / "better_leaf": the position at "explained_at_position_after" of that line ("explained_fen").
+${pos}
 
 ${CHECK_LINES}
 
@@ -326,6 +319,23 @@ Reply with only JSON: [] or [{"rule": "<id from the list>", "kind": "follows"|"b
 Rules (id: rule):
 ${RULE_POOL.map(r => `${r.id}: ${r.rule}${r.unless ? `\n  Unless: ${r.unless}` : ''}`).join('\n')}
 `;
+const positions = prompt => part(prompt, 'Positions a check can name:', '\n\nChecks (op, args -> value):');
+
+/** The rule picker (the pick's ideas model) behind an answer's rule line: it gets the explainer's fact sheet and the
+    pool, and replies with at most one rule, its "Here:" tie and board checks, for the rule line in closing.js. */
+export const PICKER = picker({
+  sheet: `You get a fact sheet (JSON) about one position: the side to move ("you") played the move in
+"played" and the engine prefers the move in "alternative". The sheet holds the engine lines with labels, and may hold
+"verified_concepts": positional ideas a program has already checked on the board.`,
+  job: 'The rule is about the difference between the played move and the better move.',
+  follows: `the better move is an instance of the rule, and the rule is about what differs between the played move
+  and the better move, not any feature that happens to be true in the position.`,
+  bent: 'Either the better move breaks a rule, or the played move follows a rule and is still worse.',
+  tactic: 'When the difference between the two moves is a tactic, a threat or a material swing:',
+  pos: positions(PROPOSER),
+  show: `The checks show that the rule's condition holds here and, for "follows",
+what the better move changes against the played one (the same check in the better line and the played line).`,
+});
 
 // ---- Find plan ----
 
@@ -373,6 +383,21 @@ that idea's checks names the square.
 Reply with only JSON: [{"concept": "<short name, e.g. knight to the d5 outpost>",
  "claim": "<one sentence a club player would read>", "targets": [{"square": "...", "kind": "attack"}],
  "beyond_line": false, "checks": [{"pos": "...", "op": "...", "args": {...}, "expect": ...}]}]`;
+
+/** The rule picker behind a plan's rule line: as PICKER, for the plan writer's sheet. */
+export const PLAN_PICKER = picker({
+  sheet: `You get a fact sheet (JSON) about one position: the side to move ("you") is to play,
+and "best" holds the engine's best move and its main line ("line_with_evals", with labels). The sheet may hold
+"verified_plan_ideas": plan ideas a program has already checked on the board.`,
+  job: 'The rule is about what the engine line does.',
+  follows: `the engine line is an instance of the rule, and the rule is about what the line does, not any feature
+  that happens to be true in the position.`,
+  bent: 'The engine line breaks a rule.',
+  tactic: 'When the line is a tactic, a threat or a material swing (for example "plan_kind" is "tactical"):',
+  pos: positions(PLANNER),
+  show: `The checks show that the rule's condition holds here and, for "follows",
+what the line changes (the same check at "start" and later in the line).`,
+});
 
 /** The plan writer's prompt: the plan sheet's legend (label meanings reused word for word from LEGEND) and the plan rules. */
 export const PLAN_SYSTEM = `You are a chess coach for club players (around 1200-1800 rating).

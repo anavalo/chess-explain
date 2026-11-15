@@ -144,8 +144,9 @@ export async function explainMove(engines, req, llm, { onSheet = () => {}, sheet
 
 /** The plan for a plan sheet, as answer() is for a fact sheet: the plan ideas of `model`'s ideas model (a pick, see
     stepModels) checked on the board (withPlan), then its writer writes the plan from the ideas that held. No idea held, or no idea list in the planner's
-    reply: throws, saying which, and the writer is never called. Returns {text, facts, ideas}. The eval starts here
-    from a saved sheet. */
+    reply: throws, saying which, and the writer is never called. The text comes with its closing line (closed() in
+    closing.js): beside the writer, the ideas model picks a rule line for a positional plan. Returns {text, facts,
+    ideas}. The eval starts here from a saved sheet. */
 export async function planAnswer(sheet, llm, { model = MODEL, onStep = () => {} } = {}) {
   onStep('Looking for plan ideas');
   // the planner plans the best line only; the writer gets the about-as-good move for one sentence
@@ -155,7 +156,7 @@ export async function planAnswer(sheet, llm, { model = MODEL, onStep = () => {} 
   if (!ideas) throw new Error(read ? 'No clear plan found here.' : 'Could not read the plan ideas in the reply.');
   const facts = { ...planned, also_good };
   onStep('Asking Claude');
-  return { text: await llm(PLAN_SYSTEM, facts, by.writer), facts, ideas };
+  return { text: await closed(() => llm(PLAN_SYSTEM, facts, by.writer), facts, llm, by.ideas), facts, ideas };
 }
 
 /** The Find plan task: the plan sheet and its planAnswer(), plus its result (see explainMove), whose shapes are

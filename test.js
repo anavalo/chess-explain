@@ -14,7 +14,7 @@ import { answer, explainMove, findPlan, panelRequests, planAnswer, sheetCache } 
 import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { lichessBoard } from './extension/lichess.js';
 import { linkMoves, md } from './extension/md.js';
-import { JUDGE, LEGEND, PAIR, PICKER, PLANNER, PLAN_SYSTEM, PROPOSER, checkAnswer, stepModels, systemFor, withConceptsEntry } from './extension/prompt.js';
+import { JUDGE, LEGEND, PAIR, PICKER, PLANNER, PLAN_PICKER, PLAN_SYSTEM, PROPOSER, checkAnswer, stepModels, systemFor, withConceptsEntry } from './extension/prompt.js';
 import { closingOf } from './extension/closing.js';
 import { CHECKS, claimsIn, planShapes, render, verify, withConcepts, withPlan } from './extension/concepts.js';
 import { RULE_POOL } from './extension/rules.js';
@@ -231,12 +231,13 @@ assert.match(one(start, { op: 'toString', args: {}, expect: 'x' }).error, /unkno
 const told = prompt => [...prompt.matchAll(/^- ([a-z_]+) \{/gm)].map(m => m[1]).sort();
 assert.deepEqual(told(PLANNER), Object.keys(CHECKS).sort());
 assert.deepEqual(told(PROPOSER), Object.keys(CHECKS).filter(op => op !== 'route').sort());
-// the rule picker gets the proposer's check rows word for word, and every rule of the pool; the pool has at most the
-// 231 rules stage 0 tested, unique ids and no source
+// the rule picker gets the proposer's check rows word for word, and every rule of the pool, for a fact sheet and for a
+// plan sheet, each with its own position names; the pool has at most the 231 rules stage 0 tested, unique ids and no source
 const rowLines = prompt => prompt.split('\n').filter(l => /^- [a-z_]+ \{/.test(l));
-assert.deepEqual(rowLines(PICKER), rowLines(PROPOSER));
+assert.deepEqual([rowLines(PICKER), rowLines(PLAN_PICKER)], [rowLines(PROPOSER), rowLines(PROPOSER)]);
+assert.ok(PICKER.includes('"better_leaf"') && !PICKER.includes('"best_leaf"') && PLAN_PICKER.includes('"best_leaf"') && !PLAN_PICKER.includes('"better_leaf"'));
 assert.ok(RULE_POOL.length > 0 && RULE_POOL.length <= 231 && new Set(RULE_POOL.map(r => r.id)).size === RULE_POOL.length);
-assert.ok(!/flores/i.test(JSON.stringify(RULE_POOL)) && RULE_POOL.every(r => PICKER.includes(`\n${r.id}: ${r.rule}\n`)));
+assert.ok(!/flores/i.test(JSON.stringify(RULE_POOL)) && RULE_POOL.every(r => [PICKER, PLAN_PICKER].every(p => p.includes(`\n${r.id}: ${r.rule}\n`))));
 // the claim list is found past brackets in the reasoning; no list at all is told apart from an empty one
 assert.deepEqual(claimsIn('The sheet says [takes pawn]. Claims:\n[{"concept": "a"}]\nDone [ok].'), [{ concept: 'a' }]);
 assert.deepEqual([claimsIn('none [here]'), claimsIn('[]')], [null, []]);
@@ -276,15 +277,40 @@ assert.equal(pr.read, true);
 // a saved plan sheet to its plan, as the eval's --facts does: the planner, then the writer, both with their own prompt
 const pCalls = [];
 const pa = await planAnswer(pSheet, (system, f, model) => (pCalls.push([system, model]), system === PLANNER ? planner : 'Play 1.e4.'), { model: 'claude-fable-5-2' });
-assert.deepEqual(pCalls, [[PLANNER, 'claude-fable-5-2'], [PLAN_SYSTEM, 'claude-fable-5-2']]); // the picked model plans and writes
-// a pick of two models, joined by '+': the first makes the ideas call, the second writes
+assert.deepEqual(pCalls, [[PLANNER, 'claude-fable-5-2'], [PLAN_SYSTEM, 'claude-fable-5-2'], [PLAN_PICKER, 'claude-fable-5-2']]); // the picked model plans, writes and picks the rule
+// a pick of two models, joined by '+': the first makes the ideas call and picks the rule, the second writes
 assert.deepEqual([stepModels('m1'), stepModels('m1+m2')], [{ ideas: 'm1', writer: 'm1' }, { ideas: 'm1', writer: 'm2' }]);
 pCalls.length = 0;
 await planAnswer(pSheet, (system, f, model) => (pCalls.push([system, model]), system === PLANNER ? planner : 'Play 1.e4.'), { model: 'm1+m2' });
-assert.deepEqual(pCalls, [[PLANNER, 'm1'], [PLAN_SYSTEM, 'm2']]);
+assert.deepEqual(pCalls, [[PLANNER, 'm1'], [PLAN_SYSTEM, 'm2'], [PLAN_PICKER, 'm1']]);
 assert.deepEqual([pa.text, pa.ideas, pa.facts.verified_plan_ideas], ['Play 1.e4.', pr.ideas, pr.ideas]);
 await assert.rejects(planAnswer(pSheet, async () => 'No plan.'), /Could not read the plan ideas in the reply/);
 await assert.rejects(planAnswer(pSheet, async () => '[]'), /No clear plan found here/);
+// a plan's rule line: the picker gets the writer's sheet; the line is a block of its own, before the "Also good:" line
+// when the plan has one, else last. No list, a failing check or a picker that throws leaves the plan as written, a
+// decline stays a decline, and a tactical plan asks no picker
+{
+  const [r] = RULE_POOL, rule = `Rule: ${r.rule[0].toLowerCase()}${r.rule.slice(1)}\nHere: your e4 pawn`;
+  const e4 = expect => JSON.stringify([{ rule: r.id, kind: 'follows', here: 'your e4 pawn', checks: [{ pos: 'best:1', op: 'piece_on', args: { square: 'e4' }, expect }] }]);
+  const asked = [];
+  const plan = async (written, reply = e4('white pawn'), sheet = pSheet) => (await planAnswer(sheet, async (system, f) => {
+    asked.push([system, f]);
+    if (system !== PLAN_PICKER) return system === PLANNER ? planner : written;
+    if (reply instanceof Error) throw reply;
+    return reply;
+  })).text;
+  const why = 'White has more space.\n\n**Goal:** the centre.\n\n1. Push with 1.e4.\n\n**Why:** the pawn takes **e5** from the knight.';
+  assert.equal(await plan(why), `${why}\n\n${rule}`);
+  assert.deepEqual(asked.map(([system]) => system), [PLANNER, PLAN_SYSTEM, PLAN_PICKER]);
+  assert.ok(asked[2][1] === asked[1][1] && 'verified_plan_ideas' in asked[2][1] && 'also_good' in asked[2][1]);
+  assert.equal(await plan(`${why}\n\n**Also good:** 1.d4 takes the centre too.\n`), `${why}\n\n${rule}\n\n**Also good:** 1.d4 takes the centre too.`);
+  assert.equal(await plan('Push.\nAlso good: 1.d4.'), `Push.\n\n${rule}\n\nAlso good: 1.d4.`);
+  for (const reply of [e4('empty'), 'No rule.', new Error('down')]) assert.equal(await plan(`${why}\n`, reply), `${why}\n`);
+  assert.equal(await plan(DECLINED), DECLINED);
+  asked.length = 0;
+  assert.equal(await plan(why, e4('white pawn'), { ...pSheet, plan_kind: 'tactical' }), why);
+  assert.deepEqual(asked.map(([system]) => system), [PLANNER, PLAN_SYSTEM]);
+}
 // the board: an arrow for the first move, circles only on targets the text names, red to attack, at most 4
 assert.deepEqual(planShapes(pSheet, pr.ideas, 'Play 1.e4, then hit **e5**.'),
   [{ orig: 'e2', dest: 'e4', brush: 'green' }, { orig: 'e5', brush: 'red' }, { orig: 'e4', brush: 'green' }]);
@@ -1067,7 +1093,7 @@ try {
   toHole('c5', [holeChecks('c5')[1]]), toHole('b6', holeChecks('b6')), toHole('d6', holeChecks('d6', 'more than 4'))]);
   const planStub = (system, f, model) => (planCalls.push([system, model]), system === PLANNER ? kingside : (sheets.push(f), 'Push to **f4** with 1.f4.'));
   const plan = await findPlan(engines, quiet, planStub, { onStep: t => planSteps.push(t) });
-  assert.deepEqual(planCalls, [[PLANNER, 'claude-fable-5-2'], [PLAN_SYSTEM, 'claude-opus-5-5']]); // the default pick
+  assert.deepEqual(planCalls, [[PLANNER, 'claude-fable-5-2'], [PLAN_SYSTEM, 'claude-opus-5-5'], [PLAN_PICKER, 'claude-fable-5-2']]); // the default pick
   assert.deepEqual(planSteps, ['Looking for plan ideas', 'Asking Claude']);
   assert.deepEqual([plan.facts.plan_kind, plan.facts.side_to_move], ['positional', 'White']);
   assert.match(plan.facts.best.line_with_evals, /^1\. you f4 \[pawn gains space/);
@@ -1089,7 +1115,7 @@ try {
     ? JSON.stringify([{ concept: 'king', claim: 'Your king is on g8.', checks: [{ pos: 'start', op: 'king_square', args: { side: 'black' }, expect: 'g8' }] }])
     : (sheets.push(f), '(stub)'));
   const p16 = await findPlan(engines, '3r2k1/1pn2qbp/pN1p2p1/P1pP1p1n/2N5/3Q4/1PPB1PPP/4R1K1 b - - 2 21', closeStub);
-  assert.deepEqual(seen, [[PLANNER, false], [PLAN_SYSTEM, true]]);
+  assert.deepEqual(seen, [[PLANNER, false], [PLAN_SYSTEM, true], [PLAN_PICKER, true]]); // the rule picker gets the writer's sheet
   assert.deepEqual(p16.result.rows.map(m => [m.kind, m.move]), [['best', 'Bf8'], ['also', 'Nf6']]);
   assert.match(p16.facts.also_good.line_with_evals, /^21\.\.\. you Nf6 \[attacks opp's pawn on d5/);
   assert.deepEqual(p16.result.lines, [p16.facts.best.line_with_evals, p16.facts.also_good.line_with_evals]);

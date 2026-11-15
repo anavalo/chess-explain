@@ -19,8 +19,8 @@
 // their noise, overall and by the SF 15 gate; run it on two samples of the same arm first to see the noise floor.
 // --deep runs the deeper read before each answer (as the panel's positional depth switch does), and gives the judge, the
 // pairwise judge and --print the "verified_concepts" legend entry; to compare a deep run with a plain one, judge both with --deep.
-// --plan builds Find plan's plan sheets (with --no-llm) for each position's FEN instead, and --print planner|plan prints
-// the planner and plan-writer prompts, for subagent runs; the summary checks plans at 200 words. A plan sheet in
+// --plan builds Find plan's plan sheets (with --no-llm) for each position's FEN instead, and --print planner|plan|plan-picker
+// prints the planner, plan-writer and plan rule picker prompts, for subagent runs; the summary checks plans at 200 words. A plan sheet in
 // --facts DIR gets its plan (the planner, then the plan writer), not an explanation.
 // --masked writes <name>.masked.txt per answer, with the two candidate moves hidden, for a reader (a Haiku subagent) to say
 // which move the text argues for in <name>.masked.json ({"better": "<SAN>"}); the summary counts how many it recovers.
@@ -36,7 +36,7 @@ import { parseArgs, promisify } from 'node:util';
 import { NODES, aboutEqual, linePlies, llmWith, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
 import { closingOf } from './extension/closing.js';
 import { answer, planAnswer } from './extension/request.js';
-import { JUDGE, PAIR, PICKER, PLANNER, PLAN_SYSTEM, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
+import { JUDGE, PAIR, PICKER, PLANNER, PLAN_PICKER, PLAN_SYSTEM, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
 
 // ---- the judge (its prompts are in extension/prompt.js) ----
 
@@ -106,8 +106,9 @@ if (o.print) {
     planner: () => PLANNER,
     plan: () => PLAN_SYSTEM,
     picker: () => PICKER,
+    'plan-picker': () => PLAN_PICKER,
   };
-  if (!prompts[o.print]) throw new Error('--print takes explainer, judge, pair, planner, plan or picker');
+  if (!prompts[o.print]) throw new Error('--print takes explainer, judge, pair, planner, plan, picker or plan-picker');
   process.stdout.write(prompts[o.print]());
   process.exit(0);
 }

@@ -61,7 +61,7 @@ A proposed idea whose board checks all held, shown on the fact sheet in `verifie
 _Avoid_: concept (when an unchecked proposal is meant)
 
 **Closing line**:
-The line that ends an answer with something to take to later games: the rule line when a rule of thumb fits the position, else the advice line.
+The line that ends an answer or a plan with something to take to later games. In an answer it is the rule line when a rule of thumb fits the position, else the advice line. A plan has only a rule line, under its reason, and none when the plan is tactical or no rule of thumb fits.
 _Avoid_: last line, takeaway
 
 **Advice line**:
@@ -69,7 +69,7 @@ The closing line the explainer writes itself, starting "Next time:": the habit t
 _Avoid_: tip, next-time line
 
 **Rule line**:
-The closing line made from a book rule of thumb: the rule's sentence, word for word from a fixed list, then a "Here:" tie to a square, piece or pawn on the board. It reads "Rule bent" when the better move breaks the rule of thumb.
+The closing line made from a book rule of thumb: the rule's sentence, word for word from a fixed list, then a "Here:" tie to a square, piece or pawn on the board. It reads "Rule bent" when the better move, or a plan's engine line, breaks the rule of thumb.
 _Avoid_: principle line; rule (alone, for a rule of thumb: the rules are the explainer's writing instructions)
 
 **Rule picker**:
@@ -91,7 +91,7 @@ A proposed idea whose board checks all held, shown on the plan sheet with its ch
 _Avoid_: concept, verified concept (those belong to a fact sheet)
 
 **Plan**:
-What the user gets for one plan sheet: a goal, two or three steps and a reason, written from the plan ideas.
+What the user gets for one plan sheet: a goal, two or three steps and a reason, written from the plan ideas, with a closing line when a rule of thumb fits.
 _Avoid_: answer (that one explains two moves)
 
 ## Panel

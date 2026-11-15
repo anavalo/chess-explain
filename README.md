@@ -93,6 +93,8 @@ Sometimes there is no blunder to explain, only a position and the question of wh
    and throws away any idea with a check that does not hold.
 3. The same model writes the plan from the ideas that passed: a goal, two or three steps with the
    moves of the engine line that carry them out, and why it works.
+4. A positional plan may end with a rule of thumb from the chess books, picked and checked as for an
+   explanation: a `Rule:` line and a `Here:` line under the plan's reason. A tactical plan gets none, and no call.
 
 The first move is drawn on the board as a green arrow, and the squares the plan aims at are circled:
 red to attack, green to occupy. They are only drawn, never saved to a study.
@@ -168,7 +170,8 @@ every call (not measured; expect about twice those figures).
 The system prompt is cached for 5 minutes, so a second explanation within 5 minutes pays about 1.6 cents
 less for its input; the first pays about 0.4 cents more to write the cache. Asking about the same move
 again (the same position, the same two moves compared, the same depth, model and extension version) shows the
-saved answer, for free. A plan is two calls to the model: one for the ideas, one for the text.
+saved answer, for free. A plan is two calls to the model: one for the ideas, one for the text. A positional plan
+has a third, which picks its rule of thumb.
 
 ## Development
 
@@ -181,7 +184,7 @@ The extension is about 1,000 lines of plain JavaScript, with no framework and no
 | `extension/features.js`    | The pawn and piece features, the one table that words them as labels, and the imbalances built from them. |
 | `extension/prompt.js`      | The explainer prompt (sheet legend and rules), the concept proposer's prompt and the rule checks the eval runs on each answer. |
 | `extension/concepts.js`    | The deeper read: the board checks behind each positional idea the proposer suggests, and their wording on the fact sheet. |
-| `extension/closing.js`     | The closing line of an answer: the rule picker's call, the rule line it makes, and the "Next time:" line it takes the place of. |
+| `extension/closing.js`     | The closing line of an answer or a plan: the rule picker's call, the rule line it makes and where the line goes in the text. |
 | `extension/rules.js`       | The 231 book rules of thumb the rule line is picked from.                  |
 | `extension/panel.js`       | The side panel UI: the settings, the spinners and the rendering of a request's result. |
 | `extension/lichess.js`     | The lichess board: reads the position, plays a line, draws a plan's shapes. |
@@ -249,11 +252,12 @@ plain "about as good" verdict, no LLM call, and is left out of the checks and th
 many answers go over 120 words.
 
 ```sh
-node eval.js --print explainer|judge|pair [--model ID] [--set FILE] [--deep]
+node eval.js --print explainer|judge|pair|picker|planner|plan|plan-picker [--model ID] [--set FILE] [--deep]
 ```
 
-prints that prompt exactly and exits: the explainer prompt for `--model` (default: Opus 5.5 writes), or a judge prompt with the
-JSON schema its verdict must match. Use it to run the explainer and judge as Claude Code subagents instead of through
+prints that prompt exactly and exits: the explainer prompt for `--model` (default: Opus 5.5 writes), a judge prompt with the
+JSON schema its verdict must match, the rule picker's prompt (`picker` for an explanation, `plan-picker` for a plan),
+or the planner's and the plan writer's. Use it to run the explainer and judge as Claude Code subagents instead of through
 the API.
 
 ```sh
