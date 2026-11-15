@@ -14,7 +14,7 @@ import {
   DECLINED, ask as anthropic, factSheet, llmWith, uciEngine, lineToLeaf, moveLabels, pawnPushes, pickInfos, pins, planFacts, sanToUci, sf15Terms, trapped,
 } from './src/explain.ts';
 import { answer, explainMove, findPlan, panelRequests, planAnswer, sheetCache } from './src/request.ts';
-import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './src/features.ts';
+import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, outpostSquares, pawnWeaknesses, word } from './src/features.ts';
 import { lichessBoard } from './src/lichess.ts';
 import { linkMoves, md } from './src/md.ts';
 import { JUDGE, LEGEND, PAIR, PICKER, PLANNER, PLAN_PICKER, PLAN_SYSTEM, PROPOSER, checkAnswer, stepModels, systemFor, withConceptsEntry } from './src/prompt.ts';
@@ -157,6 +157,10 @@ assert.deepEqual(imbalances(pos('r1b2rk1/1p1nqpbp/2p2np1/p3p3/P3P3/2NQBN1P/1PP1B
 assert.deepEqual(holes(pos('4k3/8/2p5/4p3/8/8/8/3BK3 w - - 0 1').board, 'white').map(h => h.square), ['f5']);
 assert.deepEqual(holes(pos('4k3/8/2p5/4p3/8/8/8/3NK3 w - - 0 1').board, 'white').map(h => h.square), ['f5', 'b6']);
 assert.deepEqual(holes(pos('4k3/8/2p5/4p3/8/8/8/N3K3 w - - 0 1').board, 'white').map(h => h.square), ['f5']);
+// a square the enemy's own piece stands on is held, not a hole or an outpost square to bring a piece to: Black's knight
+// on c6 and White's bishop on d3, then c6 once d5 has made it an outpost with the knight still there
+assert.deepEqual(imbalances(pos('r3kb1r/pbp1q1pp/1pnppn2/5p2/3P1B2/2PBPN1P/PPQN1PP1/R3K2R b KQkq - 0 9')), { yours: null, opponents: null, both: null });
+assert.deepEqual(outpostSquares(pos('r3kb1r/pbp1q1pp/1pnp1n2/3Ppp2/5B2/2PBPN1P/PPQN1PP1/R3K2R b KQkq - 0 10').board, 'white').map(f => word(f)), ['outpost square e6']);
 // routes: own pieces block, an enemy piece can be taken but not passed; no route for pawns
 const xl = pos('r1b2rk1/1p1nqpbp/2p2np1/p3p3/P3P3/2NQBN1P/1PP1BPP1/R4RK1 w - - 0 1').board, at = parseSquare;
 assert.deepEqual([route(xl, at('f3'), at('d6')), route(xl, at('e3'), at('b6')), route(xl, at('d3'), at('d7')), route(xl, at('d3'), at('d8'), 1), route(xl, at('a4'), at('a5'))],

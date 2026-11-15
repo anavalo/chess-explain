@@ -137,14 +137,15 @@ export function route(board: Board, from: Square, to: Square, max = 4): number |
 }
 
 /** Holes for `color` in the enemy camp (its 5th-6th rank, b-g files): squares no enemy pawn can ever attack, next to an
-    enemy pawn that has gone past them, with no pawn on them and none of `color`'s pawns defending them (that is an
-    outpost). Silman's holes, where a piece can settle for good. Only the two a piece of `color` can reach soonest, and
-    only those a knight reaches in 3 moves or a bishop of the square's colour in 2: a far hole nobody can use is noise. */
+    enemy pawn that has gone past them, with no pawn and no enemy piece on them (a piece there holds the square) and none
+    of `color`'s pawns defending them (that is an outpost). Silman's holes, where a piece can settle for good. Only the
+    two a piece of `color` can reach soonest, and only those a knight reaches in 3 moves or a bishop of the square's
+    colour in 2: a far hole nobody can use is noise. */
 export function holes(board: Board, color: Color): FeatureOf<'hole'>[] {
   const found: { sq: Square; near: number }[] = [], theirs = board.pawn.intersect(board[opposite(color)]);
   const knights = [...board.knight.intersect(board[color])], bishops = [...board.bishop.intersect(board[color])];
   const camp = SquareSet.fromRank(color === 'white' ? 4 : 3).union(SquareSet.fromRank(color === 'white' ? 5 : 2));
-  for (const sq of HOLE_FILES.intersect(camp).diff(board.pawn)) {
+  for (const sq of HOLE_FILES.intersect(camp).diff(board.pawn).diff(board[opposite(color)])) {
     const f = squareFile(sq), sides = SquareSet.fromFile(f - 1).union(SquareSet.fromFile(f + 1));
     if (!theirs.intersects(sides) || enemyPawnCanAttack(board, sq, color)) continue;
     if (pawnAttacks(opposite(color), sq).intersects(board.pawn.intersect(board[color]))) continue; // an outpost
@@ -162,7 +163,7 @@ export function holes(board: Board, color: Color): FeatureOf<'hole'>[] {
     ponytail: c-f files only, where a piece there matters most; add the wings if answers miss a g5/b5 hole. */
 export function outpostSquares(board: Board, color: Color): Feature[] {
   const out: Feature[] = [], theirs = board.pawn.intersect(board[opposite(color)]);
-  for (const sq of CENTRE_FILES.diff(board[color]).diff(board.pawn)) {
+  for (const sq of CENTRE_FILES.diff(board.occupied)) {
     const f = squareFile(sq), sides = SquareSet.fromFile(f - 1).union(SquareSet.fromFile(f + 1));
     if (theirs.intersects(sides) && isOutpost(board, sq, color)) out.push({ kind: 'outpostSquare', square: makeSquare(sq) });
   }
