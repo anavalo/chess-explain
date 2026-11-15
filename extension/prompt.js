@@ -168,7 +168,7 @@ const SIZE = `. Size words compare the two moves, not the position: a gap under 
    better", and never call it winning, an edge or an advantage for you. Say what changed hands in pieces ("you win a
    pawn"), not in pawns.`;
 
-/** Rule 15: the "Next time:" line; Opus made 36 of 40 specific to the position (A/B 2026-11-03). */
+/** Rule 15: the "Next time:" line, which closing.js reads back; Opus made 36 of 40 specific to the position (A/B 2026-11-03). */
 const ADVICE = `
 15. End with one last line, on its own, starting "Next time:": the habit that would have found the better move here,
    at most 15 words, naming this position's piece, square or move it applies to. Take it from the fact that decided
@@ -213,16 +213,12 @@ const PAWN_PLAN_END = "better move cleared that pawn's way. See rule 13.";
 if (!LEGEND.includes(PAWN_PLAN_END)) throw new Error('the legend has no pawn plan entry to put the later entries after');
 
 /** Rule checks: mechanical tests of one answer against its fact sheet. They catch format slips, not wrong chess.
-    Returns [{rule, problem}], empty when the answer passes. A plan (PLAN_SYSTEM) is checked with maxWords 200. */
+    Returns [{rule, problem}], empty when the answer passes. A plan (PLAN_SYSTEM) is checked with maxWords 200.
+    The closing line is not read here: closingOf() in closing.js gives the text to check and rule 15's problems. */
 export function checkAnswer(answer, sheet, { maxWords = 120 } = {}) {
   const facts = JSON.stringify(sheet);
   const found = [];
   const flag = (rule, problem) => found.push({ rule, problem });
-  // the rule line (withRule in concepts.js) in place of rule 15's: the pool's sentence is not the writer's, so no check
-  // reads it; the picker's "Here:" tie is checked with the text, and at most 12 words
-  const hereWords = answer.match(/^Here:(.*)$/m)?.[1].split(/\s+/).filter(Boolean).length ?? 0;
-  if (hereWords > 12) flag(15, `here ${hereWords} words`);
-  answer = answer.replace(/^Rule( bent)?: .*\n(?=Here:)/m, '');
   const words = answer.split(/\s+/).filter(Boolean).length;
   if (words > maxWords) flag(5, `${words} words`);
   if (/\[(takes|line ends)|\b\d+\.(\.\.)? (you|opp) /.test(answer)) flag(7, 'raw label');
@@ -242,11 +238,6 @@ export function checkAnswer(answer, sheet, { maxWords = 120 } = {}) {
   // a move still losing (eval below zero) called winning, an edge or better for you, not better than the played move
   const absolute = sheet.alternative?.cp < 0 && answer.match(/\bwinning\b(?! (a|an|the|two|back|material|pawns?|pieces?)\b)|\ban? (small |slight |clear )?(edge|advantage)\b|\bbetter for you\b/gi);
   if (absolute) flag(14, `absolute eval: ${[...new Set(absolute.map(w => w.toLowerCase()))].join(' ')}`);
-  // rule 15, for the models that get it: the "Next time:" line closes the answer in at most 15 words
-  const lines = answer.trim().split('\n'), advice = lines.findIndex(l => /^\**Next time:/.test(l));
-  if (advice >= 0 && advice < lines.length - 1) flag(15, 'advice not last');
-  const adviceWords = advice >= 0 ? lines[advice].replace(/^\**Next time:\**/, '').split(/\s+/).filter(Boolean).length : 0;
-  if (adviceWords > 15) flag(15, `advice ${adviceWords} words`);
   return found;
 }
 
@@ -292,7 +283,7 @@ Reply with only JSON: [{"concept": "<short name, e.g. weak dark squares around t
  "claim": "<one sentence a club player would read>", "checks": [{"pos": "...", "op": "...", "args": {...}, "expect": ...}]}]`;
 
 /** The rule picker (the pick's ideas model) behind the rule line: it gets the explainer's fact sheet and the pool, and
-    replies with at most one rule, its "Here:" tie and board checks, for withRule() in concepts.js. Stage 0 tested this
+    replies with at most one rule, its "Here:" tie and board checks, for the rule line in closing.js. Stage 0 tested this
     text (eval-out-rules/tools/picker.mjs); keep the two byte-identical. */
 export const PICKER = `You are a strong chess coach. You get a fact sheet (JSON) about one position: the side to move ("you") played the move in
 "played" and the engine prefers the move in "alternative". The sheet holds the engine lines with labels, and may hold

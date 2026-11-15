@@ -60,6 +60,22 @@ _Avoid_: op, primitive, tool
 A proposed idea whose board checks all held, shown on the fact sheet in `verified_concepts` with its checks in words.
 _Avoid_: concept (when an unchecked proposal is meant)
 
+**Closing line**:
+The line that ends an answer with something to take to later games: the rule line when a rule of thumb fits the position, else the advice line.
+_Avoid_: last line, takeaway
+
+**Advice line**:
+The closing line the explainer writes itself, starting "Next time:": the habit that would have found the better move.
+_Avoid_: tip, next-time line
+
+**Rule line**:
+The closing line made from a book rule of thumb: the rule's sentence, word for word from a fixed list, then a "Here:" tie to a square, piece or pawn on the board. It reads "Rule bent" when the better move breaks the rule of thumb.
+_Avoid_: principle line; rule (alone, for a rule of thumb: the rules are the explainer's writing instructions)
+
+**Rule picker**:
+The call, to the picked model, that chooses at most one rule of thumb for a sheet and backs it with board checks. A pick with a board check that fails gives no rule line.
+_Avoid_: picker (alone), rule LLM
+
 ## Planning
 
 **Plan sheet**:

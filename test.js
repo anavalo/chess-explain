@@ -15,7 +15,8 @@ import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWea
 import { lichessBoard } from './extension/lichess.js';
 import { linkMoves, md } from './extension/md.js';
 import { JUDGE, LEGEND, PAIR, PICKER, PLANNER, PLAN_SYSTEM, PROPOSER, checkAnswer, stepModels, systemFor, withConceptsEntry } from './extension/prompt.js';
-import { CHECKS, claimsIn, planShapes, render, verify, withConcepts, withPlan, withRule } from './extension/concepts.js';
+import { closingOf } from './extension/closing.js';
+import { CHECKS, claimsIn, planShapes, render, verify, withConcepts, withPlan } from './extension/concepts.js';
 import { RULE_POOL } from './extension/rules.js';
 
 const pos = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
@@ -47,7 +48,7 @@ assert.equal(Object.values(KINDS).filter(k => !k.sample).length, 2); // pieceImb
 
 // rule checks: each answer fails exactly the rules listed; move numbers, squares and ranks are not numbers
 const sheet = { played: { line_with_evals: '12. you Nf3 [x] (+0.3) 12... opp Nc6 (+0.2)' } };
-const failed = answer => checkAnswer(answer, sheet).map(c => c.rule);
+const failed = answer => { const { read, found } = closingOf(answer); return [...found, ...checkAnswer(read, sheet)].map(c => c.rule); };
 assert.deepEqual(failed('After 12.Nf3 Nc6 your rook reaches the 7th rank.\nNext time: ask what Nf3 gives up.'), []);
 assert.deepEqual(failed('word '.repeat(121)), [5]);
 assert.deepEqual(checkAnswer('word '.repeat(150), sheet, { maxWords: 200 }), []); // a plan may run to 200 words
@@ -70,6 +71,12 @@ assert.deepEqual(checkAnswer('12.Nf3 loses less, winning a pawn.', losing), []);
 assert.deepEqual(checkAnswer('12.Nf3 is a small edge.', { ...sheet, alternative: { cp: 40 } }), []);
 assert.deepEqual(failed('Next time: ask.\nThen play on.'), [15]);
 assert.deepEqual(failed(`Next time: ${'word '.repeat(16)}`), [15]);
+// both limits are met by a line at the limit: 15 words of advice (bold or not), a tie of 12
+assert.deepEqual(failed(`**Next time:** ${'word '.repeat(15)}`), []);
+assert.deepEqual(failed(`12.Nf3 wins.\nRule: we trade.\nHere: ${'word '.repeat(12)}`), []);
+// a bent rule line's sentence is skipped too; a "Rule:" line with no "Here:" under it is the writer's own, and is read
+assert.deepEqual(failed('12.Nf3 wins.\nRule bent: we keep the initiative.\nHere: your rook.'), []);
+assert.deepEqual(failed('Rule: we keep the initiative.\nThen play on.'), [5]);
 
 assert.deepEqual(sanToUci('r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1', ['O-O', 'O-O-O']), ['e1g1', 'e8c8']);
 
@@ -500,24 +507,26 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
     assert.deepEqual(plain[1], depth ? (await withConcepts(cSheet, async () => JSON.stringify(claims))).facts : cSheet);
   }
 }
-// the rule line (withRule): a pool rule whose checks all hold, as "Rule:" / "Here:", a followed rule before a bent one;
-// a failing check, no check, an unknown id, another kind, an empty tie or one over 12 words, no list or a picker that
-// throws: null
+// the rule line, through answer(): a pool rule whose checks all hold, as "Rule:" / "Here:", a followed rule before a
+// bent one; a failing check, no check, an unknown id, another kind, an empty tie or one over 12 words: no rule line.
+// The picker is the ideas model, and gets the sheet
 {
   const d4 = [{ pos: 'better:1', op: 'piece_on', args: { square: 'd4' }, expect: 'white pawn' }];
   const pick = (rule, kind = 'follows', here = 'your d4 pawn', checks = d4) => ({ rule, kind, here, checks });
-  const line = (...picks) => withRule(cSheet, async (system, f, model) => (assert.deepEqual([system, f, model], [PICKER, cSheet, 'claude-fable-5-2']), JSON.stringify(picks)));
+  const line = async (...picks) => (await answer(cSheet, async (system, f, model) => (system !== PICKER ? 'Fine.'
+    : (assert.deepEqual([f, model], [cSheet, 'claude-fable-5-2']), JSON.stringify(picks))))).text.replace(/^Fine\.\n?/, '') || null;
   const [a, b] = RULE_POOL, said = r => r.rule[0].toLowerCase() + r.rule.slice(1);
   assert.equal(await line(pick(a.id)), `Rule: ${said(a)}\nHere: your d4 pawn`);
   assert.equal(await line(pick(a.id, 'bent'), pick(b.id)), `Rule: ${said(b)}\nHere: your d4 pawn`);
   assert.equal(await line(pick(a.id, 'bent')), `Rule bent: ${said(a)}\nHere: your d4 pawn`);
+  assert.equal(await line(pick('Z9-999'), pick(b.id)), `Rule: ${said(b)}\nHere: your d4 pawn`); // a pick that does not count is passed over
+  assert.equal(await line(pick(a.id, 'follows', ' your d4 pawn ')), `Rule: ${said(a)}\nHere: your d4 pawn`);
+  assert.equal(await line(pick(a.id, 'follows', 'word '.repeat(12))), `Rule: ${said(a)}\nHere: ${'word '.repeat(12).trim()}`);
   for (const bad of [pick(a.id, 'follows', 'x', [{ ...d4[0], expect: 'empty' }]), pick(a.id, 'follows', 'x', []), pick('Z9-999'), pick(a.id, 'maybe'),
     pick(a.id, 'follows', ' '), pick(a.id, 'follows', 'word '.repeat(13))])
     assert.equal(await line(bad), null);
-  assert.equal(await withRule(cSheet, async () => 'No rule.'), null);
-  assert.equal(await withRule(cSheet, async () => { throw new Error('down'); }), null);
-  // in answer(): the rule line takes the place of the "Next time:" line, or closes a text that has none; no rule line
-  // (a failing check, an unknown id, a picker that throws) leaves the text as written, and a decline stays a decline
+  // the rule line takes the place of the "Next time:" line, or closes a text that has none; no rule line (a failing
+  // check, an unknown id, no list, a picker that throws) leaves the text as written, and a decline stays a decline
   const text = 'd4 takes the centre.\nNext time: ask what e4 gives up.', rule = `Rule: ${said(a)}\nHere: your d4 pawn`;
   const good = JSON.stringify([pick(a.id)]);
   const run = async (reply, written = text) => (await answer(cSheet, async system => {
@@ -528,7 +537,9 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
   assert.equal(await run(good), `d4 takes the centre.\n${rule}`);
   assert.equal(await run(good, 'd4 takes the centre.\n\n**Next time:** ask.\n'), `d4 takes the centre.\n\n${rule}`);
   assert.equal(await run(good, 'd4 takes the centre.'), `d4 takes the centre.\n${rule}`);
-  for (const reply of [JSON.stringify([pick(a.id, 'follows', 'x', [{ ...d4[0], expect: 'empty' }])]), JSON.stringify([pick('Z9-999')]), new Error('down')])
+  assert.equal(await run(good, 'd4.\nNext time: ask.\nThen play on.'), `d4.\n${rule}\nThen play on.`); // only the advice line goes
+  assert.equal(await run(good, ''), ''); // no text, no rule line
+  for (const reply of [JSON.stringify([pick(a.id, 'follows', 'x', [{ ...d4[0], expect: 'empty' }])]), JSON.stringify([pick('Z9-999')]), 'No rule.', new Error('down')])
     assert.equal(await run(reply), text);
   assert.equal(await run(good, DECLINED), DECLINED);
   // the stream: until the picker settles (after the writer's last piece), nothing from "Next time:" on shows, nor a
@@ -541,6 +552,11 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
   assert.deepEqual(heard, ['d4 takes', 'd4 takes the centre.\n', 'd4 takes the centre.\n', 'd4 takes the centre.\n']);
   settle();
   assert.deepEqual([(await streamed).text, heard.slice(4)], [`d4 takes the centre.\n${rule}`, [`d4 takes the centre.\n${rule}`]]);
+  // a bold "**Next time:**" is held back from its first star; a text that ends on a line break is not held back
+  const bold = [];
+  await answer(cSheet, (system, f, model, onText) => (system === PICKER ? good
+    : (async () => { let t = ''; for (const p of ['d4.\n', '**', 'Next time:** ask.']) onText(t += p); return t; })()), { onText: t => bold.push(t) });
+  assert.deepEqual(bold, ['d4.\n', 'd4.\n', 'd4.\n', `d4.\n${rule}`]);
 }
 // the sheets of the next moves, built ahead on fake engines. A search answers a millisecond later, or at once on `stop`,
 // with the first legal moves, scored by the position and by the searches the engine ran since ucinewgame (as its hash

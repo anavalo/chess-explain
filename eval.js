@@ -34,6 +34,7 @@ import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
 import { NODES, aboutEqual, linePlies, llmWith, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
+import { closingOf } from './extension/closing.js';
 import { answer, planAnswer } from './extension/request.js';
 import { JUDGE, PAIR, PICKER, PLANNER, PLAN_SYSTEM, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
 
@@ -182,7 +183,8 @@ const report = explained.map(n => {
 writeFileSync(`${out}/summary.txt`, [...report, ...[...equal].map(n => `${n} about equal, no LLM`)].sort().join('\n') + '\n');
 console.log(`\n${answers.length} positions, ${equal.size} about equal (no LLM), ${report.filter(r => !r.endsWith(' ok')).length} `
   + `of the other ${report.length} flagged (see ${out}/summary.txt)`);
-const words = explained.map(n => (readRun(out, n)?.answer ?? '').split(/\s+/).filter(Boolean).length)
+// the words rule 5 counts: a rule line's sentence is the pool's, not the writer's
+const words = explained.map(n => closingOf(readRun(out, n)?.answer ?? '').read.split(/\s+/).filter(Boolean).length)
   .filter(Boolean).sort((x, y) => x - y);
 console.log(`answers quoting moves past the leaf: ${pastCount}`);
 if (words.length) console.log(`median ${words[words.length >> 1]} words, ${words.filter(w => w > 120).length} over 120`);
@@ -346,8 +348,9 @@ function pastLeaf({ sheet, answer }) {
 
 /** The rule checks on one run's answer. */
 function problems({ sheet, answer }) {
-  const s = JSON.parse(sheet);
-  return answer ? checkAnswer(answer, s, { maxWords: s.best ? 200 : 120 }).map(c => c.problem) : [];
+  if (!answer) return [];
+  const s = JSON.parse(sheet), { read, found } = closingOf(answer);
+  return [...found, ...checkAnswer(read, s, { maxWords: s.best ? 200 : 120 })].map(c => c.problem);
 }
 
 /** Writes <name>.masked.txt: the answer with the better move written "[better move]" and the played one "[played move]",

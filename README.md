@@ -181,6 +181,7 @@ The extension is about 1,000 lines of plain JavaScript, with no framework and no
 | `extension/features.js`    | The pawn and piece features, the one table that words them as labels, and the imbalances built from them. |
 | `extension/prompt.js`      | The explainer prompt (sheet legend and rules), the concept proposer's prompt and the rule checks the eval runs on each answer. |
 | `extension/concepts.js`    | The deeper read: the board checks behind each positional idea the proposer suggests, and their wording on the fact sheet. |
+| `extension/closing.js`     | The closing line of an answer: the rule picker's call, the rule line it makes, and the "Next time:" line it takes the place of. |
 | `extension/rules.js`       | The 231 book rules of thumb the rule line is picked from.                  |
 | `extension/panel.js`       | The side panel UI: the settings, the spinners and the rendering of a request's result. |
 | `extension/lichess.js`     | The lichess board: reads the position, plays a line, draws a plan's shapes. |

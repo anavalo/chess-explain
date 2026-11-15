@@ -1,5 +1,5 @@
-// The rule line's pool: book rules of thumb as {id, rule, unless?}, the picker's list (PICKER in prompt.js, withRule
-// in concepts.js). Written by eval-out-rules/tools/pool.mjs; do not edit by hand.
+// The rule line's pool: book rules of thumb as {id, rule, unless?}, the picker's list (PICKER in prompt.js, the rule
+// line in closing.js). Written by eval-out-rules/tools/pool.mjs; do not edit by hand.
 export const RULE_POOL = [
   {"id":"A1-001","rule":"When we have a pawn majority, we advance it to create a passed pawn."},
   {"id":"A1-002","rule":"When the opponent's majority is crippled by doubled pawns, we trade down toward a king-and-pawn ending."},

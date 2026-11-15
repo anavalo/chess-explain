@@ -6,7 +6,8 @@
 // answers, the engines, the task and the reasons kept for later moves.
 
 import { DECLINED, NODES, aboutEqual, factSheet, moveNo, planFacts, position, san, sanToUci } from './explain.js';
-import { planShapes, withConcepts, withPlan, withRule } from './concepts.js';
+import { closed } from './closing.js';
+import { planShapes, withConcepts, withPlan } from './concepts.js';
 import { MODEL, PLAN_SYSTEM, stepModels, systemFor } from './prompt.js';
 
 const ANSWERS = 200; // saved answers kept (see savedAnswers), oldest dropped first
@@ -85,8 +86,8 @@ export function sheetCache() {
     after a deeper read when `depth` is on. `llm(system, facts, model, onText)` is one LLM call: ask() with the key, or a
     test stub. `model` is a pick (see stepModels): its ideas model makes the deeper read, its writer the text. `onStep(words)` hears which call comes next; `onText` streams the explainer's text (see ask). `recent`:
     reasons given for earlier moves of the line (see gameReasons); when there are any, the explainer's facts (never the
-    proposer's) end with them as "recent_reasons". Beside the writer, the ideas model picks the rule line (withRule), which
-    takes the place of the text's "Next time:" line when one holds. Returns {text, facts, concepts, read}: facts as the explainer saw them;
+    proposer's) end with them as "recent_reasons". The text comes with its closing line (closed() in closing.js): the
+    ideas model picks a rule line beside the writer. Returns {text, facts, concepts, read}: facts as the explainer saw them;
     concepts, the verified concepts (null when none held); read, whether the proposer's reply held a claim list
     (undefined when no deeper read ran). */
 export async function answer(facts, llm, { model = MODEL, depth = false, recent = null, onStep = () => {}, onText } = {}) {
@@ -104,31 +105,8 @@ export async function answer(facts, llm, { model = MODEL, depth = false, recent 
   if (recent?.length) facts = { ...facts, recent_reasons: recent };
   onStep('Asking Claude');
   const system = systemFor(!!facts.verified_concepts, !!facts.recent_reasons);
-  // the rule picker runs beside the writer; until both settle the stream stops before the "Next time:" line, so the
-  // closing line shows once, never swapped
-  const [text, rule] = await Promise.all([llm(system, facts, writer, onText && (t => onText(beforeAdvice(t)))), withRule(sheet, llm, ideas)]);
-  const closed = withRuleLine(text, rule);
-  onText?.(closed);
-  return { text: closed, facts, concepts, read };
-}
-
-/** The explainer's rule 15 line, "Next time:" (bold or not), at a line start. */
-const NEXT = /^\**Next time:/m;
-
-/** Streamed text up to its "Next time:" line; a last line that may yet become one is held back too. */
-function beforeAdvice(text) {
-  const m = NEXT.exec(text);
-  if (m) return text.slice(0, m.index);
-  const last = text.slice(text.lastIndexOf('\n') + 1);
-  return last && ('**Next time:'.startsWith(last) || 'Next time:'.startsWith(last)) ? text.slice(0, -last.length) : text;
-}
-
-/** `text` with withRule()'s `rule` line in place of its "Next time:" line, or after its last line when it has none.
-    No rule line, a decline or no text: `text` as it is. */
-function withRuleLine(text, rule) {
-  if (!rule || !text || text === DECLINED) return text;
-  const lines = text.trimEnd().split('\n'), i = lines.findIndex(l => NEXT.test(l));
-  return (i < 0 ? [...lines, rule] : [...lines.slice(0, i), rule, ...lines.slice(i + 1)]).join('\n');
+  const text = await closed(hear => llm(system, facts, writer, hear), sheet, llm, ideas, onText);
+  return { text, facts, concepts, read };
 }
 
 /** A task's result is what the panel shows for it, in the words the user reads: {head, rows, text, lines, note, shapes,
