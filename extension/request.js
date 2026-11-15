@@ -37,6 +37,8 @@ export async function checkNotPlaying(user) {
       failed or stopped build never serves.
     - prepare(engines, user, ahead): builds the sheets for `ahead` ([{fen, next}]) one at a time, each once lichess
       confirms `user` is not in a game (fail closed: a refusal or an error ends it). Sheets only, never an LLM call.
+    - plan(engines, fen): planFacts()'s plan sheet. The builds ahead stop and, once the engines are idle, it is built:
+      its searches wait their turn like a fact sheet's. Never kept.
     - stop(): stops the builds ahead; resolves once the engines are idle. */
 export function sheetCache() {
   const sheets = new Map();
@@ -70,6 +72,10 @@ export function sheetCache() {
           await keep(key, after(() => factSheet(engines, fen, next, null, NODES, { signal })));
         }
       } catch {} // a refusal, an error or a stop: nothing more is built ahead
+    },
+    plan(engines, fen) {
+      ctl.abort();
+      return after(() => planFacts(engines, fen));
     },
     stop,
   };
@@ -270,9 +276,10 @@ export async function planAnswer(sheet, llm, { model = MODEL, onStep = () => {} 
 }
 
 /** The Find plan task: the plan sheet and its planAnswer(), plus its result (see explainMove), whose shapes are
-    planShapes(). `opts` go to planAnswer(). */
-export async function findPlan(engines, fen, llm, { nodes = NODES, ...opts } = {}) {
-  const a = await planAnswer(await planFacts(engines, fen, nodes), llm, opts);
+    planShapes(). The sheet comes from `sheet(engines, fen)`: planFacts(), or a sheetCache's plan. The other `opts` go
+    to planAnswer(). */
+export async function findPlan(engines, fen, llm, { sheet: build = planFacts, ...opts } = {}) {
+  const a = await planAnswer(await build(engines, fen), llm, opts);
   const { best, also_good, side_to_move, plan_kind } = a.facts;
   return { ...a, result: {
     head: { label: `Plan for ${side_to_move}`, pill: plan_kind === 'tactical' ? 'Tactical' : 'Positional' },
@@ -289,7 +296,7 @@ export async function findPlan(engines, fen, llm, { nodes = NODES, ...opts } = {
     built ahead, and the order that keeps two engine jobs apart. `storage` keeps the saved answers and the reasons
     (chrome.storage.local), `version` is the extension's, `engines()` resolves to the started engines or throws, and
     `activeBoard()` to the board of the tab in front, or null.
-    - busy(): whether a request runs. One asked for meanwhile resolves to null and does nothing.
+    One request at a time: one asked for while another runs resolves to null and does nothing.
     - explain(board, llm, {move, depth, model, again}, hear): an explainRequest() for the board's position and `move`,
       or its next game move when `move` is empty (neither: throws). `again` is an earlier call's `again`: that request
       asked afresh, on the position it was first asked for, by the user the board shows now. `hear`: explainRequest()'s
@@ -300,8 +307,8 @@ export async function findPlan(engines, fen, llm, { nodes = NODES, ...opts } = {
       answers without waiting for the engines: only while the board is still on b's line in the tab in front (it is
       read again: its page rule), and never once another request has started. Fail closed: an error builds nothing.
     - plan(board, llm, {model, at}, {onStep}): a Find plan request for the board's position; with `at` ({fen, path},
-      an about-equal verdict's position) the board goes there first. The builds ahead are stopped before its searches
-      start, and none starts while it runs. Resolves to {result, b}.
+      an about-equal verdict's position) the board goes there first. Its plan sheet is the sheets' plan(): the builds
+      ahead are stopped before its searches start, and none starts while it runs. Resolves to {result, b}.
     - stopAhead(): stops the builds ahead (another tab came to the front). */
 export function panelRequests({ storage, version, engines, activeBoard }) {
   const sheets = sheetCache();
@@ -318,11 +325,10 @@ export function panelRequests({ storage, version, engines, activeBoard }) {
     // the board must still be on b's line (b, or one of b.ahead): another game or chapter, or an old saved b, builds nothing
     if (![b, ...b.ahead].some(a => a.path === path && a.fen === fen)) return;
     const e = await engines();
-    if (busy) return; // a request started meanwhile: a build begun now would run beside it (a plan stops only earlier ones)
+    if (busy) return; // a request started meanwhile: the builds ahead belong to the pause after a request, not to one under way
     await sheets.prepare(e, user, b.ahead.filter(a => a.path.startsWith(path)));
   };
   return {
-    busy: () => busy,
     stopAhead: () => sheets.stop(),
     async explain(board, llm, { move, depth, model, again = null }, { onSheet, ...hear } = {}) {
       const got = await one(async () => {
@@ -342,10 +348,9 @@ export function panelRequests({ storage, version, engines, activeBoard }) {
     plan: (board, llm, { model, at = null }, { onStep = () => {} } = {}) => one(async () => {
       if (at) await board.play(at.fen, at.path, []);
       const b = await board.read();
-      await sheets.stop(); // the plan's searches never run beside a build ahead
       const { result } = await request({ user: b.user, engines, llm, onStep }, (e, llm) => {
         onStep("Finding the engine's plan");
-        return findPlan(e, b.fen, llm, { model, onStep });
+        return findPlan(e, b.fen, llm, { model, onStep, sheet: sheets.plan }); // its searches never run beside a build ahead
       });
       return { result, b };
     }),

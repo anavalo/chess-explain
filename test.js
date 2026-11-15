@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { Chess, makeUci, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
-  DECLINED, ask as anthropic, factSheet, llmWith, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, sanToUci, sf15Terms, trapped,
+  DECLINED, ask as anthropic, factSheet, llmWith, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, planFacts, sanToUci, sf15Terms, trapped,
 } from './extension/explain.js';
 import {
   Refused, answer, checkNotPlaying, explainMove, explainRequest, findPlan, firstSentence, keepReason, moveLabel, panelRequests, planAnswer, recentReasons, remembered, request, sheetCache,
@@ -789,6 +789,21 @@ assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '
   s0 = searches();
   const better = await top.get(eng, start, 'Nc3', 'b1c3');
   assert.deepEqual([better.alternative.move, better.played.move, better.latest_sf_gap > 0, searches()], ['Nc3', 'a3', true, s0]);
+  // a plan sheet through the cache: a build ahead under way stops (mid-search) before the plan's searches start, the
+  // sheet is the one planFacts builds alone, and it is never kept
+  const planned = sheetCache();
+  sent.length = 0;
+  const under = planned.prepare(eng, 'fable6', [{ fen: start, path: 'zz', next: 'd4' }]);
+  while (searches() < 3) await new Promise(r => setTimeout(r, 1));
+  const planSheet = await planned.plan(eng, afterE4);
+  assert.ok(sent[sent.indexOf('stop') - 1]?.startsWith('go nodes') && sent.indexOf('stop') < sent.lastIndexOf('ucinewgame'), 'stop comes before the plan sheet starts');
+  await under;
+  assert.deepEqual(planSheet, await planFacts(eng, afterE4));
+  // never kept: built again. A build ahead asked for meanwhile waits its turn, so the plan sheet is the same
+  s0 = searches();
+  const rebuilt = planned.plan(eng, afterE4), waiting = planned.prepare(eng, 'fable6', [{ fen: start, path: 'zz', next: 'c4' }]);
+  assert.deepEqual([await rebuilt, searches() > s0], [planSheet, true]);
+  await waiting;
 
   // the panel's requests (panelRequests), on a board stub, these engines and a storage; the tab in front is found a
   // moment later, as chrome.tabs answers
@@ -842,9 +857,9 @@ assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '
     got = await explain();
     log.length = 0;
     const failing = requests.plan(board, writer, { model: 'm1' });
-    assert.deepEqual([requests.busy(), await explain()], [true, null]);
+    assert.equal(await explain(), null);
     await assert.rejects(failing, /Could not read the plan ideas in the reply/);
-    assert.deepEqual([requests.busy(), log.filter(l => l === 'read').length], [false, 2]); // the plan's read, the build ahead's
+    assert.equal(log.filter(l => l === 'read').length, 2); // the plan's read, the build ahead's: the request that got null read nothing
     await got.ahead;
     assert.equal(await built('c4'), false, 'a request started meanwhile');
     // a plan stops a build ahead under way before its own searches start, and the sheet half built is never served
