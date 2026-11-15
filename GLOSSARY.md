@@ -84,6 +84,22 @@ _Avoid_: answer (that one explains two moves)
 One Explain or Find plan run from the panel: the fair-play check, then the engines, then the task. An Explain request also reads the reasons given earlier in the game, serves a saved answer when it has one, and keeps a fresh answer's reason.
 _Avoid_: handler, flow
 
+**Fair-play check**:
+The question to lichess, asked before anything else a request does, whether the logged-in user is in a game. Anything but a clear "no" refuses the request.
+_Avoid_: status check, game check
+
+**Saved answer**:
+An Explain request's result kept in the browser, shown again when the same two moves are asked about at the same position with the same depth, model pick and release. A declined answer and an about-equal verdict are never saved.
+_Avoid_: cached answer, remembered answer, history
+
+**Reason**:
+What is kept of a fresh answer for later moves of the same game line: its first sentence and the names of its verified concepts. The explainer gets the reasons of earlier moves so that it does not repeat them.
+_Avoid_: recent reason (that is the sheet field), summary
+
+**Build ahead**:
+The fact sheets of the next game moves, built once a request is over so that a step forward does not wait for the engines. No LLM is called, and any request stops it.
+_Avoid_: prefetch, preload
+
 **Result**:
 What one request shows in the panel: the move rows, the answer's or plan's text, the lines its move links play, a note and the board shapes.
 _Avoid_: card (that is one box in the panel), view
