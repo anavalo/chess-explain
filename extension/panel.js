@@ -174,25 +174,22 @@ chrome.tabs.onActivated.addListener(() => requests.stopAhead());
 
 /** Explain for the board's position, or `again`: a saved answer's request (see panelRequests), asked afresh. */
 async function explain(llm, board, again) {
-  // a saved answer waits on the fair-play check alone; a new run gets a staged() spinner instead
-  const check = spinner('Checking you are not in a game');
-  let s = null;
-  const step = stage => s.step(stage);
+  // a saved answer waits on the fair-play check alone, the first stage of every request
+  const s = staged();
   // a new one shows its moves once the sheet is built, then the answer as it is written (redrawn once a frame at most)
   let card, lines, text = null, frame = 0;
   const onSheet = (rows, l, b) => { movesCard({ rows }); lines = l; card = answerCard('', lines, b); };
   const onText = t => {
-    if (text === null) step('Writing');
+    if (text === null) s.step('Writing');
     text = t;
     frame ||= requestAnimationFrame(() => { frame = 0; card.innerHTML = linkMoves(md(text), lines); });
   };
   let got;
   try {
     got = await requests.explain(board, llm, { move: document.getElementById('move').value.trim(), depth: deep.checked, model: model(), again },
-      { onRun: () => (check.done(), (s = staged())), onStep: step, onSheet, onText });
+      { onStep: s.step, onSheet, onText });
   } finally {
-    check.done();
-    s?.done();
+    s.done();
   }
   if (!got) return;
   const { result, b } = got;

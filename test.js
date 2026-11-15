@@ -6,13 +6,11 @@
 // usage: node test.js [--record]
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { Chess, makeUci, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
+import { Chess, makeFen, makeUci, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
 import {
   DECLINED, ask as anthropic, factSheet, llmWith, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, planFacts, sanToUci, sf15Terms, trapped,
 } from './extension/explain.js';
-import {
-  Refused, answer, checkNotPlaying, explainMove, explainRequest, findPlan, firstSentence, keepReason, moveLabel, panelRequests, planAnswer, recentReasons, remembered, request, sheetCache,
-} from './extension/request.js';
+import { answer, explainMove, findPlan, panelRequests, planAnswer, sheetCache } from './extension/request.js';
 import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
 import { lichessBoard } from './extension/lichess.js';
 import { linkMoves, md } from './extension/md.js';
@@ -469,25 +467,6 @@ assert.ok(systemFor(true).includes('"verified_concepts"') && systemFor(true)
 // eval --deep gives both judges the same entry
 for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verified_concepts"'));
 
-// fair play, with a lichess status stub (the real user may be in a game when CI runs): fail closed
-globalThis.fetch = async url => {
-  const id = new URL(url).searchParams.get('ids');
-  return Response.json(id === 'zz_no_such_user_zz' ? [] : [{ id, playing: id === 'in_a_game' }]);
-};
-await checkNotPlaying('fable6');
-for (const user of [undefined, 'zz_no_such_user_zz', 'in_a_game']) await assert.rejects(checkNotPlaying(user), Refused);
-// one panel request: a refused one never asks for the engines and never runs its task (so no LLM either)
-for (const user of [undefined, 'in_a_game'])
-  await assert.rejects(request({ user, engines: () => assert.fail('asked for the engines'), llm: 'the llm' }, () => assert.fail('ran the task')), Refused);
-// a free user: lichess is asked, then the engines are, then the task runs with them and the LLM; each stage is named
-{
-  const order = [], status = globalThis.fetch;
-  globalThis.fetch = (...args) => (order.push('lichess asked'), status(...args));
-  const got = await request({ user: 'fable6', engines: async () => (order.push('engines asked for'), 'the engines'), llm: 'the llm', onStep: s => order.push(s) },
-    (e, llm) => (order.push('task'), [e, llm]));
-  assert.deepEqual(got, ['the engines', 'the llm']);
-  assert.deepEqual(order, ['Checking you are not in a game', 'lichess asked', 'Starting Stockfish', 'engines asked for', 'task']);
-}
 // a dead engine: the request it is on rejects, and so does every later one; one that died idle rejects the next request
 {
   const sent = [], dead = uciEngine(l => sent.push(l));
@@ -502,98 +481,6 @@ for (const user of [undefined, 'in_a_game'])
   // a live one still answers
   const live = uciEngine(l => queueMicrotask(() => live.onLine(l === 'isready' ? 'readyok' : l)));
   assert.deepEqual(await live.until(['isready'], l => l === 'readyok'), ['readyok']);
-}
-// a fact sheet explainMove can show and keepReason can keep
-const xSheet = { ...cSheet, played: { ...cSheet.played, move: 'e4', latest_sf_eval: '+0.30' }, alternative: { ...cSheet.alternative, move: 'd4', latest_sf_eval: '+0.30' } };
-// the answer cache, through explainRequest: the same request again shows the saved result after lichess's status check
-// alone (no engine, no LLM); a game in progress still refuses it; another best, depth or version asks afresh; so does
-// Ask again. The same two moves are the same request: no best finds the answer saved for a best, and a best finds the
-// one saved without, when it is that answer's engine move. An about-equal verdict is never saved
-{
-  const status = globalThis.fetch, data = {};
-  const storage = { get: async k => structuredClone({ [k]: data[k] }), set: async o => void Object.assign(data, structuredClone(o)) };
-  let asked, started, reply = 'Saved.';
-  globalThis.fetch = async (url, init) => (asked.push(new URL(url).host), url.startsWith('https://api.anthropic.com/')
-    ? Response.json(reply ? { stop_reason: 'end_turn', content: [{ type: 'text', text: reply }] } : { stop_reason: 'refusal', content: [] })
-    : status(url, init));
-  const base = { user: 'fable6', fen: 'the fen', move: 'Nf3', best: 'd2d4', model: 'claude-opus-5-5', depth: true, version: '0.62' };
-  const explain = async (req, opts) => {
-    asked = [], started = 0;
-    const got = await explainRequest(storage, { user: req.user, fen: req.fen, path: '', game: null, best: req.best }, req.move,
-      { depth: req.depth, model: req.model, version: req.version, engines: async () => (started++, 'the engines'), llm: llmWith('key'), sheet: async () => xSheet, ...opts });
-    return [got.result.text, got.saved, [...new Set(asked)], started]; // a deeper read asks the API twice
-  };
-  const fresh = ['Saved.', false, ['lichess.org', 'api.anthropic.com'], 1];
-  assert.deepEqual(await explain(base), fresh);
-  assert.deepEqual(await explain(base), ['Saved.', true, ['lichess.org'], 0]);
-  await assert.rejects(explain({ ...base, user: 'in_a_game' }), Refused);
-  assert.deepEqual([asked, started], [['lichess.org'], 0]);
-  for (const other of [{ best: 'e2e4' }, { depth: false }, { model: 'claude-fable-5-2' }, { version: '0.63' }])
-    assert.deepEqual(await explain({ ...base, ...other }), fresh);
-  const served = ['Saved.', true, ['lichess.org'], 0];
-  assert.deepEqual(await explain({ ...base, best: null }), served);
-  const unset = { ...base, fen: start, move: 'e4', best: null }; // xSheet compares e4 with d4
-  assert.deepEqual(await explain(unset), fresh);
-  assert.deepEqual(await explain({ ...unset, best: 'd2d4' }), served);
-  assert.deepEqual(await explain({ ...unset, best: 'c2c4' }), fresh);
-  assert.deepEqual(await explain(unset), served);
-  // Ask again with a best: its answer, saved beside the one without a best, is the one both requests find next
-  reply = 'Again.';
-  assert.deepEqual(await explain({ ...unset, best: 'd2d4' }, { fresh: true }), ['Again.', false, ['lichess.org', 'api.anthropic.com'], 1]);
-  assert.deepEqual([(await explain({ ...unset, best: 'd2d4' }))[0], (await explain(unset))[0]], ['Again.', 'Again.']);
-  const equal = { sheet: async () => ({ ...xSheet, latest_sf_gap: 0.1 }) };
-  for (let i = 0; i < 2; i++)
-    assert.deepEqual((await explain({ ...base, fen: 'an equal fen' }, equal)).slice(1), [false, ['lichess.org'], 1]);
-  reply = 'Asked again.';
-  assert.deepEqual(await explain(base, { fresh: true }), ['Asked again.', false, ['lichess.org', 'api.anthropic.com'], 1]);
-  assert.deepEqual((await explain(base))[0], 'Asked again.'); // the fresh answer replaced the saved one
-  // a decline is not saved
-  reply = null;
-  const declined = { ...base, fen: 'another fen' };
-  assert.deepEqual(await explain(declined), ['(the model declined to answer)', false, ['lichess.org', 'api.anthropic.com'], 1]);
-  assert.equal((await explain(declined))[1], false);
-  // at most 200 answers, the oldest dropped first
-  for (let i = 0; i < 200; i++) await remembered(storage, { ...base, fen: i }, async () => ({ result: { text: 'x' }, facts: xSheet }));
-  assert.deepEqual([data.answers.length, data.answers[0][0], data.answers.at(-1)[0]],
-    [200, '0 | Nf3 | d2d4 | depth | claude-opus-5-5 | 0.62', '199 | Nf3 | d2d4 | depth | claude-opus-5-5 | 0.62']);
-  // a storage that fails (get or set) still shows the answer just paid for
-  const logged = console.error, gone = async () => { throw new Error('gone'); };
-  console.error = () => {};
-  for (const broken of [{ get: gone, set: gone }, { ...storage, set: gone }])
-    assert.equal((await remembered(broken, base, async () => ({ result: { text: 'x' }, facts: xSheet }), { fresh: true })).result.text, 'x');
-  console.error = logged;
-}
-// remembered reasons: an answer's first sentence and its move with its number
-assert.equal(firstSentence('\n  **Nf3** keeps the e5 pawn. It also develops!\nNext time: x.'), '**Nf3** keeps the e5 pawn.');
-assert.equal(firstSentence('After 12.Nf3 you win! Then'), 'After 12.Nf3 you win!');
-assert.equal(firstSentence('No full stop'), 'No full stop');
-assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '1... e5']);
-// the reasons per game: the last 4 moves of each, at most 50 games; a position gets those of earlier moves of its line
-// (strict path prefixes), oldest first, never another game's; a decline or an about-equal verdict is not kept
-{
-  const data = {}, storage = { get: async k => structuredClone({ [k]: data[k] }), set: async o => void Object.assign(data, structuredClone(o)) };
-  const facts = { fen: start, played: { move: 'e4' }, latest_sf_gap: 0.5 };
-  const keep = (game, path, text, more = {}) => keepReason(storage, game, path, 'e4', { text, facts, concepts: null, ...more });
-  await keep('g1', 'aa', 'First. More.', { concepts: [{ concept: 'centre' }] });
-  await keep('g1', 'aabb', 'Second.');
-  await keep('g1', 'aabbcc', 'Side line.');
-  await keep('g1', 'aadd', 'Other branch.');
-  await keep('g2', 'aa', 'Other game.');
-  await keep(null, 'aa', 'No game.');
-  await keep('g1', 'aabbccee', '(the model declined to answer)');
-  await keep('g1', 'aabbccee', 'Equal.', { facts: { ...facts, latest_sf_gap: 0.1 } });
-  assert.deepEqual(await recentReasons(storage, 'g1', 'aabbccee'), [
-    { move: '1. e4', said: 'First.', ideas: ['centre'] }, { move: '1. e4', said: 'Second.', ideas: [] }, { move: '1. e4', said: 'Side line.', ideas: [] }]);
-  assert.deepEqual((await recentReasons(storage, 'g1', 'aabb')).map(r => r.said), ['First.']); // not its own
-  assert.deepEqual(await recentReasons(storage, 'g3', 'aabb'), []);
-  assert.deepEqual(await recentReasons(storage, null, 'aabb'), []);
-  await keep('g1', 'aabbccff', 'Fifth.');
-  assert.deepEqual(data.reasons.find(([g]) => g === 'g1')[1].map(e => e.said), ['Second.', 'Side line.', 'Other branch.', 'Fifth.']);
-  // the compared move was the better one: the sheet's played is the best other move, the reason is the compared move's
-  await keepReason(storage, 'g4', 'aa', 'd2d4', { text: 'Better.', facts: { ...facts, alternative: { move: 'd4' } }, concepts: null });
-  assert.deepEqual(await recentReasons(storage, 'g4', 'aabb'), [{ move: '1. d4', said: 'Better.', ideas: [] }]);
-  for (let i = 0; i < 50; i++) await keep(`n${i}`, 'aa', 'x.');
-  assert.deepEqual([data.reasons.length, data.reasons[0][0]], [50, 'n0']);
 }
 // answer(): the reasons go last in the writer's facts only, with their legend entry; without any, nothing changes
 {
@@ -655,45 +542,13 @@ assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '
   settle();
   assert.deepEqual([(await streamed).text, heard.slice(4)], [`d4 takes the centre.\n${rule}`, [`d4 takes the centre.\n${rule}`]]);
 }
-// a walk through a game with explainRequest: each position is paid for once, though the reasons sent with it change
-// after every answer. Forward 1 to 6, back 6 to 1, forward again, then move 7 three times: 7 paid runs of 21 requests.
-// Each paid run sends the reasons kept for the earlier moves of its line, and keeps its own
-{
-  const data = {}, storage = { get: async k => structuredClone({ [k]: data[k] }), set: async o => void Object.assign(data, structuredClone(o)) };
-  globalThis.fetch = async url => Response.json([{ id: new URL(url).searchParams.get('ids'), playing: false }]);
-  const paid = [], steps = [];
-  const llm = async (system, facts) => (system === PICKER ? '[]' : (paid.push(facts.recent_reasons?.map(r => r.said) ?? []), `Reason ${paid.length}.`));
-  const explain = async path => (await explainRequest(storage, { user: 'fable6', fen: `fen@${path}`, path, game: 'g1', best: null }, 'e4',
-    { depth: false, version: '0.64', engines: async () => 'the engines', llm, sheet: async () => xSheet, onRun: () => steps.push('run'), onStep: s => steps.push(s) }));
-  const p = n => 'aabbccddeeffgghh'.slice(0, n * 2), plies = [1, 2, 3, 4, 5, 6];
-  const said = [];
-  for (const n of [...plies, ...plies.toReversed(), ...plies]) said.push((await explain(p(n))).result.text);
-  assert.deepEqual(said, [...plies, ...plies.toReversed(), ...plies].map(n => `Reason ${n}.`));
-  const again = [];
-  for (let i = 0; i < 3; i++) again.push(await explain(p(7)));
-  assert.deepEqual(again.map(g => [g.result.text, g.saved]), [['Reason 7.', false], ['Reason 7.', true], ['Reason 7.', true]]);
-  assert.equal(paid.length, 7);
-  assert.deepEqual([paid[0], paid[5], paid[6]], [[], ['Reason 2.', 'Reason 3.', 'Reason 4.', 'Reason 5.'],
-    ['Reason 3.', 'Reason 4.', 'Reason 5.', 'Reason 6.']]); // the last 4 kept
-  assert.deepEqual(steps.slice(0, 5), ['run', 'Checking you are not in a game', 'Starting Stockfish', 'Analysing e4', 'Asking Claude']);
-  // other reasons sent with the same position serve its saved answer
-  const req = { user: 'fable6', fen: `fen@${p(3)}`, move: 'e4', best: null, depth: false, version: '0.64', recent: [{ move: '1. e4', said: 'Else.', ideas: [] }] };
-  assert.deepEqual((await remembered(storage, req, async () => assert.fail('paid again'))).result.text, 'Reason 3.');
-  // a failed reason save still shows the answer just paid for
-  const logged = console.error;
-  console.error = () => {};
-  const broken = { get: storage.get, set: async o => { if (o.reasons) throw new Error('gone'); return storage.set(o); } };
-  const got = await explainRequest(broken, { user: 'fable6', fen: 'new', path: 'zz', game: 'g1', best: null }, 'e4',
-    { depth: false, version: '0.64', engines: async () => 'the engines', llm, sheet: async () => xSheet });
-  console.error = logged;
-  assert.deepEqual([got.result.text, got.saved], ['Reason 8.', false]);
-}
 // the sheets of the next moves, built ahead on fake engines. A search answers a millisecond later, or at once on `stop`,
 // with the first legal moves, scored by the position and by the searches the engine ran since ucinewgame (as its hash
 // table would), so a command an aborted build sent after the next build's ucinewgame would change that build's sheet
 {
   globalThis.fetch = async url => { const id = new URL(url).searchParams.get('ids'); return Response.json([{ id, playing: id === 'in_a_game' }]); };
   const sent = [], searches = () => sent.filter(l => l.startsWith('go ')).length;
+  let score = null; // (fen, move) => centipawns, in place of the hashed scores
   const hash = t => [...t].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 1_000_003, 7);
   const legal = p => [...p.allDests()].flatMap(([from, to]) => [...to].filter(t => p.board.getRole(from) !== 'king' || Math.abs(from % 8 - t % 8) < 2)
     .map(t => makeUci({ from, to: t, promotion: p.board.getRole(from) === 'pawn' && (t < 8 || t >= 56) ? 'queen' : undefined }))).sort();
@@ -711,7 +566,7 @@ assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '
       else if (line.startsWith('go ')) {
         const p = pos(fen), firsts = (line.split(' searchmoves ')[1]?.split(' ') ?? legal(p)).slice(0, multipv), k = n++;
         const pv = m => { const q = p.clone(), out = [m]; q.play(parseUci(m)); while (out.length < 3 && legal(q).length) { out.push(legal(q)[0]); q.play(parseUci(out.at(-1))); } return out; };
-        const infos = firsts.map((m, i) => `info depth 1 multipv ${i + 1} score cp ${hash(fen + m) % 300 - 150 + k} pv ${pv(m).join(' ')}`);
+        const infos = firsts.map((m, i) => `info depth 1 multipv ${i + 1} score cp ${score ? score(fen, m) : hash(fen + m) % 300 - 150 + k} pv ${pv(m).join(' ')}`);
         const t = setTimeout(() => pending(), 1);
         pending = () => { clearTimeout(t); pending = null; say(...infos, `bestmove ${firsts[0] ?? '(none)'}`); };
       }
@@ -882,6 +737,172 @@ assert.deepEqual([moveLabel(start, 'e4'), moveLabel(afterE4, 'e5')], ['1. e4', '
     assert.deepEqual(log, [['play', start, '', []], 'read']);
     assert.deepEqual([planned.result.head.label, planned.result.text, planned.b, steps], ['Plan for White', 'The plan.', here,
       ['Checking you are not in a game', 'Starting Stockfish', "Finding the engine's plan", 'Looking for plan ideas', 'Asking Claude']]);
+  }
+  // every rule of a request, through the one door (panelRequests): fair play, the saved answers and the reasons, on a
+  // board stub, a storage, these engines and an LLM stub. No tab is in front, so nothing is built ahead. The engines
+  // score a game move a pawn below every other move and Nc3 a pawn above, so a request explains two moves unless it
+  // asks about a move outside both, which is about equal
+  {
+    const game = ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'a6', 'Ba4', 'Nf6'], ucis = sanToUci(start, game);
+    const fenAfter = n => makeFen(ucis.slice(0, n).reduce((p, m) => (p.play(parseUci(m)), p), pos(start)).toSetup());
+    const spots = game.map((next, n) => ({ fen: fenAfter(n), path: 'aabbccddeeffgghh'.slice(0, 2 * n), next }));
+    score = (fen, m) => (ucis.includes(m) ? -100 : m === 'b1c3' ? 100 : 0);
+    const data = {}, events = [], written = [];
+    const storage = { get: async k => (events.push('get'), structuredClone({ [k]: data[k] })), set: async o => (events.push('set'), void Object.assign(data, structuredClone(o))) };
+    let down = false, here, said = 0, proposer = '[]';
+    const next = () => `Reason ${++said}.`;
+    let reply = next;
+    globalThis.fetch = async url => {
+      events.push('lichess');
+      const id = new URL(url).searchParams.get('ids');
+      return down ? new Response('', { status: 500 }) : Response.json(id === 'zz_no_such_user_zz' ? [] : [{ id, playing: id === 'in_a_game' }]);
+    };
+    const board = { tab: 1, read: async () => here, play: async () => {} };
+    const llm = async (system, facts) => (system === PICKER ? '[]' : system === PROPOSER ? proposer : (events.push('llm'), written.push(facts), reply()));
+    const door = (version = '0.81', store = storage) => panelRequests({ storage: store, version, engines: async () => (events.push('engines'), eng), activeBoard: async () => null });
+    const requests = door(), m1 = { move: '', depth: false, model: 'm1' };
+    const at = (n, more) => ({ ...spots[n], best: undefined, user: 'fable6', game: 'g1', ahead: [], ...more });
+    const count = e => events.filter(x => x === e).length;
+    // one Explain request: [its text, whether it is a saved answer, times lichess was asked, searches run, answers written]
+    const explain = async (b, ask = {}, r = requests) => {
+      here = b;
+      const before = [count('lichess'), searches(), written.length];
+      const got = await r.explain(board, llm, { ...m1, ...ask });
+      return [got.result.text, got.saved, count('lichess') - before[0], searches() - before[1], written.length - before[2]];
+    };
+    const fresh = (got, text) => assert.deepEqual([got[0], got[1], got[2], got[4]], [text, false, 1, 1]);
+    const served = (got, text) => assert.deepEqual(got, [text, true, 1, 0, 0]); // lichess alone: no engine, no LLM
+
+    // a new request, stage by stage: lichess is asked before the storage is read, the engines are asked for only then,
+    // and the answer and its reason are saved last. The same request again stops at the saved answer
+    const base = at(0, { best: 'd2d4' });
+    here = base;
+    const first = await requests.explain(board, llm, m1, { onStep: s => events.push(s) });
+    assert.deepEqual(events, ['Checking you are not in a game', 'lichess', 'get', 'get', 'Starting Stockfish', 'engines', 'Analysing e4', 'Asking Claude',
+      'llm', 'get', 'set', 'get', 'set']);
+    assert.deepEqual([first.result.text, first.result.rows.map(r => r.move), first.saved], ['Reason 1.', ['d4', 'e4'], false]);
+    events.length = 0;
+    const second = await requests.explain(board, llm, m1, { onStep: s => events.push(s) });
+    assert.deepEqual([events, second.result.text, second.result.note, second.saved], [['Checking you are not in a game', 'lichess', 'get'], 'Reason 1.', 'Saved answer.', true]);
+    // refused: no user, an unknown one, one in a game, or a lichess that does not answer. Nothing else is touched (no
+    // storage, no engine, no LLM), for a saved answer, a new one and a plan alike
+    for (const [user, why] of [[undefined, /Log in to lichess/], ['zz_no_such_user_zz', /Unknown lichess user/], ['in_a_game', /You are playing a game on lichess/],
+      ['fable6', /Could not verify you are not in a game \(HTTP 500\)/]]) {
+      down = user === 'fable6';
+      for (const ask of [() => explain({ ...base, user }), () => explain(at(1, { user })), () => (here = at(2, { user }), requests.plan(board, llm, { model: 'm1' }))]) {
+        events.length = 0;
+        s0 = searches();
+        await assert.rejects(ask(), why);
+        assert.deepEqual([events.filter(e => e !== 'lichess'), searches()], [[], s0]);
+      }
+    }
+    down = false;
+
+    // the saved answers. Another best, depth, model or release asks afresh
+    served(await explain(base), 'Reason 1.');
+    fresh(await explain({ ...base, best: 'c2c4' }), 'Reason 2.');
+    fresh(await explain(base, { depth: true }), 'Reason 3.');
+    fresh(await explain(base, { model: 'm2' }), 'Reason 4.');
+    fresh(await explain(base, {}, door('0.82')), 'Reason 5.');
+    // the same two moves are the same request: no best finds the answer saved for a best (the latest), and a best finds
+    // the one saved without, when it is that answer's engine move (a5 here); another best asks afresh
+    served(await explain({ ...base, best: undefined }), 'Reason 2.');
+    const unset = at(1), named = { ...unset, best: 'a7a5' };
+    fresh(await explain(unset), 'Reason 6.');
+    served(await explain(named), 'Reason 6.');
+    fresh(await explain({ ...unset, best: 'd7d5' }), 'Reason 7.');
+    served(await explain(unset), 'Reason 7.');
+    // Ask again with a best: its answer, saved beside the one without a best, is the one both requests find next; asked
+    // again once more, the new answer takes its place
+    here = named;
+    const old = await requests.explain(board, llm, m1);
+    assert.deepEqual([old.result.text, old.saved, old.again], ['Reason 6.', true, { b: named, move: 'e5', depth: false, model: 'm1' }]);
+    for (const [text, more] of [['Reason 8.', 1], ['Reason 9.', 0]]) {
+      const kept = data.answers.length, anew = await requests.explain(board, llm, { again: old.again });
+      assert.deepEqual([anew.result.text, anew.saved, anew.again, data.answers.length - kept], [text, false, null, more]);
+      served(await explain(named), text);
+      served(await explain(unset), text);
+    }
+    // an about-equal verdict and a decline are never saved: asked twice, answered twice
+    for (let i = 0; i < 2; i++) {
+      const got = await explain(at(2), { move: 'd4' });
+      assert.deepEqual([/about as good as/.test(got[0]), got[1], got[2], got[4]], [true, false, 1, 0]);
+    }
+    reply = () => DECLINED;
+    for (let i = 0; i < 2; i++) fresh(await explain(at(3)), DECLINED);
+    reply = next;
+    // at most 200 answers, the oldest dropped first
+    data.answers = Array.from({ length: 200 }, (_, i) => [`old ${i}`, { text: 'x' }]);
+    fresh(await explain(at(4)), 'Reason 10.');
+    assert.deepEqual([data.answers.length, data.answers[0][0], data.answers.at(-1)[1].text], [200, 'old 1', 'Reason 10.']);
+    served(await explain(at(4)), 'Reason 10.');
+    // a storage that cannot save (the answers, or the reasons) still shows the answer just paid for; so does one that
+    // cannot even be read, where nothing is read before the answer: Ask again, on a board with no game
+    const logged = console.error, gone = async () => { throw new Error('gone'); };
+    console.error = () => {};
+    for (const lost of ['answers', 'reasons'])
+      fresh(await explain(at(5), { model: lost }, door('0.81', { get: storage.get, set: async o => (o[lost] ? gone() : storage.set(o)) })), `Reason ${said}.`);
+    here = at(5, { game: null });
+    const blind = await door('0.81', { get: gone, set: gone }).explain(board, llm, { again: { b: here, move: 'a6', depth: false, model: 'm1' } });
+    console.error = logged;
+    assert.deepEqual([blind.result.text, blind.saved, said], ['Reason 13.', false, 13]);
+
+    // the reasons. A walk through a game: each position is paid for once, though the reasons sent with it change after
+    // every answer. Forward 1 to 6, back 6 to 1, forward again, then move 7 three times: 7 paid runs of 21 requests.
+    // Each paid run sends the reasons kept for the earlier moves of its line (the last 4), each under its move with its
+    // number, and keeps its own
+    {
+      const from = written.length, r = n => `Reason ${13 + n}.`, plies = [0, 1, 2, 3, 4, 5], there = [...plies, ...plies.toReversed(), ...plies];
+      const walk = async n => (await explain(at(n, { game: 'walk' }), { model: 'walk' })).slice(0, 2), texts = [];
+      for (const n of there) texts.push((await walk(n))[0]);
+      assert.deepEqual(texts, there.map(n => r(n + 1)));
+      assert.deepEqual([await walk(6), await walk(6), await walk(6)], [[r(7), false], [r(7), true], [r(7), true]]);
+      const paid = written.slice(from).map(f => f.recent_reasons ?? null);
+      assert.deepEqual([paid.length, paid[0], paid[2], paid[5].map(x => x.said), paid[6].map(x => x.said)], [7, null,
+        [{ move: '1. e4', said: r(1), ideas: [] }, { move: '1... e5', said: r(2), ideas: [] }], [r(2), r(3), r(4), r(5)], [r(3), r(4), r(5), r(6)]]);
+    }
+    // a reason is the answer's first sentence and its verified concepts' names. A position gets those of earlier moves of
+    // its line (strict path prefixes), oldest first: not its own, not a side line's, never another game's
+    {
+      const texts = ['\n  **Nf3** keeps the e5 pawn. It also develops!\nNext time: x.', 'After 12.Nf3 you win! Then', 'No full stop', 'A side line.', 'Fourth.', 'Again.'];
+      const ask = (b, more) => explain(b, { model: 'said', ...more });
+      reply = () => texts.shift();
+      proposer = JSON.stringify([{ concept: 'king', claim: 'Your king is on e1.', checks: [{ pos: 'start', op: 'king_square', args: { side: 'white' }, expect: 'e1' }] }]);
+      await ask(at(0, { game: 'said' }), { depth: true });
+      proposer = '[]';
+      for (const n of [1, 2]) await ask(at(n, { game: 'said' }));
+      await ask({ ...at(4, { game: 'said' }), path: 'aabbzz' });
+      const firsts = [{ move: '1. e4', said: '**Nf3** keeps the e5 pawn.', ideas: ['king'] }, { move: '1... e5', said: 'After 12.Nf3 you win!', ideas: [] },
+        { move: '2. Nf3', said: 'No full stop', ideas: [] }];
+      await ask(here = at(3, { game: 'said' }));
+      assert.deepEqual(written.at(-1).recent_reasons, firsts);
+      await requests.explain(board, llm, { again: { b: here, move: 'Nc6', depth: false, model: 'said' } });
+      assert.deepEqual(written.at(-1).recent_reasons, firsts.slice(1)); // its own reason was the game's fifth: the oldest left
+      assert.deepEqual(data.reasons.find(([g]) => g === 'said')[1].filter(e => e.path === here.path).map(e => e.said), ['Again.']); // in its old reason's place
+      reply = next;
+    }
+    // nothing is kept for a decline, an about-equal verdict or a board with no game; a compared move that is the better
+    // one (the sheet's played is then the engine's best other move) has the reason filed under it
+    {
+      const ask = (b, more) => explain(b, { model: 'kept', ...more });
+      reply = () => DECLINED;
+      await ask(at(0, { game: 'kept' }));
+      reply = next;
+      await ask(at(1, { game: 'kept' }), { move: 'd6' });
+      await ask(at(2, { game: null }));
+      fresh(await ask(at(3, { game: 'kept' })), `Reason ${said}.`);
+      assert.deepEqual(['recent_reasons' in written.at(-1), data.reasons.some(([g]) => g === null), data.reasons.find(([g]) => g === 'kept')[1].map(e => e.path)],
+        [false, false, [spots[3].path]]);
+      here = at(0, { game: 'better' });
+      assert.deepEqual((await requests.explain(board, llm, { ...m1, model: 'kept', move: 'Nc3' })).result.rows.map(r => r.move), ['Nc3', 'a3']);
+      await ask(at(1, { game: 'better' }));
+      assert.deepEqual(written.at(-1).recent_reasons, [{ move: '1. Nc3', said: `Reason ${said - 1}.`, ideas: [] }]);
+    }
+    // at most 50 games, the oldest dropped first
+    data.reasons = Array.from({ length: 50 }, (_, i) => [`n${i}`, []]);
+    await explain(at(6, { game: 'new' }), { model: 'cap' });
+    assert.deepEqual([data.reasons.length, data.reasons[0][0], data.reasons.at(-1)[0]], [50, 'n1', 'new']);
+    score = null;
   }
 }
 delete globalThis.fetch; // nothing past here may call out
