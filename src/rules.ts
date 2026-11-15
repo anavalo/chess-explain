@@ -1,6 +1,7 @@
-// The rule line's pool: book rules of thumb as {id, rule, unless?}, the picker's list (PICKER in prompt.js, the rule
-// line in closing.js). Written by eval-out-rules/tools/pool.mjs; do not edit by hand.
-export const RULE_POOL = [
+// The rule line's pool: book rules of thumb as {id, rule, unless?}, the picker's list (PICKER in prompt.ts, the rule
+// line in closing.ts). Written by eval-out-rules/tools/pool.mjs; do not edit by hand.
+export type Rule = { id: string; rule: string; unless?: string };
+export const RULE_POOL: Rule[] = [
   {"id":"A1-001","rule":"When we have a pawn majority, we advance it to create a passed pawn."},
   {"id":"A1-002","rule":"When the opponent's majority is crippled by doubled pawns, we trade down toward a king-and-pawn ending."},
   {"id":"A1-003","rule":"With pieces on, we value a central pawn majority over a wing majority, which counts mainly in the endgame."},

@@ -12,7 +12,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      # no npm install: the tests only use the committed extension/vendor/
-      - run: node test.js
+          cache: npm
+      - run: npm ci
+      - run: npx tsc
+      - run: npm run build
+      - run: node test.ts
       # the real engines must still give the recorded replies
-      - run: node test.js --record && git diff --exit-code test-engines.json
+      - run: node test.ts --record && git diff --exit-code test-engines.json

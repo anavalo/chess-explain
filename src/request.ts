@@ -5,10 +5,98 @@
 // result the panel shows out. panelRequests() is the one door for the panel's requests: fair play first, then the saved
 // answers, the engines, the task and the reasons kept for later moves.
 
-import { DECLINED, NODES, aboutEqual, factSheet, moveNo, planFacts, position, san, sanToUci } from './explain.js';
-import { closed } from './closing.js';
-import { planShapes, withConcepts, withPlan } from './concepts.js';
-import { MODEL, PLAN_SYSTEM, stepModels, systemFor } from './prompt.js';
+import { DECLINED, NODES, aboutEqual, factSheet, moveNo, planFacts, position, san, sanToUci } from './explain.ts';
+import { closed } from './closing.ts';
+import { planShapes, withConcepts, withPlan } from './concepts.ts';
+import { MODEL, PLAN_SYSTEM, stepModels, systemFor } from './prompt.ts';
+import type { AboutEqualSheet, Engines, FactSheet, FullFactSheet, Llm, OnText, PlanFacts, Prepares, ScoredMove, SheetLine } from './explain.ts';
+import type { AheadSpot, BoardPosition, Shape, TabBoard } from './lichess.ts';
+import type { DeepSheet, PlanIdea, PlanSheet, VerifiedConcept } from './concepts.ts';
+
+// ---- types ----
+
+/** Hears which stage or call comes next. */
+export type OnStep = (step: string) => void;
+/** A reason given for an earlier move of the line (see gameReasons). */
+export interface Reason { move: string; said: string; ideas: string[] }
+/** A kept reason: a Reason at the position's tree path. */
+export interface ReasonEntry extends Reason { path: string }
+/** The explainer's fact sheet: a full sheet, with the deeper read's concepts and the reasons for earlier moves. */
+export type ExplainerSheet = DeepSheet & { recent_reasons?: Reason[] };
+
+/** answer()'s options. */
+export interface AnswerOptions { model?: string; depth?: boolean; recent?: Reason[] | null; onStep?: OnStep; onText?: OnText }
+/** What answer() returns. */
+export interface Answer {
+  text: string;
+  facts: AboutEqualSheet | ExplainerSheet;
+  concepts: VerifiedConcept[] | null;
+  read?: boolean;
+}
+/** planAnswer()'s options. */
+export interface PlanOptions { model?: string; onStep?: OnStep }
+/** What planAnswer() returns. */
+export interface PlanAnswer {
+  text: string;
+  facts: PlanSheet;
+  ideas: PlanIdea[];
+}
+
+/** One row of a task's result. */
+export interface ResultRow { kind: 'best' | 'compared' | 'also'; label: string; move: string; eval: string }
+/** A task's result: what the panel shows for it (see below). */
+export interface TaskResult {
+  head: { label: string; pill: string } | null;
+  rows: ResultRow[];
+  text: string;
+  lines: string[];
+  note: string | null;
+  shapes: Shape[] | null;
+  equal?: boolean;
+}
+/** The Explain task's request: the position, the move compared and lichess's top move (UCI). */
+export interface MoveRequest { fen: string; move: string; best?: string | null }
+/** Builds a fact sheet: factSheet(), or a sheetCache's get. */
+export type SheetBuilder = (engines: Engines, fen: string, move: string, best?: string | null) => Promise<FactSheet>;
+/** explainMove()'s options. */
+export interface ExplainOptions extends AnswerOptions { onSheet?: (rows: ResultRow[], lines: string[]) => void; sheet?: SheetBuilder }
+/** findPlan()'s options. */
+export interface FindPlanOptions extends PlanOptions { sheet?: (engines: Engines, fen: string) => Promise<PlanFacts> }
+/** What explainMove() returns. */
+export type Explained = Answer & { result: TaskResult };
+/** What findPlan() returns. */
+export type Planned = PlanAnswer & { result: TaskResult };
+
+/** A saved answer's request: its key (see savedAnswers). */
+export interface SavedRequest extends MoveRequest { depth?: boolean; model: string }
+/** A saved answer: [key, result]. */
+export type SavedAnswer = [key: string, result: TaskResult];
+/** What the storage holds for this module. */
+export interface Stored { answers?: SavedAnswer[]; reasons?: [game: string, entries: ReasonEntry[]][] }
+/** The storage: chrome.storage.local, or a test's stand-in. */
+export interface Store { get(key: keyof Stored): Promise<Stored>; set(items: Stored): Promise<void> }
+
+/** The board a panel request runs on: a lichessBoard with its tab's id (read and play are all it needs). */
+export type PanelBoard = Pick<TabBoard, 'tab' | 'read' | 'play'>;
+/** What panelRequests() is handed. */
+export interface PanelSetup {
+  storage: Store;
+  version: string;
+  engines: () => Promise<Engines>;
+  activeBoard: () => Promise<PanelBoard | null>;
+}
+/** An Explain request to ask again: the position, the move and the settings it was first asked with. */
+export interface Again { b: BoardPosition; move: string; depth?: boolean; model: string }
+/** panelRequests' explain() options. */
+export interface ExplainAsk { move?: string; depth?: boolean; model?: string; again?: Again | null }
+/** panelRequests' explain() callbacks. */
+export interface ExplainHooks { onStep?: OnStep; onSheet?: (rows: ResultRow[], lines: string[], b: BoardPosition) => void; onText?: OnText }
+/** What panelRequests' explain() resolves to (null when another request runs). */
+export interface ExplainGot { result: TaskResult; saved: boolean; b: BoardPosition; again: Again | null; ahead: Promise<void> }
+/** panelRequests' plan() options. */
+export interface PlanAsk { model?: string; at?: { fen: string; path: string } | null }
+/** What panelRequests' plan() resolves to (null when another request runs). */
+export interface PlanGot { result: TaskResult; b: BoardPosition }
 
 const ANSWERS = 200; // saved answers kept (see savedAnswers), oldest dropped first
 const SHEETS = 20; // fact sheets a panel keeps (see sheetCache), oldest dropped first
@@ -16,15 +104,15 @@ const GAMES = 50, REASONS = 4; // games whose reasons are kept (see gameReasons)
 
 /** The fair-play check: fail closed unless lichess confirms `user` is not in a game. Every request passes it before
     anything else (see panelRequests), and so does each sheet built ahead (see sheetCache). */
-async function checkNotPlaying(user) {
+async function checkNotPlaying(user: string | undefined) {
   if (!/^[A-Za-z0-9_-]{2,30}$/.test(user ?? '')) throw new Error('Log in to lichess so I can check you are not playing a game.');
-  let status;
+  let status: { id: string; playing?: boolean }[];
   try {
-    const r = await fetch(`https://lichess.org/api/users/status?ids=${encodeURIComponent(user)}`, { signal: AbortSignal.timeout(5000) });
+    const r = await fetch(`https://lichess.org/api/users/status?ids=${encodeURIComponent(user!)}`, { signal: AbortSignal.timeout(5000) });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     status = await r.json();
   } catch (e) {
-    throw new Error(`Could not verify you are not in a game (${e.message}).`);
+    throw new Error(`Could not verify you are not in a game (${(e as Error).message}).`);
   }
   if (!status.length) throw new Error(`Unknown lichess user ${user}.`);
   if (status.some(s => s.playing)) throw new Error('You are playing a game on lichess. No engine help during games.');
@@ -42,25 +130,25 @@ async function checkNotPlaying(user) {
       its searches wait their turn like a fact sheet's. Never kept.
     - stop(): stops the builds ahead; resolves once the engines are idle. */
 export function sheetCache() {
-  const sheets = new Map();
+  const sheets = new Map<string, Promise<FactSheet>>();
   let ctl = new AbortController(), idle = Promise.resolve();
-  const keep = (key, p) => {
+  const keep = (key: string, p: Promise<FactSheet>) => {
     sheets.delete(key);
     sheets.set(key, p);
-    if (sheets.size > SHEETS) sheets.delete(sheets.keys().next().value);
+    if (sheets.size > SHEETS) sheets.delete(sheets.keys().next().value!);
     p.catch(() => sheets.get(key) === p && sheets.delete(key));
     return p;
   };
-  const after = job => { const p = idle.then(job); idle = p.then(() => {}, () => {}); return p; };
+  const after = <T>(job: () => Promise<T>): Promise<T> => { const p = idle.then(job); idle = p.then(() => {}, () => {}); return p; };
   const stop = () => (ctl.abort(), idle);
   return {
-    async get(engines, fen, move, best = null) {
+    async get(engines: Engines, fen: string, move: string, best: string | null = null) {
       const key = `${fen} | ${move}`, sheet = await sheets.get(key)?.catch(() => null);
       if (sheet && (!best || sanToUci(fen, [best])[0] === sanToUci(fen, [sheet.alternative.move])[0])) return sheet;
       ctl.abort();
       return keep(key, after(() => factSheet(engines, fen, move, best)));
     },
-    async prepare(engines, user, ahead) {
+    async prepare(engines: Engines, user: string | undefined, ahead: AheadSpot[]) {
       ctl.abort();
       const { signal } = ctl = new AbortController();
       await idle; // the builds just stopped leave the Map first, so a key this list still wants is built again
@@ -74,7 +162,7 @@ export function sheetCache() {
         }
       } catch {} // a refusal, an error or a stop: nothing more is built ahead
     },
-    plan(engines, fen) {
+    plan(engines: Engines, fen: string) {
       ctl.abort();
       return after(() => planFacts(engines, fen));
     },
@@ -86,17 +174,17 @@ export function sheetCache() {
     after a deeper read when `depth` is on. `llm(system, facts, model, onText)` is one LLM call: ask() with the key, or a
     test stub. `model` is a pick (see stepModels): its ideas model makes the deeper read, its writer the text. `onStep(words)` hears which call comes next; `onText` streams the explainer's text (see ask). `recent`:
     reasons given for earlier moves of the line (see gameReasons); when there are any, the explainer's facts (never the
-    proposer's) end with them as "recent_reasons". The text comes with its closing line (closed() in closing.js): the
+    proposer's) end with them as "recent_reasons". The text comes with its closing line (closed() in closing.ts): the
     ideas model picks a rule line beside the writer. Returns {text, facts, concepts, read}: facts as the explainer saw them;
     concepts, the verified concepts (null when none held); read, whether the proposer's reply held a claim list
     (undefined when no deeper read ran). */
-export async function answer(facts, llm, { model = MODEL, depth = false, recent = null, onStep = () => {}, onText } = {}) {
+export async function answer(facts: AboutEqualSheet | ExplainerSheet, llm: Llm, { model = MODEL, depth = false, recent = null, onStep = () => {}, onText }: AnswerOptions = {}): Promise<Answer> {
   if (aboutEqual(facts)) {
     return { facts, concepts: null, text: `**${facts.played.move}** is about as good as **${facts.alternative.move}**: `
       + 'the engine sees no real difference between them. Either move is fine.' };
   }
   const { ideas, writer } = stepModels(model);
-  let concepts = null, read;
+  let concepts: VerifiedConcept[] | null = null, read: boolean | undefined;
   if (depth) {
     onStep('Looking for positional ideas');
     ({ facts, concepts, read } = await withConcepts(facts, llm, ideas));
@@ -115,17 +203,19 @@ export async function answer(facts, llm, { model = MODEL, depth = false, recent 
     the plan (markdown). lines: the sheet lines a move link in the text may play, each from the request's position.
     note: a sentence under the text, or null. shapes: for the lichess board, or null. equal: true on Explain's
     about-equal verdict, where the panel offers Find plan for the position. */
-const row = (kind, label, line) => ({ kind, label, move: line.move, eval: line.latest_sf_eval });
-const explainRows = ({ played, alternative }) => [row('best', 'engine move', alternative), row('compared', 'compared', played)];
+const row = (kind: ResultRow['kind'], label: string, line: Pick<ScoredMove, 'move' | 'latest_sf_eval'>): ResultRow => ({ kind, label, move: line.move, eval: line.latest_sf_eval });
+const explainRows = ({ played, alternative }: FactSheet) => [row('best', 'engine move', alternative), row('compared', 'compared', played)];
 // every line that starts at the explained position (prepares.follow_up_fails starts mid-line, so it is left out)
-const explainLines = ({ played, alternative, prepares }) => [alternative, played]
-  .flatMap(l => [l.line_with_evals, l.if_opp_plays_the_threat_at_once]).concat(prepares?.line_if_played_at_once).filter(Boolean);
+// an about-equal sheet has no lines: nothing to link
+type Lined = ScoredMove & Partial<SheetLine>;
+const explainLines = ({ played, alternative, prepares }: { played: Lined; alternative: Lined; prepares?: Prepares | null }): string[] => [alternative, played]
+  .flatMap(l => [l.line_with_evals, l.if_opp_plays_the_threat_at_once]).concat(prepares?.line_if_played_at_once).filter((l): l is string => !!l);
 
 /** The Explain task. {fen, move, best} -> answer()'s {text, facts, concepts, read} plus its result. move: the move to
     compare against (SAN or UCI), best: lichess's top move (UCI, optional). The sheet comes from `sheet(engines, fen,
     move, best)`: factSheet(), or a sheetCache's get. `onSheet(rows, lines)` hears the result's rows and lines once the
     sheet is built, before any LLM call; `llm` and the other `opts` go to answer(). */
-export async function explainMove(engines, req, llm, { onSheet = () => {}, sheet: build = factSheet, ...opts } = {}) {
+export async function explainMove(engines: Engines, req: MoveRequest, llm: Llm, { onSheet = () => {}, sheet: build = factSheet, ...opts }: ExplainOptions = {}): Promise<Explained> {
   const sheet = await build(engines, req.fen, req.move, req.best);
   onSheet(explainRows(sheet), explainLines(sheet));
   const a = await answer(sheet, llm, opts);
@@ -145,9 +235,9 @@ export async function explainMove(engines, req, llm, { onSheet = () => {}, sheet
 /** The plan for a plan sheet, as answer() is for a fact sheet: the plan ideas of `model`'s ideas model (a pick, see
     stepModels) checked on the board (withPlan), then its writer writes the plan from the ideas that held. No idea held, or no idea list in the planner's
     reply: throws, saying which, and the writer is never called. The text comes with its closing line (closed() in
-    closing.js): beside the writer, the ideas model picks a rule line for a positional plan. Returns {text, facts,
+    closing.ts): beside the writer, the ideas model picks a rule line for a positional plan. Returns {text, facts,
     ideas}. The eval starts here from a saved sheet. */
-export async function planAnswer(sheet, llm, { model = MODEL, onStep = () => {} } = {}) {
+export async function planAnswer(sheet: PlanFacts, llm: Llm, { model = MODEL, onStep = () => {} }: PlanOptions = {}): Promise<PlanAnswer> {
   onStep('Looking for plan ideas');
   // the planner plans the best line only; the writer gets the about-as-good move for one sentence
   const { also_good = null, ...rest } = sheet;
@@ -162,14 +252,14 @@ export async function planAnswer(sheet, llm, { model = MODEL, onStep = () => {} 
 /** The Find plan task: the plan sheet and its planAnswer(), plus its result (see explainMove), whose shapes are
     planShapes(). The sheet comes from `sheet(engines, fen)`: planFacts(), or a sheetCache's plan. The other `opts` go
     to planAnswer(). */
-export async function findPlan(engines, fen, llm, { sheet: build = planFacts, ...opts } = {}) {
+export async function findPlan(engines: Engines, fen: string, llm: Llm, { sheet: build = planFacts, ...opts }: FindPlanOptions = {}): Promise<Planned> {
   const a = await planAnswer(await build(engines, fen), llm, opts);
   const { best, also_good, side_to_move, plan_kind } = a.facts;
   return { ...a, result: {
     head: { label: `Plan for ${side_to_move}`, pill: plan_kind === 'tactical' ? 'Tactical' : 'Positional' },
     rows: [row('best', 'first move', best), ...also_good ? [row('also', 'about as good', also_good)] : []],
     text: a.text,
-    lines: [best.line_with_evals, also_good?.line_with_evals].filter(Boolean),
+    lines: [best.line_with_evals, also_good?.line_with_evals].filter((l): l is string => !!l),
     note: null,
     shapes: planShapes(a.facts, a.ideas, a.text),
   } };
@@ -186,25 +276,25 @@ export async function findPlan(engines, fen, llm, { sheet: build = planFacts, ..
     - save(req, a): keeps the result of explainMove()'s `a` over any old one, unless it has no text, the model declined
       or the moves are about equal (no LLM wrote that verdict: the sheet says it again). A failed save (get or set) is
       logged: it must not lose the answer just paid for. */
-function savedAnswers(storage, version) {
+function savedAnswers(storage: Store, version: string) {
   const all = async () => (await storage.get('answers')).answers ?? [];
-  const keys = ({ fen, move, best, depth, model }) => {
+  const keys = ({ fen, move, best, depth, model }: SavedRequest) => {
     const head = `${fen} | ${move} | `, tail = ` | ${depth ? 'depth' : ''} | ${model} | ${version}`;
     return { head, tail, key: head + (best ?? '') + tail };
   };
   return {
-    async find(req) {
-      const { head, tail, key } = keys(req), uci = m => sanToUci(req.fen, [m])[0];
+    async find(req: SavedRequest): Promise<TaskResult | undefined> {
+      const { head, tail, key } = keys(req), uci = (m: string) => sanToUci(req.fen, [m])[0];
       // a result's first row is its sheet's alternative (see explainRows)
       return (req.best
-        ? (await all()).findLast(([k, r]) => k === key || k === head + tail && r.rows?.[0] && uci(r.rows[0].move) === uci(req.best))
+        ? (await all()).findLast(([k, r]) => k === key || k === head + tail && r.rows?.[0] && uci(r.rows[0].move) === uci(req.best!))
         : (await all()).findLast(([k]) => k.startsWith(head) && k.endsWith(tail)))?.[1];
     },
-    async save(req, { result, facts }) {
+    async save(req: SavedRequest, { result, facts }: Pick<Explained, 'result' | 'facts'>) {
       if (!result.text || result.text === DECLINED || aboutEqual(facts)) return;
       const { key } = keys(req);
       try {
-        await storage.set({ answers: [...(await all()).filter(([k]) => k !== key), [key, result]].slice(-ANSWERS) });
+        await storage.set({ answers: [...(await all()).filter(([k]) => k !== key), [key, result] satisfies SavedAnswer].slice(-ANSWERS) });
       } catch (e) {
         console.error(e);
       }
@@ -213,13 +303,13 @@ function savedAnswers(storage, version) {
 }
 
 /** The first sentence of an answer: its first non-empty line, up to the first '.', '!' or '?' before a space or the end. */
-const firstSentence = text => {
+const firstSentence = (text: string) => {
   const line = text.split('\n').map(l => l.trim()).find(Boolean) ?? '';
   return line.match(/^.*?[.!?](?=\s|$)/)?.[0] ?? line;
 };
 
 /** `san`, played in `fen`, with its move number: '12. Nf3' for White, '12... Nf6' for Black. */
-const moveLabel = (fen, san) => `${moveNo(position(fen))} ${san}`;
+const moveLabel = (fen: string, san: string) => `${moveNo(position(fen))} ${san}`;
 
 /** The reasons given in each game (a lichess game or study chapter id), in `storage` under `reasons`: [[game, entries]],
     oldest first, at most GAMES, each game's entries [{path, move, said, ideas}] its last REASONS explained moves.
@@ -229,21 +319,21 @@ const moveLabel = (fen, san) => `${moveNo(position(fen))} ${san}`;
       position at `path`, under the compared move `move` (SAN or UCI; the sheet's `played` is another move when `move`
       is the better one): its first sentence and its verified concepts' names. Nothing for an unknown game, a decline
       or an about-equal verdict. */
-function gameReasons(storage) {
+function gameReasons(storage: Store) {
   const all = async () => (await storage.get('reasons')).reasons ?? [];
   return {
-    async recent(game, path) {
+    async recent(game: string | null, path: string): Promise<Reason[]> {
       if (!game) return [];
       const entries = (await all()).find(([g]) => g === game)?.[1] ?? [];
       return entries.filter(e => e.path !== path && path.startsWith(e.path)).map(({ move, said, ideas }) => ({ move, said, ideas }));
     },
-    async keep(game, path, move, { text, facts, concepts }) {
+    async keep(game: string | null, path: string, move: string, { text, facts, concepts }: Pick<Answer, 'text' | 'facts' | 'concepts'>) {
       if (!game || !text || text === DECLINED || aboutEqual(facts)) return;
       const compared = san(position(facts.fen), sanToUci(facts.fen, [move])[0]);
       const entry = { path, move: moveLabel(facts.fen, compared), said: firstSentence(text), ideas: (concepts ?? []).map(c => c.concept) };
       const games = await all(), entries = games.find(([g]) => g === game)?.[1] ?? [];
       const kept = [...entries.filter(e => e.path !== path), entry].slice(-REASONS);
-      await storage.set({ reasons: [...games.filter(([g]) => g !== game), [game, kept]].slice(-GAMES) });
+      await storage.set({ reasons: [...games.filter(([g]) => g !== game), [game, kept] satisfies [string, ReasonEntry[]]].slice(-GAMES) });
     },
   };
 }
@@ -271,17 +361,17 @@ function gameReasons(storage) {
       about-equal verdict's position) the board goes there first. Its plan sheet is the sheets' plan(): the builds
       ahead are stopped before its searches start, and none starts while it runs. Resolves to {result, b}.
     - stopAhead(): stops the builds ahead (another tab came to the front). */
-export function panelRequests({ storage, version, engines, activeBoard }) {
+export function panelRequests({ storage, version, engines, activeBoard }: PanelSetup) {
   const sheets = sheetCache(), answers = savedAnswers(storage, version), reasons = gameReasons(storage);
   let busy = false;
-  const one = async job => {
+  const one = async <T>(job: () => Promise<T>): Promise<T | null> => {
     if (busy) return null;
     busy = true;
     try { return await job(); } finally { busy = false; }
   };
-  const fairPlay = (user, onStep) => (onStep('Checking you are not in a game'), checkNotPlaying(user));
-  const started = onStep => (onStep('Starting Stockfish'), engines());
-  const buildAhead = async (board, b) => {
+  const fairPlay = (user: string | undefined, onStep: OnStep) => (onStep('Checking you are not in a game'), checkNotPlaying(user));
+  const started = (onStep: OnStep) => (onStep('Starting Stockfish'), engines());
+  const buildAhead = async (board: PanelBoard, b: BoardPosition) => {
     const now = await activeBoard();
     if (now?.tab !== board.tab) return;
     const { user, path, fen } = await now.read();
@@ -293,11 +383,12 @@ export function panelRequests({ storage, version, engines, activeBoard }) {
   };
   return {
     stopAhead: () => sheets.stop(),
-    async explain(board, llm, { move, depth, model = MODEL, again = null }, { onStep = () => {}, onSheet, onText } = {}) {
+    async explain(board: PanelBoard, llm: Llm, { move, depth, model = MODEL, again = null }: ExplainAsk, { onStep = () => {}, onSheet, onText }: ExplainHooks = {}): Promise<ExplainGot | null> {
       const got = await one(async () => {
         // the board is read either way, so its page rule and the logged-in user are the current ones
         const now = await board.read();
-        const asked = again ? { ...again, b: { ...again.b, user: now.user } } : { b: now, move: move || now.next, depth, model };
+        // move! : checked on the next line
+        const asked: Again = again ? { ...again, b: { ...again.b, user: now.user } } : { b: now, move: (move || now.next)!, depth, model };
         if (!asked.move) throw new Error('No next game move here. Type a move to compare with.');
         const { b } = asked, req = { fen: b.fen, move: asked.move, best: b.best, depth: asked.depth, model: asked.model };
         await fairPlay(b.user, onStep);
@@ -315,7 +406,7 @@ export function panelRequests({ storage, version, engines, activeBoard }) {
       // only now, with the request over: a build ahead never starts while one runs
       return got && { ...got, ahead: buildAhead(board, got.b).catch(() => {}) };
     },
-    plan: (board, llm, { model, at = null }, { onStep = () => {} } = {}) => one(async () => {
+    plan: (board: PanelBoard, llm: Llm, { model, at = null }: PlanAsk, { onStep = () => {} }: { onStep?: OnStep } = {}): Promise<PlanGot | null> => one(async () => {
       if (at) await board.play(at.fen, at.path, []);
       const b = await board.read();
       await fairPlay(b.user, onStep);

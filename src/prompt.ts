@@ -1,6 +1,14 @@
 // The explainer prompt (sheet legend + rules) and the rule checks that test an answer against the rules.
-// explain.js sends the prompt; eval.js runs the checks and sends the judge prompts, which carry the legend only.
-import { RULE_POOL } from './rules.js';
+// explain.ts sends the prompt; eval.ts runs the checks and sends the judge prompts, which carry the legend only.
+import { RULE_POOL } from './rules.ts';
+import type { PositionBefore, ScoredMove } from './explain.ts';
+
+/** The models a pick stands for, by step (see stepModels). */
+export interface StepModels { ideas: string; writer: string }
+/** One problem checkAnswer() (or closingOf() in closing.ts) finds: the rule it breaks and what is wrong. */
+export interface RuleProblem { rule: number; problem: string }
+/** What checkAnswer() reads of a sheet besides its JSON: a fact sheet, a plan sheet, or a saved one. */
+export interface CheckedSheet { position_before_move?: Pick<PositionBefore, 'you_are_in_check_from'>; alternative?: Pick<ScoredMove, 'cp'> }
 
 /** The default pick, used unless the panel's picker (or --model) names another: Fable 5.2 makes the ideas call, Opus
     5.5 writes. On the book positions this gave the book's reason as often as Fable 5.2 for every call, and more often
@@ -10,7 +18,7 @@ export const MODEL = 'claude-fable-5-2+claude-opus-5-5';
 /** The models a pick stands for, by step: {ideas, writer}. A pick (the panel's picker, --model) is one model id, which
     makes every call, or two joined by '+': the first makes the ideas call (the Concept proposer, the Planner), the
     second writes the answer or the plan. */
-export const stepModels = pick => {
+export const stepModels = (pick: string): StepModels => {
   const [ideas, writer = ideas] = pick.split('+');
   return { ideas, writer };
 };
@@ -168,7 +176,7 @@ const SIZE = `. Size words compare the two moves, not the position: a gap under 
    better", and never call it winning, an edge or an advantage for you. Say what changed hands in pieces ("you win a
    pawn"), not in pawns.`;
 
-/** Rule 15: the "Next time:" line, which closing.js reads back; Opus made 36 of 40 specific to the position (A/B 2026-11-03). */
+/** Rule 15: the "Next time:" line, which closing.ts reads back; Opus made 36 of 40 specific to the position (A/B 2026-11-03). */
 const ADVICE = `
 15. End with one last line, on its own, starting "Next time:": the habit that would have found the better move here,
    at most 15 words, naming this position's piece, square or move it applies to. Take it from the fact that decided
@@ -179,7 +187,7 @@ const ADVICE = `
    stand after each move. Never give general advice the facts do not tie to this position. The advice comes after
    everything else and never replaces the opening sentence or the main reason; the 120-word limit includes it.`;
 
-/** The legend entry for "verified_concepts", which only a deeper read's sheet has (see concepts.js). */
+/** The legend entry for "verified_concepts", which only a deeper read's sheet has (see concepts.ts). */
 const CONCEPTS = `
 - "verified_concepts" (when not null) are positional ideas a coach proposed for this position, each backed by board facts
   that a program checked ("checked": every one of them is true, at the position named before the colon). The facts are
@@ -204,7 +212,7 @@ export function systemFor(concepts = false, recent = false) {
 
 /** `prompt`, which holds the sheet legend (the explainer's, or a judge prompt), with the "verified_concepts" entry after
     the pawn plan's: what a deeper read's sheet needs explained. */
-export function withConceptsEntry(prompt) {
+export function withConceptsEntry(prompt: string) {
   if (!prompt.includes(PAWN_PLAN_END)) throw new Error('the prompt has no pawn plan entry to put the concepts entry after');
   return prompt.replace(PAWN_PLAN_END, PAWN_PLAN_END + CONCEPTS);
 }
@@ -214,11 +222,11 @@ if (!LEGEND.includes(PAWN_PLAN_END)) throw new Error('the legend has no pawn pla
 
 /** Rule checks: mechanical tests of one answer against its fact sheet. They catch format slips, not wrong chess.
     Returns [{rule, problem}], empty when the answer passes. A plan (PLAN_SYSTEM) is checked with maxWords 200.
-    The closing line is not read here: closingOf() in closing.js gives the text to check and rule 15's problems. */
-export function checkAnswer(answer, sheet, { maxWords = 120 } = {}) {
+    The closing line is not read here: closingOf() in closing.ts gives the text to check and rule 15's problems. */
+export function checkAnswer(answer: string, sheet: CheckedSheet, { maxWords = 120 }: { maxWords?: number } = {}): RuleProblem[] {
   const facts = JSON.stringify(sheet);
-  const found = [];
-  const flag = (rule, problem) => found.push({ rule, problem });
+  const found: RuleProblem[] = [];
+  const flag = (rule: number, problem: string) => found.push({ rule, problem });
   const words = answer.split(/\s+/).filter(Boolean).length;
   if (words > maxWords) flag(5, `${words} words`);
   if (/\[(takes|line ends)|\b\d+\.(\.\.)? (you|opp) /.test(answer)) flag(7, 'raw label');
@@ -236,12 +244,12 @@ export function checkAnswer(answer, sheet, { maxWords = 120 } = {}) {
   if (numbers.length) flag(14, `numbers: ${[...new Set(numbers)].join(' ')}`);
   if (/\bStockfish\b|\bSF ?1[59]\b/i.test(answer)) flag(14, 'engine named');
   // a move still losing (eval below zero) called winning, an edge or better for you, not better than the played move
-  const absolute = sheet.alternative?.cp < 0 && answer.match(/\bwinning\b(?! (a|an|the|two|back|material|pawns?|pieces?)\b)|\ban? (small |slight |clear )?(edge|advantage)\b|\bbetter for you\b/gi);
+  const absolute = (sheet.alternative?.cp ?? 0) < 0 && answer.match(/\bwinning\b(?! (a|an|the|two|back|material|pawns?|pieces?)\b)|\ban? (small |slight |clear )?(edge|advantage)\b|\bbetter for you\b/gi);
   if (absolute) flag(14, `absolute eval: ${[...new Set(absolute.map(w => w.toLowerCase()))].join(' ')}`);
   return found;
 }
 
-/** The board checks the proposer and the planner may ask for: one line for each row of CHECKS in concepts.js (the
+/** The board checks the proposer and the planner may ask for: one line for each row of CHECKS in concepts.ts (the
     planner's own, route, is in PLANNER). A test holds the lines and the rows in step. */
 const CHECK_LINES = `Checks (op, args -> value):
 - piece_on {square} -> "white knight", "black pawn", ... or "empty"
@@ -285,7 +293,7 @@ Reply with only JSON: [{"concept": "<short name, e.g. weak dark squares around t
 /** The rule picker's prompt for a fact sheet (PICKER) or a plan sheet (PLAN_PICKER): one text, with the pieces that
     differ between the two put in. Stage 0 tested both texts (eval-out-rules/tools/picker.mjs builds them the same way);
     keep each byte-identical to its stage 0 file. */
-const picker = ({ sheet, job, follows, bent, tactic, pos, show }) => `You are a strong chess coach. ${sheet}
+const picker = ({ sheet, job, follows, bent, tactic, pos, show }: Record<'sheet' | 'job' | 'follows' | 'bent' | 'tactic' | 'pos' | 'show', string>) => `You are a strong chess coach. ${sheet}
 
 Your job: pick at most one rule of thumb from the list at the end that a club player can take away from this position
 and apply in later games. ${job} The rule goes in a closing line under an answer that someone else writes; you do not
@@ -319,10 +327,10 @@ Reply with only JSON: [] or [{"rule": "<id from the list>", "kind": "follows"|"b
 Rules (id: rule):
 ${RULE_POOL.map(r => `${r.id}: ${r.rule}${r.unless ? `\n  Unless: ${r.unless}` : ''}`).join('\n')}
 `;
-const positions = prompt => part(prompt, 'Positions a check can name:', '\n\nChecks (op, args -> value):');
+const positions = (prompt: string) => part(prompt, 'Positions a check can name:', '\n\nChecks (op, args -> value):');
 
 /** The rule picker (the pick's ideas model) behind an answer's rule line: it gets the explainer's fact sheet and the
-    pool, and replies with at most one rule, its "Here:" tie and board checks, for the rule line in closing.js. */
+    pool, and replies with at most one rule, its "Here:" tie and board checks, for the rule line in closing.ts. */
 export const PICKER = picker({
   sheet: `You get a fact sheet (JSON) about one position: the side to move ("you") played the move in
 "played" and the engine prefers the move in "alternative". The sheet holds the engine lines with labels, and may hold
@@ -340,7 +348,7 @@ what the better move changes against the played one (the same check in the bette
 // ---- Find plan ----
 
 /** The text of `text` from `from` up to (not including) `to`, or to its end: a piece of a prompt reused word for word. */
-function part(text, from, to) {
+function part(text: string, from: string, to?: string) {
   const a = text.indexOf(from), b = to ? text.indexOf(to, a) : text.length;
   if (a < 0 || b < 0) throw new Error(`prompt piece ${from.slice(0, 30)} not found`);
   return text.slice(a, b);
@@ -444,7 +452,7 @@ Rules:
 6. Write no numbers except move numbers and step numbers: no evals, no material in pawns, no term sizes, and never name
    Stockfish or SF 15. Say what a term means ("your king is safer"), not its score.`;
 
-/** The judge prompts eval.js sends to Opus: grade one answer (JUDGE) or compare two (PAIR) against the fact sheet. */
+/** The judge prompts eval.ts sends to Opus: grade one answer (JUDGE) or compare two (PAIR) against the fact sheet. */
 export const JUDGE = `You grade answers from a chess explainer. You get the fact sheet the explainer was given (JSON) and its answer.
 The fact sheet is the ground truth: judge the answer only against it, and do not analyse the position yourself.
 - decisive_point: "yes" if the answer gives the reason the fact sheet shows the better move is better: where the evals of the

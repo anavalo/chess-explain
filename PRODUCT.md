@@ -64,7 +64,8 @@ Other product facts:
 - **Two models, named only in the picker.** The settings offer a split (the default): Claude Fable 5.2
   for the ideas call, Claude Opus 5.5 for the writing. They also offer each model alone, which then makes
   every call of a request. Other panel text says "the model".
-- Plain JavaScript, no framework, no build step. Everything the extension needs is committed.
+- TypeScript, no framework. `npm run build` bundles `src/` into `extension/background.js` and
+  `extension/panel.js`; both are build output, not committed. The Stockfish builds are committed.
 - An explanation takes about half a minute. The wait is a product fact, not a defect to hide.
 - Terminology is fixed in `GLOSSARY.md` (fact sheet, label, feature, imbalance, explainer).
 

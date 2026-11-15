@@ -11,6 +11,11 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check the tag matches the manifest version
         run: test "v$(jq -r .version extension/manifest.json)" = "$GITHUB_REF_NAME"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
       - run: npm run zip
       - run: gh release create "$GITHUB_REF_NAME" chess-explain.zip --generate-notes
         env:

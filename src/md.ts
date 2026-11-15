@@ -1,15 +1,18 @@
 // Minimal markdown for the model's answers: paragraphs, - / 1. lists, # headings, **bold**, *italic*, `code`.
 // HTML is escaped first, so the only tags in the output are the ones added here.
-import { linePlies } from './explain.js';
+import { linePlies } from './explain.ts';
+import type { LinePly } from './explain.ts';
 
-export function md(text) {
-  const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-  const inline = s => esc(s)
+const ESC: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+
+export function md(text: string): string {
+  const esc = (s: string) => s.replace(/[&<>"']/g, c => ESC[c]);
+  const inline = (s: string) => esc(s)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/(^|[^*\w])\*([^*\n]+?)\*(?!\w)/g, '$1<em>$2</em>')
     .replace(/`([^`]+)`/g, '<code>$1</code>');
-  const html = [];
-  let para = [], list = null;
+  const html: string[] = [];
+  let para: string[] = [], list: { tag: 'ul' | 'ol'; items: string[] } | null = null;
   const flush = () => {
     if (para.length) html.push(`<p>${para.map(inline).join('<br>')}</p>`);
     if (list) html.push(`<${list.tag}>${list.items.map(i => `<li>${inline(i)}</li>`).join('')}</${list.tag}>`);
@@ -38,21 +41,23 @@ const SAN = String.raw`(?:[KQRBN][a-h]?[1-8]?x?[a-h][1-8]|[a-h](?:x[a-h])?[1-8](
 const RUN = new RegExp(String.raw`(?<![\w.])${NO}${SAN}(?:\s+(?:${NO})?${SAN})*(?![\w-])`, 'g');
 const TOKEN = new RegExp(`(${NO})?(${SAN})`, 'g');
 
+type Ply = Pick<LinePly, 'no' | 'san'>;
+
 /** Marks the numbered variations in md() output ("14...Rfe8 15.Nbd2 Ne7"): each move becomes a link whose data-line
     holds the SAN moves from the explained position through it. `lines` are line_with_evals strings from that position.
     A move is linked only when the lines give it one history. */
-export function linkMoves(html, lines) {
+export function linkMoves(html: string, lines: string[]): string {
   // every line as [{no, san}]; a "Why X fails:" line branches off its main line at its first move
   const vars = lines.filter(Boolean).flatMap(text => {
     const [main, ...whys] = linePlies(text).map(row => row.map(({ no, san }) => ({ no, san: san.replace(/[+#]/g, '') })));
     return [main, ...whys.map(w => [...main.slice(0, main.findIndex(m => m.no === w[0]?.no)), ...w])];
   });
   return html.replace(RUN, run => {
-    let at = []; // [line, index] pairs the previous move of this run can be
-    return run.replace(TOKEN, (tok, no, san) => {
-      const fits = (v, i) => v[i] && v[i].san === san.replace(/[+#]/g, '') && (!no || v[i].no === no);
-      const next = at.map(([v, i]) => [v, i + 1]).filter(([v, i]) => fits(v, i));
-      at = next.length || !no ? next : vars.flatMap(v => v.map((_, i) => [v, i])).filter(([v, i]) => fits(v, i));
+    let at: [Ply[], number][] = []; // [line, index] pairs the previous move of this run can be
+    return run.replace(TOKEN, (tok: string, no: string | undefined, san: string) => {
+      const fits = (v: Ply[], i: number) => v[i] && v[i].san === san.replace(/[+#]/g, '') && (!no || v[i].no === no);
+      const next = at.map(([v, i]): [Ply[], number] => [v, i + 1]).filter(([v, i]) => fits(v, i));
+      at = next.length || !no ? next : vars.flatMap(v => v.map((_, i): [Ply[], number] => [v, i])).filter(([v, i]) => fits(v, i));
       const found = new Set(at.map(([v, i]) => v.slice(0, i + 1).map(m => m.san).join(' ')));
       return found.size === 1 ? `<a href="#" data-line="${[...found][0]}">${tok}</a>` : tok;
     });

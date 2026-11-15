@@ -1,25 +1,34 @@
 // Checks the fact builder and request handling with the LLM stubbed out; lichess's status API is stubbed.
+// The lichess board's checks run the build script first: they test the text the bundle ships (see there).
 // The engines are replayed from test-engines.json, the UCI output recorded from the real WASM engines on one thread
 // (node-limited single-thread search is deterministic). A change that sends the engines a new command fails with
 // "not recorded": run with --record to search again with the real engines (about 3 minutes) and, if every test
 // passes, rewrite the file.
-// usage: node test.js [--record]
+// usage: node test.ts [--record]
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync } from 'node:fs';
-import { Chess, makeFen, makeUci, parseFen, parseSquare, parseUci } from './extension/vendor/chessops.js';
+import { Chess, makeFen, makeUci, parseFen, parseSquare, parseUci } from './src/chessops.ts';
+import { nodeEngines } from './src/cli.ts';
 import {
-  DECLINED, ask as anthropic, factSheet, llmWith, uciEngine, lineToLeaf, moveLabels, nodeEngines, pawnPushes, pickInfos, pins, planFacts, sanToUci, sf15Terms, trapped,
-} from './extension/explain.js';
-import { answer, explainMove, findPlan, panelRequests, planAnswer, sheetCache } from './extension/request.js';
-import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './extension/features.js';
-import { lichessBoard } from './extension/lichess.js';
-import { linkMoves, md } from './extension/md.js';
-import { JUDGE, LEGEND, PAIR, PICKER, PLANNER, PLAN_PICKER, PLAN_SYSTEM, PROPOSER, checkAnswer, stepModels, systemFor, withConceptsEntry } from './extension/prompt.js';
-import { closingOf } from './extension/closing.js';
-import { CHECKS, claimsIn, planShapes, render, verify, withConcepts, withPlan } from './extension/concepts.js';
-import { RULE_POOL } from './extension/rules.js';
+  DECLINED, ask as anthropic, factSheet, llmWith, uciEngine, lineToLeaf, moveLabels, pawnPushes, pickInfos, pins, planFacts, sanToUci, sf15Terms, trapped,
+} from './src/explain.ts';
+import { answer, explainMove, findPlan, panelRequests, planAnswer, sheetCache } from './src/request.ts';
+import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, pawnWeaknesses, word } from './src/features.ts';
+import { lichessBoard } from './src/lichess.ts';
+import { linkMoves, md } from './src/md.ts';
+import { JUDGE, LEGEND, PAIR, PICKER, PLANNER, PLAN_PICKER, PLAN_SYSTEM, PROPOSER, checkAnswer, stepModels, systemFor, withConceptsEntry } from './src/prompt.ts';
+import { closingOf } from './src/closing.ts';
+import { CHECKS, claimsIn, planShapes, render, verify, withConcepts, withPlan } from './src/concepts.ts';
+import { RULE_POOL } from './src/rules.ts';
+import type { Engine, Engines, FullFactSheet, Llm, OnText, PlanFacts, UciLink } from './src/explain.ts';
+import type { BoardPosition, AheadSpot, Run, Shape } from './src/lichess.ts';
+import type { ExplainAsk, ExplainGot, ExplainHooks, ExplainOptions, Explained, ExplainerSheet, PanelBoard, Reason, SavedAnswer, Store, Stored } from './src/request.ts';
+import type { Check, CheckArgs, CheckValue, ConceptClaim, Expect, PlanIdea, Verified } from './src/concepts.ts';
+import type { CheckedSheet } from './src/prompt.ts';
+import type { Rule } from './src/rules.ts';
 
-const pos = fen => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
+const pos = (fen: string) => Chess.fromSetup(parseFen(fen).unwrap()).unwrap();
 
 // markdown renderer
 assert.equal(md('**Bc4** loses.\n\nc6 *holds*.'), '<p><strong>Bc4</strong> loses.</p><p>c6 <em>holds</em>.</p>');
@@ -31,7 +40,7 @@ assert.equal(md('Qxh2# and 2*3'), '<p>Qxh2# and 2*3</p>');
 
 // move links: each numbered variation links to its line at that move; a "Why" line keeps its main line's moves
 // before it; a move with two possible histories (1...Kd8) or no move number before it (Kd2) is not linked
-const links = html => [...html.matchAll(/<a href="#" data-line="([^"]*)">([^<]*)<\/a>/g)].map(m => `${m[2]}: ${m[1]}`);
+const links = (html: string) => [...html.matchAll(/<a href="#" data-line="([^"]*)">([^<]*)<\/a>/g)].map(m => `${m[2]}: ${m[1]}`);
 assert.deepEqual(links(linkMoves(md('1.Ra7 Kd8 2.Kd2+ wins.\n\n1...Kd8 and Kd2. Not 1.Rb1 Kd8 2.Kf2 Kc7.'), [
     '1. you Ra7 (+9) 1... opp Kd8 (+9) 2. you Kd2 (+9)',
     '1. you Rb1 [x] (+9) 1... opp Kd8 (+9) 2. you Kd2 (+9)\nWhy 2.Kf2 fails: 2. you Kf2 (+9)',
@@ -43,12 +52,13 @@ assert.ok(!LEGEND.includes('\nRules:'));
 // the legend quotes every label kind's wording (it wraps lines, so match across whitespace); a sample is the placeholders
 const legend = LEGEND.replace(/\s+/g, ' ');
 for (const [kind, { sample }] of Object.entries(KINDS))
+  // @ts-expect-error: deliberate bad input, a sample's fields are placeholder text (see KINDS), not a real Feature
   if (sample) assert.ok(legend.includes(word({ kind, ...sample }, 'move')), `legend lacks ${kind}: ${word({ kind, ...sample }, 'move')}`);
 assert.equal(Object.values(KINDS).filter(k => !k.sample).length, 2); // pieceImbalance and badBishop: described, not quoted
 
 // rule checks: each answer fails exactly the rules listed; move numbers, squares and ranks are not numbers
-const sheet = { played: { line_with_evals: '12. you Nf3 [x] (+0.3) 12... opp Nc6 (+0.2)' } };
-const failed = answer => { const { read, found } = closingOf(answer); return [...found, ...checkAnswer(read, sheet)].map(c => c.rule); };
+const sheet: CheckedSheet & { played: { line_with_evals: string } } = { played: { line_with_evals: '12. you Nf3 [x] (+0.3) 12... opp Nc6 (+0.2)' } };
+const failed = (answer: string) => { const { read, found } = closingOf(answer); return [...found, ...checkAnswer(read, sheet)].map(c => c.rule); };
 assert.deepEqual(failed('After 12.Nf3 Nc6 your rook reaches the 7th rank.\nNext time: ask what Nf3 gives up.'), []);
 assert.deepEqual(failed('word '.repeat(121)), [5]);
 assert.deepEqual(checkAnswer('word '.repeat(150), sheet, { maxWords: 200 }), []); // a plan may run to 200 words
@@ -101,7 +111,7 @@ assert.equal(isOutpost(pos('4k3/8/2p5/8/4P3/8/8/4K3 w - - 0 1').board, parseSqua
 assert.deepEqual(pawnWeaknesses(pos('4k3/8/8/8/8/2P5/2P5/4K3 w - - 0 1').board, 'white'),
   [{ kind: 'doubled', file: 'c' }, { kind: 'isolated', file: 'c' }]);
 assert.deepEqual(pawnWeaknesses(pos('4k3/8/8/4p3/2P1P3/3P4/8/4K3 w - - 0 1').board, 'white'), [{ kind: 'backward', square: 'd3' }]);
-const labels = (fen, uci) => { const p = pos(fen), q = p.clone(); q.play(parseUci(uci)); return moveLabels(p, q, uci, 'white'); };
+const labels = (fen: string, uci: string) => { const p = pos(fen), q = p.clone(); q.play(parseUci(uci)!); return moveLabels(p, q, uci, 'white'); };
 assert.deepEqual(labels('4k3/8/8/8/8/2n5/1PP5/4K3 w - - 0 1', 'b2c3'), ['your c-pawns doubled', 'your c-pawn isolated']);
 assert.deepEqual(labels('4k3/8/8/8/8/8/8/R3K3 w - - 0 1', 'a1d1'), ['rook on open file']);
 assert.deepEqual(labels('2b1kb2/8/8/8/8/8/8/2R1K3 w - - 0 1', 'c1c8'), ["opp's bishop pair gone"]);
@@ -152,7 +162,7 @@ const xl = pos('r1b2rk1/1p1nqpbp/2p2np1/p3p3/P3P3/2NQBN1P/1PP1BPP1/R4RK1 w - - 0
 assert.deepEqual([route(xl, at('f3'), at('d6')), route(xl, at('e3'), at('b6')), route(xl, at('d3'), at('d7')), route(xl, at('d3'), at('d8'), 1), route(xl, at('a4'), at('a5'))],
   [3, 1, 1, undefined, undefined]);
 // White's king on e2 while Black's has castled; with both kings home and able to castle there is no imbalance
-assert.ok(imbalances(pos('rnbq2n1/ppp3kr/3p3p/8/2BPPPpb/2N1B3/PPP1K3/R2Q3R b - - 0 13')).opponents.includes('king still in the centre'));
+assert.ok(imbalances(pos('rnbq2n1/ppp3kr/3p3p/8/2BPPPpb/2N1B3/PPP1K3/R2Q3R b - - 0 13')).opponents!.includes('king still in the centre'));
 assert.ok(!JSON.stringify(imbalances(pos('r3k2r/1pqn1pb1/p2p1np1/N2Pp2p/8/4BP2/PPPQB1PP/R3K2R w KQkq - 6 14'))).includes('king still'));
 // without queens the king belongs in the centre
 assert.ok(!JSON.stringify(imbalances(pos('r1b2rk1/pp3ppp/2n5/8/8/2N5/PPP2PPP/R1B1KB1R w KQ - 0 12'))).includes('king still'));
@@ -160,7 +170,7 @@ assert.ok(!JSON.stringify(imbalances(pos('r1b2rk1/pp3ppp/2n5/8/8/2N5/PPP2PPP/R1B
 // SF 15 terms: middlegame column with all pieces on, endgame column with none, from the asking side's view, in pawns
 const evalTable = ['|      Term    |    White    |    Black    |    Total    |', '|              |   MG    EG  |   MG    EG  |   MG    EG  |',
   '|     Mobility |  0.85  1.26 |  0.83  1.20 |  1.00  2.00 |', 'Final evaluation       +0.10 (white side)'];
-const fakeSf15 = { until: async () => evalTable };
+const fakeSf15: UciLink = { until: async () => evalTable };
 assert.deepEqual(await sf15Terms(fakeSf15, pos('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1'), 'white'), { terms: { Mobility: 0.58 }, sides: { Mobility: { yours: 0.49, theirs: -0.48 } } });
 assert.deepEqual(await sf15Terms(fakeSf15, pos('4k3/4p3/8/8/8/8/4P3/4K3 w - - 0 1'), 'black'), { terms: { Mobility: -1.15 }, sides: { Mobility: { yours: 0.69, theirs: -0.73 } } });
 
@@ -177,8 +187,8 @@ const cSheet = {
   fen: start, side_to_move: 'White', pawn_plan_only_in_better_line: null, latest_sf_gap: 0.5,
   played: { line_with_evals: '1. you e4 (+0.30) 1... opp e5 (+0.30)', explained_fen: null },
   alternative: { line_with_evals: '1. you d4 (+0.30) 1... opp d5 (+0.30)', explained_at_position_after: '1.d4 d5', explained_fen: 'rnbqkbnr/ppp1pppp/8/3p4/3P4/8/PPP1PPPP/RNBQKBNR w KQkq d6 0 2' },
-};
-const claims = [
+} as FullFactSheet; // partial: only what the checks and prompts below read
+const claims: ConceptClaim[] = [
   { concept: 'centre', claim: 'd4 takes the centre.', checks: [
     { pos: 'better:1', op: 'piece_on', args: { square: 'd4' }, expect: 'white pawn' },
     { pos: 'played:1', op: 'piece_on', args: { square: 'd4' }, expect: 'empty' },
@@ -189,7 +199,7 @@ const claims = [
 const v = verify(cSheet, claims);
 assert.deepEqual(v.map(c => [c.verified, c.contrast]), [[true, true], [false, false], [false, false]]);
 // checks that cannot be answered fail instead of passing vacuously
-const one = (fen, k) => verify({ ...cSheet, fen }, [{ concept: 'c', claim: 'c', checks: [{ pos: 'start', ...k }] }])[0].checks[0];
+const one = (fen: string, k: Omit<Check, 'pos'>) => verify({ ...cSheet, fen }, [{ concept: 'c', claim: 'c', checks: [{ pos: 'start', ...k }] }])[0].checks[0];
 assert.ok(one(start, { op: 'legal_moves', args: { square: 'g8' }, expect: 0 }).error); // black knight, white to move
 assert.ok(one(start, { op: 'passed', args: { square: 'g1' }, expect: true }).error); // not a pawn
 const doubled = '4k3/8/8/4P3/4P3/8/8/4K3 w - - 0 1';
@@ -198,11 +208,12 @@ assert.ok(one(start, { op: 'file_state', args: { file: 'E' }, expect: 'closed' }
 assert.ok(one(start, { op: 'file_state', args: { file: 'z' }, expect: 'open' }).error);
 assert.ok(one(start, { op: 'pawns_on_colour', args: { side: 'white', colour: 'white' }, expect: 4 }).error);
 assert.ok(verify(cSheet, [{ concept: 'c', claim: 'c', checks: [{ pos: 'played_leaf', op: 'piece_on', args: { square: 'e4' }, expect: 'white pawn' }] }])[0].checks[0].error);
+// @ts-expect-error: deliberate bad input, a null claim and checks that are no list
 assert.deepEqual(verify(cSheet, [null, { concept: 'c', checks: 'x' }]).map(c => c.verified), [false, false]);
 // sides render the same whatever their case
-assert.deepEqual(render(cSheet, verify(cSheet, [{ concept: 'k', claim: 'k', checks: [{ pos: 'start', op: 'king_square', args: { side: 'White' }, expect: 'e1' }] }]))[0].checked, ['now, before your move: your king on e1']);
+assert.deepEqual(render(cSheet, verify(cSheet, [{ concept: 'k', claim: 'k', checks: [{ pos: 'start', op: 'king_square', args: { side: 'White' }, expect: 'e1' }] }]))![0].checked, ['now, before your move: your king on e1']);
 // every board check, once: its value on a board and its wording on the sheet. A row with no case here fails.
-const rows = {
+const rows: Record<string, [fen: string, args: CheckArgs, value: CheckValue, words: string]> = {
   piece_on: [start, { square: 'e7' }, 'black pawn', "e7: opp's pawn"],
   attacks: [start, { from: 'g1', to: 'f3' }, true, 'the piece on g1 attacks f3: yes'],
   attackers: [start, { square: 'f6', side: 'black' }, 3, "opp's pieces attacking f6: 3"], // the g8 knight and two pawns
@@ -224,16 +235,16 @@ assert.deepEqual(Object.keys(rows).sort(), Object.keys(CHECKS).sort());
 for (const [op, [fen, args, value, words]] of Object.entries(rows)) {
   const k = one(fen, { op, args, expect: value });
   assert.ok(k.ok, `${op}: ${k.error ?? JSON.stringify(k.value)}`);
-  assert.equal(render({ ...cSheet, fen }, [{ verified: true, checks: [k] }])[0].checked[0], `now, before your move: ${words}`);
+  assert.equal(render({ ...cSheet, fen }, [{ verified: true, checks: [k] } as Verified])![0].checked[0], `now, before your move: ${words}`);
 }
-assert.match(one(start, { op: 'toString', args: {}, expect: 'x' }).error, /unknown op/);
+assert.match(one(start, { op: 'toString', args: {}, expect: 'x' }).error!, /unknown op/);
 // the proposer and the planner are told of every row, and of nothing that is not a row; route is the planner's alone
-const told = prompt => [...prompt.matchAll(/^- ([a-z_]+) \{/gm)].map(m => m[1]).sort();
+const told = (prompt: string) => [...prompt.matchAll(/^- ([a-z_]+) \{/gm)].map(m => m[1]).sort();
 assert.deepEqual(told(PLANNER), Object.keys(CHECKS).sort());
 assert.deepEqual(told(PROPOSER), Object.keys(CHECKS).filter(op => op !== 'route').sort());
 // the rule picker gets the proposer's check rows word for word, and every rule of the pool, for a fact sheet and for a
 // plan sheet, each with its own position names; the pool has at most the 231 rules stage 0 tested, unique ids and no source
-const rowLines = prompt => prompt.split('\n').filter(l => /^- [a-z_]+ \{/.test(l));
+const rowLines = (prompt: string) => prompt.split('\n').filter(l => /^- [a-z_]+ \{/.test(l));
 assert.deepEqual([rowLines(PICKER), rowLines(PLAN_PICKER)], [rowLines(PROPOSER), rowLines(PROPOSER)]);
 assert.ok(PICKER.includes('"better_leaf"') && !PICKER.includes('"best_leaf"') && PLAN_PICKER.includes('"best_leaf"') && !PLAN_PICKER.includes('"better_leaf"'));
 assert.ok(RULE_POOL.length > 0 && RULE_POOL.length <= 231 && new Set(RULE_POOL.map(r => r.id)).size === RULE_POOL.length);
@@ -241,17 +252,20 @@ assert.ok(!/flores/i.test(JSON.stringify(RULE_POOL)) && RULE_POOL.every(r => [PI
 // the claim list is found past brackets in the reasoning; no list at all is told apart from an empty one
 assert.deepEqual(claimsIn('The sheet says [takes pawn]. Claims:\n[{"concept": "a"}]\nDone [ok].'), [{ concept: 'a' }]);
 assert.deepEqual([claimsIn('none [here]'), claimsIn('[]')], [null, []]);
-assert.match(v[2].checks[0].error, /no piece on e4/);
+assert.match(v[2].checks[0].error!, /no piece on e4/);
 assert.deepEqual(render(cSheet, v), [{ concept: 'centre', claim: 'd4 takes the centre.', checked: [
   'after 1.d4: d4: your pawn', 'after 1.e4: d4: empty', 'after 1.d4 d5: your pieces attacking e5: 1'] }]);
 // a sheet without the field the concepts go after fails loudly, before any LLM call
+// @ts-expect-error: deliberate bad input, a sheet without the field the concepts go after
 await assert.rejects(withConcepts({ fen: start }, () => assert.fail('called the LLM')), /pawn_plan_only_in_better_line/);
 // a sheet that holds an earlier read's concepts (the eval's --facts on a --deep run): the proposer never sees them,
 // and the new ones take their place
 {
-  const seen = [], again = await withConcepts({ ...cSheet, verified_concepts: ['old'] }, async (system, facts) => (seen.push(facts), JSON.stringify(claims)));
+  const seen: object[] = [], again = await withConcepts({ ...cSheet,
+    // @ts-expect-error: placeholder for an earlier read's concepts: only that they are replaced is tested
+    verified_concepts: ['old'] }, async (system, facts) => (seen.push(facts), JSON.stringify(claims)));
   assert.deepEqual([seen[0], again.facts.verified_concepts], [cSheet, again.concepts]);
-  assert.equal(again.concepts[0].concept, 'centre');
+  assert.equal(again.concepts![0].concept, 'centre');
 }
 // Find plan's deeper read: best:N / best_leaf name the plan line's positions; an idea keeps only targets its checks name
 const pSheet = {
@@ -259,13 +273,13 @@ const pSheet = {
   best: { move: 'e4', line_with_evals: '1. you e4 (+0.30) 1... opp e5 (+0.30) 2. you Nf3 (+0.30)', explained_at_position_after: '1.e4 e5 2.Nf3',
     explained_fen: 'rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2' },
   pawn_pushes_in_line: null,
-};
+} as PlanFacts; // partial: only what the planner's checks and the closing line read
 const planner = JSON.stringify([
   { concept: 'centre', claim: 'e4 takes the centre and the knight hits e5.', targets: [{ square: 'e5', kind: 'attack' }, { square: 'h7', kind: 'attack' }, { square: 'e4', kind: 'occupy' }, { square: 'e', kind: 'occupy' }],
     checks: [{ pos: 'best:1', op: 'piece_on', args: { square: 'e4' }, expect: 'white pawn' }, { pos: 'best_leaf', op: 'attacks', args: { from: 'f3', to: 'e5' }, expect: true },
       { pos: 'best_leaf', op: 'file_state', args: { file: 'e' }, expect: 'closed' }] },
   { concept: 'wrong', claim: 'x', targets: [{ square: 'd4', kind: 'occupy' }], checks: [{ pos: 'start', op: 'piece_on', args: { square: 'd4' }, expect: 'white pawn' }] }]);
-const pr = await withPlan(pSheet, (system, f, model) => (assert.deepEqual([system, model], [PLANNER, 'claude-fable-5-2']), planner)); // the default pick's ideas model
+const pr = await withPlan(pSheet, async (system, f, model) => (assert.deepEqual([system, model], [PLANNER, 'claude-fable-5-2']), planner)); // the default pick's ideas model
 assert.deepEqual(pr.ideas, [{ concept: 'centre', claim: 'e4 takes the centre and the knight hits e5.',
   checked: ['after 1.e4: e4: your pawn', 'after 1.e4 e5 2.Nf3: the piece on f3 attacks e5: yes', 'after 1.e4 e5 2.Nf3: e-file: closed'],
   targets: [{ square: 'e5', kind: 'attack' }, { square: 'e4', kind: 'occupy' }] }]);
@@ -275,13 +289,13 @@ const unread = await withPlan(pSheet, async () => 'No plan.'), noneHeld = await 
 assert.deepEqual([unread.ideas, unread.read, noneHeld.ideas, noneHeld.read], [null, false, null, true]);
 assert.equal(pr.read, true);
 // a saved plan sheet to its plan, as the eval's --facts does: the planner, then the writer, both with their own prompt
-const pCalls = [];
-const pa = await planAnswer(pSheet, (system, f, model) => (pCalls.push([system, model]), system === PLANNER ? planner : 'Play 1.e4.'), { model: 'claude-fable-5-2' });
+const pCalls: string[][] = [];
+const pa = await planAnswer(pSheet, async (system, f, model) => (pCalls.push([system, model]), system === PLANNER ? planner : 'Play 1.e4.'), { model: 'claude-fable-5-2' });
 assert.deepEqual(pCalls, [[PLANNER, 'claude-fable-5-2'], [PLAN_SYSTEM, 'claude-fable-5-2'], [PLAN_PICKER, 'claude-fable-5-2']]); // the picked model plans, writes and picks the rule
 // a pick of two models, joined by '+': the first makes the ideas call and picks the rule, the second writes
 assert.deepEqual([stepModels('m1'), stepModels('m1+m2')], [{ ideas: 'm1', writer: 'm1' }, { ideas: 'm1', writer: 'm2' }]);
 pCalls.length = 0;
-await planAnswer(pSheet, (system, f, model) => (pCalls.push([system, model]), system === PLANNER ? planner : 'Play 1.e4.'), { model: 'm1+m2' });
+await planAnswer(pSheet, async (system, f, model) => (pCalls.push([system, model]), system === PLANNER ? planner : 'Play 1.e4.'), { model: 'm1+m2' });
 assert.deepEqual(pCalls, [[PLANNER, 'm1'], [PLAN_SYSTEM, 'm2'], [PLAN_PICKER, 'm1']]);
 assert.deepEqual([pa.text, pa.ideas, pa.facts.verified_plan_ideas], ['Play 1.e4.', pr.ideas, pr.ideas]);
 await assert.rejects(planAnswer(pSheet, async () => 'No plan.'), /Could not read the plan ideas in the reply/);
@@ -291,9 +305,9 @@ await assert.rejects(planAnswer(pSheet, async () => '[]'), /No clear plan found 
 // decline stays a decline, and a tactical plan asks no picker
 {
   const [r] = RULE_POOL, rule = `Rule: ${r.rule[0].toLowerCase()}${r.rule.slice(1)}\nHere: your e4 pawn`;
-  const e4 = expect => JSON.stringify([{ rule: r.id, kind: 'follows', here: 'your e4 pawn', checks: [{ pos: 'best:1', op: 'piece_on', args: { square: 'e4' }, expect }] }]);
-  const asked = [];
-  const plan = async (written, reply = e4('white pawn'), sheet = pSheet) => (await planAnswer(sheet, async (system, f) => {
+  const e4 = (expect: Expect) => JSON.stringify([{ rule: r.id, kind: 'follows', here: 'your e4 pawn', checks: [{ pos: 'best:1', op: 'piece_on', args: { square: 'e4' }, expect }] }]);
+  const asked: [string, object][] = [];
+  const plan = async (written: string, reply: string | Error = e4('white pawn'), sheet = pSheet) => (await planAnswer(sheet, async (system, f) => {
     asked.push([system, f]);
     if (system !== PLAN_PICKER) return system === PLANNER ? planner : written;
     if (reply instanceof Error) throw reply;
@@ -315,36 +329,60 @@ await assert.rejects(planAnswer(pSheet, async () => '[]'), /No clear plan found 
 assert.deepEqual(planShapes(pSheet, pr.ideas, 'Play 1.e4, then hit **e5**.'),
   [{ orig: 'e2', dest: 'e4', brush: 'green' }, { orig: 'e5', brush: 'red' }, { orig: 'e4', brush: 'green' }]);
 assert.deepEqual(planShapes(pSheet, pr.ideas, 'Nothing named; Ne55 is no square.'), [{ orig: 'e2', dest: 'e4', brush: 'green' }]);
-const many = [{ targets: ['a3', 'b3', 'c3', 'd3', 'f3'].map(square => ({ square, kind: 'occupy' })) }];
+const many = [{ targets: ['a3', 'b3', 'c3', 'd3', 'f3'].map(square => ({ square, kind: 'occupy' })) }] as PlanIdea[]; // partial: targets only
 assert.equal(planShapes(pSheet, many, 'a3 b3 c3 d3 f3').length, 5);
 // the lichess board, on a fake of lichess's page: its analysis controller, its sounds and the user tag. Each page
-// function is re-parsed from its source text, as chrome.scripting sends it, so one that leans on a name from
-// lichess.js fails here too.
+// function runs from the text the build script wrote into the bundle, which is the text chrome.scripting sends, so one
+// that leans on a name from lichess.ts, or on a helper a build flag put into its body, fails here too.
 {
+  // node --run runs package.json's build script, so with the real flags; piped, so it prints only when it fails
+  execFileSync(process.execPath, ['--run', 'build'], { cwd: new URL('.', import.meta.url), stdio: 'pipe' });
+  /** run() on what extension/`file` ships: the page function's top-level declaration there, re-parsed as in the tab. */
+  const shipped = (file: string): Run => {
+    const js = readFileSync(new URL(`extension/${file}`, import.meta.url), 'utf8');
+    return async (func, args) => {
+      // esbuild numbers a name two modules share (readPage2): the plain name may then be the other module's function
+      const found = js.match(new RegExp(`^function ${func.name}\\d*\\(.*?^}$`, 'gms')) ?? [];
+      const names = found.map(f => f.split('(')[0]).join(', ') || 'none';
+      assert.ok(found.length === 1 && found[0].startsWith(`function ${func.name}(`),
+        `extension/${file} must hold one top-level "function ${func.name}(", found: ${names}`);
+      return new Function(`return (${found[0]})`)()(...args);
+    };
+  };
   const other = 'rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1';
-  const fakePage = ({ allowed = true, engineOn = true, study, ongoing = false, data } = {}) => {
-    const cg = () => ({ drawn: null, setAutoShapes(shapes) { this.drawn = shapes; } });
-    const nodes = { '': { fen: start, children: [{ san: 'e4' }], ceval: { pvs: [{ moves: ['d2d4', 'd7d5'] }] } }, zz: { fen: other, children: [] } };
-    const sounds = [];
-    const ctrl = {
+  interface FakeNode { id?: string; fen?: string; san?: string; children?: FakeNode[]; ceval?: { pvs: { moves: string[] }[] } }
+  interface FakeGround { drawn: (Shape | string)[] | null; setAutoShapes(shapes: (Shape | string)[]): void }
+  interface FakeStudy { data?: { chapter: { id: string } }; relay?: object }
+  interface FakeCtrl {
+    path: string; node: FakeNode; chessground: FakeGround; isCevalAllowed?: () => boolean; cevalEnabled: () => boolean;
+    study?: FakeStudy; ongoing: boolean | null; data?: { game: { id: string } };
+    userJumpIfCan(path: string): void; playUciList(ucis: string[]): void; setChessground(c: FakeGround): void; setAutoShapes(): void;
+  }
+  type PageNode = NonNullable<NonNullable<Window['site']>['analysis']>['node']; // lichess.ts's TreeNode
+  interface FakePageOptions { allowed?: boolean; engineOn?: boolean; study?: FakeStudy; ongoing?: boolean | null; data?: { game: { id: string } } }
+  const fakePage = ({ allowed = true, engineOn = true, study, ongoing = false, data }: FakePageOptions = {}) => {
+    const cg = (): FakeGround => ({ drawn: null, setAutoShapes(shapes) { this.drawn = shapes; } });
+    const nodes: Record<string, FakeNode> = { '': { fen: start, children: [{ san: 'e4' }], ceval: { pvs: [{ moves: ['d2d4', 'd7d5'] }] } }, zz: { fen: other, children: [] } };
+    const sounds: (string | undefined)[] = [];
+    const ctrl: FakeCtrl = {
       path: '', node: nodes[''], chessground: cg(),
       isCevalAllowed: () => allowed, cevalEnabled: () => engineOn, study, ongoing, data,
-      userJumpIfCan(path) { if (nodes[path]) [ctrl.path, ctrl.node] = [path, nodes[path]]; },
-      playUciList(ucis) {
+      userJumpIfCan(path: string) { if (nodes[path]) [ctrl.path, ctrl.node] = [path, nodes[path]]; },
+      playUciList(ucis: string[]) {
         for (const uci of ucis) {
           ctrl.path += uci;
           ctrl.node = nodes[ctrl.path] = { fen: `after ${ctrl.path}`, children: [] };
-          globalThis.window.site.sound.move(ctrl.node);
+          globalThis.window.site!.sound.move!(ctrl.node as PageNode);
         }
       },
-      setChessground(c) { ctrl.chessground = c; },
+      setChessground(c: FakeGround) { ctrl.chessground = c; },
       setAutoShapes() { ctrl.chessground.setAutoShapes(['auto']); },
     };
-    globalThis.window = { site: { analysis: ctrl, sound: { move: node => sounds.push(node.fen) } } };
-    globalThis.document = { querySelector: sel => sel === '#user_tag' && { textContent: ' fable6 ' } };
+    (globalThis as { window?: object }).window = { site: { analysis: ctrl, sound: { move: (node: FakeNode) => sounds.push(node.fen) } } };
+    (globalThis as { document?: object }).document = { querySelector: (sel: string) => sel === '#user_tag' && { textContent: ' fable6 ' } };
     return { ctrl, sounds, cg };
   };
-  const board = lichessBoard(async (func, args = []) => new Function(`return (${func})`)()(...args));
+  const board = lichessBoard(shipped('panel.js'));
   // one read for both flows; lichess's top move only while lichess shows its engine
   let page = fakePage();
   assert.deepEqual(await board.read(), { fen: start, path: '', best: 'd2d4', next: 'e4', user: 'fable6', ahead: [], game: null });
@@ -382,16 +420,16 @@ assert.equal(planShapes(pSheet, many, 'a3 b3 c3 d3 f3').length, 5);
   Object.assign(page.ctrl, { path: 'aa', node: n1 });
   assert.deepEqual((await board.read()).ahead, [{ fen: 'f3', path: 'aabbcc', next: 'Nc6' }]);
   fakePage();
-  delete globalThis.window.site.analysis;
+  delete globalThis.window.site!.analysis;
   await assert.rejects(board.read(), /Open a lichess analysis board or study/);
   // a line: back to the position that was read, the moves played from there, one sound for the last, sounds restored
   page = fakePage();
   page.ctrl.userJumpIfCan('zz');
-  const soundMove = globalThis.window.site.sound.move;
+  const soundMove = globalThis.window.site!.sound.move;
   await board.play(start, '', ['e2e4', 'e7e5']);
   assert.equal(page.ctrl.path, 'e2e4e7e5');
   assert.deepEqual(page.sounds, ['after e2e4e7e5']);
-  assert.equal(globalThis.window.site.sound.move, soundMove);
+  assert.equal(globalThis.window.site!.sound.move, soundMove);
   await assert.rejects(board.play('8/8/8/8/8/8/8/8 w - - 0 1', '', ['e2e4']), /Could not go back to the explained position/);
   // no moves: the board only goes to the position (the about-equal verdict's Find plan)
   page = fakePage();
@@ -412,23 +450,27 @@ assert.equal(planShapes(pSheet, many, 'a3 b3 c3 d3 f3').length, 5);
   assert.deepEqual(page.ctrl.chessground.drawn, ['auto', arrow]);
   await board.clear();
   assert.deepEqual(page.ctrl.chessground.drawn, ['auto']);
-  delete globalThis.window;
-  delete globalThis.document;
+  // the background clears them when the panel closes, with its own bundle's text
+  await board.draw(start, [arrow]);
+  await lichessBoard(shipped('background.js')).clear();
+  assert.deepEqual(page.ctrl.chessground.drawn, ['auto']);
+  delete (globalThis as { window?: object }).window;
+  delete (globalThis as { document?: object }).document;
 }
 // one Messages API call: the system prompt, the sheet as the user message, the reply's text
-let sent;
-globalThis.fetch = async (url, { body }) => ((sent = JSON.parse(body)),
-  Response.json({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'Fine.' }] }));
+let sent!: Record<string, unknown>;
+globalThis.fetch = (async (url, { body }: RequestInit) => ((sent = JSON.parse(body as string)),
+  Response.json({ stop_reason: 'end_turn', content: [{ type: 'text', text: 'Fine.' }] }))) as typeof fetch;
 assert.equal(await anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5'), 'Fine.');
-const cached = text => [{ type: 'text', text, cache_control: { type: 'ephemeral' } }];
+const cached = (text: string) => [{ type: 'text', text, cache_control: { type: 'ephemeral' } }];
 assert.deepEqual([sent.model, sent.system, sent.messages], ['claude-opus-5-5', cached(PROPOSER), [{ role: 'user', content: JSON.stringify(cSheet, null, 1) }]]);
 // prompt caching: with depth on, the proposer's prompt and then the explainer's and the rule picker's go as one cached block each
 {
-  const seen = [];
-  globalThis.fetch = async (url, { body }) => (seen.push(JSON.parse(body).system), Response.json({ stop_reason: 'end_turn',
-    content: [{ type: 'text', text: seen.length === 1 ? JSON.stringify(claims) : 'Fine.' }] }));
+  const seen: unknown[] = [];
+  globalThis.fetch = (async (url, { body }: RequestInit) => (seen.push(JSON.parse(body as string).system), Response.json({ stop_reason: 'end_turn',
+    content: [{ type: 'text', text: seen.length === 1 ? JSON.stringify(claims) : 'Fine.' }] }))) as typeof fetch;
   const r = await answer(cSheet, llmWith('key'), { model: 'claude-opus-5-5', depth: true });
-  assert.deepEqual([r.text, r.concepts.length], ['Fine.', 1]);
+  assert.deepEqual([r.text, r.concepts!.length], ['Fine.', 1]);
   assert.deepEqual(seen, [cached(PROPOSER), cached(systemFor(true)), cached(PICKER)]);
 }
 // streaming: with onText the reply comes as server-sent events, cut here at awkward bytes (mid-line, mid-event, inside
@@ -437,14 +479,15 @@ assert.deepEqual([sent.model, sent.system, sent.messages], ['claude-opus-5-5', c
 // unstreamed. A stream that stops arriving says so; so does a reply that cannot be read.
 {
   const parts = ['**Nf3** keeps ', 'the knight — and ', 'wins the e5 pawn.'];
-  const sse = events => {
+  type SseEvent = [type: string, data: object];
+  const sse = (events: SseEvent[]) => {
     const bytes = new TextEncoder().encode(events.map(([type, data]) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`).join(''));
     const cuts = [...Array(Math.ceil(bytes.length / 9)).keys()].map(i => i * 9).concat(bytes.indexOf(0xe2) + 1, bytes.length).sort((a, b) => a - b);
     return new ReadableStream({ start(c) { cuts.slice(1).forEach((end, i) => c.enqueue(bytes.slice(cuts[i], end))); c.close(); }, cancel() { cancelled++; } });
   };
   let cancelled = 0;
-  const delta = (index, delta) => ['content_block_delta', { index, delta }];
-  const transcript = (stop, mid = []) => [
+  const delta = (index: number, delta: object): SseEvent => ['content_block_delta', { index, delta }];
+  const transcript = (stop: string, mid: SseEvent[] = []): SseEvent[] => [
     ['message_start', { message: { id: 'msg', role: 'assistant', content: [] } }],
     ['content_block_start', { index: 0, content_block: { type: 'thinking', thinking: '' } }],
     delta(0, { type: 'thinking_delta', thinking: '' }), delta(0, { type: 'signature_delta', signature: 'sig' }),
@@ -456,15 +499,15 @@ assert.deepEqual([sent.model, sent.system, sent.messages], ['claude-opus-5-5', c
     ['content_block_start', { index: 3, content_block: { type: 'text', text: '' } }],
     delta(3, { type: 'text_delta', text: parts[2] }), ['content_block_stop', { index: 3 }],
     ['message_delta', { delta: { stop_reason: stop }, usage: { output_tokens: 9 } }], ['message_stop', {}]];
-  let events, streamedReq;
-  globalThis.fetch = async (url, { body }) => {
-    const b = JSON.parse(body);
+  let events: SseEvent[], streamedReq!: Record<string, unknown>;
+  globalThis.fetch = (async (url, { body }: RequestInit) => {
+    const b = JSON.parse(body as string);
     if (!b.stream) return Response.json({ stop_reason: 'end_turn', content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: parts[0] + parts[1] },
       { type: 'fallback' }, { type: 'text', text: parts[2] }] });
     streamedReq = b;
     return new Response(sse(events), { headers: { 'content-type': 'text/event-stream' } });
-  };
-  const heard = [];
+  }) as typeof fetch;
+  const heard: string[] = [];
   events = transcript('end_turn');
   const text = await anthropic(PROPOSER, cSheet, 'key', 'claude-opus-5-5', t => heard.push(t));
   assert.deepEqual(heard, [parts[0], parts[0] + parts[1], parts.join('')]);
@@ -502,7 +545,7 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
 
 // a dead engine: the request it is on rejects, and so does every later one; one that died idle rejects the next request
 {
-  const sent = [], dead = uciEngine(l => sent.push(l));
+  const sent: string[] = [], dead = uciEngine(l => sent.push(l));
   const on = dead.until(['go nodes 1'], l => l.startsWith('bestmove')), queued = dead.until(['isready'], l => l === 'readyok');
   await new Promise(setImmediate);
   assert.deepEqual(sent, ['go nodes 1']); // the first request is with the engine, the second waits its turn
@@ -510,7 +553,7 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
   const idle = uciEngine(() => {});
   idle.fail(new Error('Stockfish crashed'));
   for (const r of await Promise.allSettled([on, queued, dead.until(['isready'], () => true), idle.until(['isready'], () => true)]))
-    assert.equal(r.reason?.message, 'Stockfish crashed');
+    assert.equal((r as PromiseRejectedResult).reason?.message, 'Stockfish crashed');
   // a live one still answers
   const live = uciEngine(l => queueMicrotask(() => live.onLine(l === 'isready' ? 'readyok' : l)));
   assert.deepEqual(await live.until(['isready'], l => l === 'readyok'), ['readyok']);
@@ -518,9 +561,9 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
 // answer(): the reasons go last in the writer's facts only, with their legend entry; without any, nothing changes
 {
   for (const depth of [false, true]) {
-    const calls = [], picked = [];
-    const llm = async (system, facts) => (system === PICKER ? (picked.push(facts), '[]') : (calls.push([system, facts]), system === PROPOSER ? JSON.stringify(claims) : 'Fine.'));
-    const recent = [{ move: '1. e4', said: 'First.', ideas: [] }];
+    const calls: [string, ExplainerSheet][] = [], picked: object[] = [];
+    const llm: Llm = async (system, facts) => (system === PICKER ? (picked.push(facts), '[]') : (calls.push([system, facts as ExplainerSheet]), system === PROPOSER ? JSON.stringify(claims) : 'Fine.'));
+    const recent: Reason[] = [{ move: '1. e4', said: 'First.', ideas: [] }];
     await answer(cSheet, llm, { depth, recent });
     await answer(cSheet, llm, { depth, recent: [] });
     const [w, plain] = depth ? [calls[1], calls[3]] : [calls[0], calls[1]];
@@ -538,10 +581,10 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
 // The picker is the ideas model, and gets the sheet
 {
   const d4 = [{ pos: 'better:1', op: 'piece_on', args: { square: 'd4' }, expect: 'white pawn' }];
-  const pick = (rule, kind = 'follows', here = 'your d4 pawn', checks = d4) => ({ rule, kind, here, checks });
-  const line = async (...picks) => (await answer(cSheet, async (system, f, model) => (system !== PICKER ? 'Fine.'
+  const pick = (rule: string, kind = 'follows', here = 'your d4 pawn', checks: Check[] = d4) => ({ rule, kind, here, checks });
+  const line = async (...picks: ReturnType<typeof pick>[]) => (await answer(cSheet, async (system, f, model) => (system !== PICKER ? 'Fine.'
     : (assert.deepEqual([f, model], [cSheet, 'claude-fable-5-2']), JSON.stringify(picks))))).text.replace(/^Fine\.\n?/, '') || null;
-  const [a, b] = RULE_POOL, said = r => r.rule[0].toLowerCase() + r.rule.slice(1);
+  const [a, b] = RULE_POOL, said = (r: Rule) => r.rule[0].toLowerCase() + r.rule.slice(1);
   assert.equal(await line(pick(a.id)), `Rule: ${said(a)}\nHere: your d4 pawn`);
   assert.equal(await line(pick(a.id, 'bent'), pick(b.id)), `Rule: ${said(b)}\nHere: your d4 pawn`);
   assert.equal(await line(pick(a.id, 'bent')), `Rule bent: ${said(a)}\nHere: your d4 pawn`);
@@ -555,7 +598,7 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
   // check, an unknown id, no list, a picker that throws) leaves the text as written, and a decline stays a decline
   const text = 'd4 takes the centre.\nNext time: ask what e4 gives up.', rule = `Rule: ${said(a)}\nHere: your d4 pawn`;
   const good = JSON.stringify([pick(a.id)]);
-  const run = async (reply, written = text) => (await answer(cSheet, async system => {
+  const run = async (reply: string | Error, written = text) => (await answer(cSheet, async system => {
     if (system !== PICKER) return written;
     if (reply instanceof Error) throw reply;
     return reply;
@@ -570,33 +613,33 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
   assert.equal(await run(good, DECLINED), DECLINED);
   // the stream: until the picker settles (after the writer's last piece), nothing from "Next time:" on shows, nor a
   // last line that may yet become it; then the closed text, once
-  let settle;
-  const heard = [], pieces = ['d4 takes', ' the centre.\nN', 'ext ti', 'me: ask what e4 gives up.'];
-  const streamed = answer(cSheet, (system, f, model, onText) => (system === PICKER ? new Promise(r => { settle = () => r(good); })
-    : (async () => { let t = ''; for (const p of pieces) onText(t += p); return t; })()), { onText: t => heard.push(t) });
+  let settle!: () => void;
+  const heard: string[] = [], pieces = ['d4 takes', ' the centre.\nN', 'ext ti', 'me: ask what e4 gives up.'];
+  const streamed = answer(cSheet, (system, f, model, onText) => (system === PICKER ? new Promise<string>(r => { settle = () => r(good); })
+    : (async () => { let t = ''; for (const p of pieces) onText!(t += p); return t; })()), { onText: t => heard.push(t) });
   await new Promise(setImmediate);
   assert.deepEqual(heard, ['d4 takes', 'd4 takes the centre.\n', 'd4 takes the centre.\n', 'd4 takes the centre.\n']);
   settle();
   assert.deepEqual([(await streamed).text, heard.slice(4)], [`d4 takes the centre.\n${rule}`, [`d4 takes the centre.\n${rule}`]]);
   // a bold "**Next time:**" is held back from its first star; a text that ends on a line break is not held back
-  const bold = [];
-  await answer(cSheet, (system, f, model, onText) => (system === PICKER ? good
-    : (async () => { let t = ''; for (const p of ['d4.\n', '**', 'Next time:** ask.']) onText(t += p); return t; })()), { onText: t => bold.push(t) });
+  const bold: string[] = [];
+  await answer(cSheet, async (system, f, model, onText) => (system === PICKER ? good
+    : (async () => { let t = ''; for (const p of ['d4.\n', '**', 'Next time:** ask.']) onText!(t += p); return t; })()), { onText: t => bold.push(t) });
   assert.deepEqual(bold, ['d4.\n', 'd4.\n', 'd4.\n', `d4.\n${rule}`]);
 }
 // the sheets of the next moves, built ahead on fake engines. A search answers a millisecond later, or at once on `stop`,
 // with the first legal moves, scored by the position and by the searches the engine ran since ucinewgame (as its hash
 // table would), so a command an aborted build sent after the next build's ucinewgame would change that build's sheet
 {
-  globalThis.fetch = async url => { const id = new URL(url).searchParams.get('ids'); return Response.json([{ id, playing: id === 'in_a_game' }]); };
-  const sent = [], searches = () => sent.filter(l => l.startsWith('go ')).length;
-  let score = null; // (fen, move) => centipawns, in place of the hashed scores
-  const hash = t => [...t].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 1_000_003, 7);
-  const legal = p => [...p.allDests()].flatMap(([from, to]) => [...to].filter(t => p.board.getRole(from) !== 'king' || Math.abs(from % 8 - t % 8) < 2)
+  globalThis.fetch = async url => { const id = new URL(url as string).searchParams.get('ids'); return Response.json([{ id, playing: id === 'in_a_game' }]); };
+  const sent: string[] = [], searches = () => sent.filter(l => l.startsWith('go ')).length;
+  let score: ((fen: string, move: string) => number) | null = null; // (fen, move) => centipawns, in place of the hashed scores
+  const hash = (t: string) => [...t].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 1_000_003, 7);
+  const legal = (p: Chess) => [...p.allDests()].flatMap(([from, to]) => [...to].filter(t => p.board.getRole(from) !== 'king' || Math.abs(from % 8 - t % 8) < 2)
     .map(t => makeUci({ from, to: t, promotion: p.board.getRole(from) === 'pawn' && (t < 8 || t >= 56) ? 'queen' : undefined }))).sort();
-  const fake = () => {
-    let n = 0, multipv = 1, fen, pending = null;
-    const say = (...ls) => setImmediate(() => ls.forEach(l => e.onLine(l)));
+  const fake = (): Engine => {
+    let n = 0, multipv = 1, fen: string, pending: (() => void) | null = null;
+    const say = (...ls: string[]) => setImmediate(() => ls.forEach(l => e.onLine(l)));
     const e = uciEngine(line => {
       sent.push(line);
       if (line === 'ucinewgame') n = 0;
@@ -607,17 +650,17 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
       else if (line === 'stop') pending?.();
       else if (line.startsWith('go ')) {
         const p = pos(fen), firsts = (line.split(' searchmoves ')[1]?.split(' ') ?? legal(p)).slice(0, multipv), k = n++;
-        const pv = m => { const q = p.clone(), out = [m]; q.play(parseUci(m)); while (out.length < 3 && legal(q).length) { out.push(legal(q)[0]); q.play(parseUci(out.at(-1))); } return out; };
+        const pv = (m: string) => { const q = p.clone(), out = [m]; q.play(parseUci(m)!); while (out.length < 3 && legal(q).length) { out.push(legal(q)[0]); q.play(parseUci(out.at(-1)!)!); } return out; };
         const infos = firsts.map((m, i) => `info depth 1 multipv ${i + 1} score cp ${score ? score(fen, m) : hash(fen + m) % 300 - 150 + k} pv ${pv(m).join(' ')}`);
-        const t = setTimeout(() => pending(), 1);
+        const t = setTimeout(() => pending!(), 1);
         pending = () => { clearTimeout(t); pending = null; say(...infos, `bestmove ${firsts[0] ?? '(none)'}`); };
       }
     });
     return e;
   };
-  const eng = { sf: fake(), sf2: fake(), sf15: fake() }, llm = async () => '(stub)';
+  const eng: Engines<Engine> = { sf: fake(), sf2: fake(), sf15: fake() }, llm: Llm = async () => '(stub)';
   const afterE5 = 'rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e6 0 2';
-  const next = [{ fen: afterE4, path: 'aa', next: 'e5' }, { fen: afterE5, path: 'aabb', next: 'Nf3' }];
+  const next: AheadSpot[] = [{ fen: afterE4, path: 'aa', next: 'e5' }, { fen: afterE5, path: 'aabb', next: 'Nf3' }];
   const ref = await factSheet(eng, afterE4, 'e5'), refStart = await factSheet(eng, start, 'd4');
   // an Explain, then the next two positions built ahead: stepping forward searches nothing and gets the same sheet
   const cache = sheetCache();
@@ -678,7 +721,7 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
   // no best (lichess's engine off, or a sheet built ahead): the better move is the higher-scored of the compared move
   // and the engine's best other move (a3 here), so a compared move that outscores it is the engine move, as when
   // lichess names it. A best that is named stays the better move, even where it scores lower
-  const rows = async (move, best = null) => (await explainMove(eng, { fen: start, move, best }, llm)).result.rows.map(r => r.move);
+  const rows = async (move: string, best: string | null = null) => (await explainMove(eng, { fen: start, move, best }, llm)).result.rows.map(r => r.move);
   assert.deepEqual([await rows('e4'), await rows('Nc3'), await rows('Nc3', 'a2a3')], [['a3', 'e4'], ['Nc3', 'a3'], ['a3', 'Nc3']]);
   // such a sheet, built ahead, serves the request that names the compared move as lichess's best
   const top = sheetCache();
@@ -705,21 +748,21 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
   // the panel's requests (panelRequests), on a board stub, these engines and a storage; the tab in front is found a
   // moment later, as chrome.tabs answers
   {
-    const data = {}, storage = { get: async k => structuredClone({ [k]: data[k] }), set: async o => void Object.assign(data, structuredClone(o)) };
-    const at = (fen, path, more) => ({ fen, path, best: undefined, next: undefined, user: 'fable6', game: 'g1', ahead: [], ...more });
-    const log = [];
-    let here, front = 1;
-    const board = { tab: 1, read: async () => (log.push('read'), here), play: async (...line) => void log.push(['play', ...line]) };
+    const data: Stored = {}, storage: Store = { get: async k => structuredClone({ [k]: data[k] }), set: async o => void Object.assign(data, structuredClone(o)) };
+    const at = (fen: string, path: string, more?: Partial<BoardPosition>): BoardPosition => ({ fen, path, best: undefined, next: undefined, user: 'fable6', game: 'g1', ahead: [], ...more });
+    const log: unknown[] = [];
+    let here: BoardPosition, front = 1;
+    const board: PanelBoard = { tab: 1, read: async () => (log.push('read'), here), play: async (...line) => void log.push(['play', ...line]) };
     const requests = panelRequests({ storage, version: '0.71', engines: async () => eng,
       activeBoard: async () => (await new Promise(setImmediate), { ...board, tab: front }) }); // another tab may show the same game
-    const asked = [], writer = async (system, facts, model) => (system === PICKER ? '[]' : (asked.push(model), `Answer ${asked.length}.`));
-    const explain = (ask, hear) => requests.explain(board, writer, { move: '', depth: false, model: 'm1', ...ask }, hear);
-    const done = async p => { const got = await p; await got?.ahead; return got; }; // the request, then its build ahead
+    const asked: string[] = [], writer: Llm = async (system, facts, model) => (system === PICKER ? '[]' : (asked.push(model), `Answer ${asked.length}.`));
+    const explain = (ask?: ExplainAsk, hear?: ExplainHooks) => requests.explain(board, writer, { move: '', depth: false, model: 'm1', ...ask }, hear);
+    const done = async (p: Promise<ExplainGot | null>) => { const got = await p; await got?.ahead; return got!; }; // the request, then its build ahead
     // the board's next game move unless one is typed; neither is an error, and the next request still runs
     here = at(start, '');
     await assert.rejects(explain(), /No next game move here/);
     here = at(start, '', { next: 'e4' });
-    const heard = [], first = await done(explain({}, { onSheet: (rows, lines, b) => heard.push(b) }));
+    const heard: BoardPosition[] = [], first = await done(explain({}, { onSheet: (rows, lines, b) => heard.push(b) }));
     assert.deepEqual([first.result.rows.map(r => r.move), first.result.text, first.saved, first.again, first.b, heard],
       [['a3', 'e4'], 'Answer 1.', false, null, here, [here]]);
     assert.deepEqual((await done(explain({ move: 'Nc3' }))).result.rows.map(r => r.move), ['Nc3', 'a3']);
@@ -735,8 +778,8 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
       [['a3', 'e4'], 'Answer 3.', false, null, { ...saved.b, user: 'other_user' }, ['m1', 'm1', 'm1']]);
     // the next move's sheet is built once the request is over (a step forward then searches nothing), but only while
     // the board is on its line in the tab in front, and never once another request has started
-    const from = move => at(start, '', { next: 'h4', ahead: [{ fen: afterE5, path: 'aabb', next: move }] });
-    const built = async move => { here = at(afterE5, 'aabb', { next: move }); s0 = searches(); await done(explain()); return searches() === s0; };
+    const from = (move: string) => at(start, '', { next: 'h4', ahead: [{ fen: afterE5, path: 'aabb', next: move }] });
+    const built = async (move: string) => { here = at(afterE5, 'aabb', { next: move }); s0 = searches(); await done(explain()); return searches() === s0; };
     here = from('d4');
     await done(explain());
     assert.equal(await built('d4'), true);
@@ -747,7 +790,7 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
     here = from('b4');
     let got = await explain();
     here = at(afterE4, ''); // another game, at its first position: the same path, another board
-    await got.ahead;
+    await got!.ahead;
     assert.equal(await built('b4'), false, 'the board left the line');
     // one request at a time: a plan under way makes the next one resolve to null, before it reads the board
     here = from('c4');
@@ -757,7 +800,7 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
     assert.equal(await explain(), null);
     await assert.rejects(failing, /Could not read the plan ideas in the reply/);
     assert.equal(log.filter(l => l === 'read').length, 2); // the plan's read, the build ahead's: the request that got null read nothing
-    await got.ahead;
+    await got!.ahead;
     assert.equal(await built('c4'), false, 'a request started meanwhile');
     // a plan stops a build ahead under way before its own searches start, and the sheet half built is never served
     here = from('g4');
@@ -767,17 +810,17 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
     const mark = sent.length;
     await assert.rejects(requests.plan(board, writer, { model: 'm1' }), /Could not read the plan ideas in the reply/);
     assert.ok(sent.slice(mark).indexOf('stop') >= 0 && sent.slice(mark).indexOf('stop') < sent.slice(mark).indexOf('ucinewgame'), 'stop comes before the plan sheet starts');
-    await got.ahead;
+    await got!.ahead;
     assert.equal(await built('g4'), false, 'stopped by a plan');
     // Find plan for an about-equal verdict's position: the board goes there before it is read
     const idea = JSON.stringify([{ concept: 'home', claim: 'The e-pawn is still at home.', targets: [],
       checks: [{ pos: 'start', op: 'piece_on', args: { square: 'e2' }, expect: 'white pawn' }] }]);
     here = at(start, '');
     log.length = 0;
-    const steps = [], planned = await requests.plan(board, async system => (system === PLANNER ? idea : 'The plan.'),
-      { model: 'm1', at: { fen: start, path: '' } }, { onStep: s => steps.push(s) });
+    const steps: string[] = [], planned = (await requests.plan(board, async system => (system === PLANNER ? idea : 'The plan.'),
+      { model: 'm1', at: { fen: start, path: '' } }, { onStep: s => steps.push(s) }))!;
     assert.deepEqual(log, [['play', start, '', []], 'read']);
-    assert.deepEqual([planned.result.head.label, planned.result.text, planned.b, steps], ['Plan for White', 'The plan.', here,
+    assert.deepEqual([planned.result.head!.label, planned.result.text, planned.b, steps], ['Plan for White', 'The plan.', here,
       ['Checking you are not in a game', 'Starting Stockfish', "Finding the engine's plan", 'Looking for plan ideas', 'Asking Claude']]);
   }
   // every rule of a request, through the one door (panelRequests): fair play, the saved answers and the reasons, on a
@@ -786,50 +829,50 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
   // asks about a move outside both, which is about equal
   {
     const game = ['e4', 'e5', 'Nf3', 'Nc6', 'Bb5', 'a6', 'Ba4', 'Nf6'], ucis = sanToUci(start, game);
-    const fenAfter = n => makeFen(ucis.slice(0, n).reduce((p, m) => (p.play(parseUci(m)), p), pos(start)).toSetup());
+    const fenAfter = (n: number) => makeFen(ucis.slice(0, n).reduce((p, m) => (p.play(parseUci(m)!), p), pos(start)).toSetup());
     const spots = game.map((next, n) => ({ fen: fenAfter(n), path: 'aabbccddeeffgghh'.slice(0, 2 * n), next }));
     score = (fen, m) => (ucis.includes(m) ? -100 : m === 'b1c3' ? 100 : 0);
-    const data = {}, events = [], written = [];
-    const storage = { get: async k => (events.push('get'), structuredClone({ [k]: data[k] })), set: async o => (events.push('set'), void Object.assign(data, structuredClone(o))) };
-    let down = false, here, said = 0, proposer = '[]';
+    const data: Stored = {}, events: string[] = [], written: ExplainerSheet[] = [];
+    const storage: Store = { get: async k => (events.push('get'), structuredClone({ [k]: data[k] })), set: async o => (events.push('set'), void Object.assign(data, structuredClone(o))) };
+    let down = false, here: BoardPosition, said = 0, proposer = '[]';
     const next = () => `Reason ${++said}.`;
     let reply = next;
     globalThis.fetch = async url => {
       events.push('lichess');
-      const id = new URL(url).searchParams.get('ids');
+      const id = new URL(url as string).searchParams.get('ids');
       return down ? new Response('', { status: 500 }) : Response.json(id === 'zz_no_such_user_zz' ? [] : [{ id, playing: id === 'in_a_game' }]);
     };
-    const board = { tab: 1, read: async () => here, play: async () => {} };
-    const llm = async (system, facts) => (system === PICKER ? '[]' : system === PROPOSER ? proposer : (events.push('llm'), written.push(facts), reply()));
-    const door = (version = '0.81', store = storage) => panelRequests({ storage: store, version, engines: async () => (events.push('engines'), eng), activeBoard: async () => null });
+    const board: PanelBoard = { tab: 1, read: async () => here, play: async () => {} };
+    const llm: Llm = async (system, facts) => (system === PICKER ? '[]' : system === PROPOSER ? proposer : (events.push('llm'), written.push(facts as ExplainerSheet), reply()));
+    const door = (version = '0.81', store: Store = storage) => panelRequests({ storage: store, version, engines: async () => (events.push('engines'), eng), activeBoard: async () => null });
     const requests = door(), m1 = { move: '', depth: false, model: 'm1' };
-    const at = (n, more) => ({ ...spots[n], best: undefined, user: 'fable6', game: 'g1', ahead: [], ...more });
-    const count = e => events.filter(x => x === e).length;
+    const at = (n: number, more?: Partial<BoardPosition>): BoardPosition => ({ ...spots[n], best: undefined, user: 'fable6', game: 'g1', ahead: [], ...more });
+    const count = (e: string) => events.filter(x => x === e).length;
     // one Explain request: [its text, whether it is a saved answer, times lichess was asked, searches run, answers written]
-    const explain = async (b, ask = {}, r = requests) => {
+    const explain = async (b: BoardPosition, ask: ExplainAsk = {}, r = requests): Promise<[text: string, saved: boolean, lichess: number, searches: number, written: number]> => {
       here = b;
       const before = [count('lichess'), searches(), written.length];
-      const got = await r.explain(board, llm, { ...m1, ...ask });
+      const got = (await r.explain(board, llm, { ...m1, ...ask }))!;
       return [got.result.text, got.saved, count('lichess') - before[0], searches() - before[1], written.length - before[2]];
     };
-    const fresh = (got, text) => assert.deepEqual([got[0], got[1], got[2], got[4]], [text, false, 1, 1]);
-    const served = (got, text) => assert.deepEqual(got, [text, true, 1, 0, 0]); // lichess alone: no engine, no LLM
+    const fresh = (got: (string | boolean | number)[], text: string) => assert.deepEqual([got[0], got[1], got[2], got[4]], [text, false, 1, 1]);
+    const served = (got: (string | boolean | number)[], text: string) => assert.deepEqual(got, [text, true, 1, 0, 0]); // lichess alone: no engine, no LLM
 
     // a new request, stage by stage: lichess is asked before the storage is read, the engines are asked for only then,
     // and the answer and its reason are saved last. The same request again stops at the saved answer
     const base = at(0, { best: 'd2d4' });
     here = base;
-    const first = await requests.explain(board, llm, m1, { onStep: s => events.push(s) });
+    const first = (await requests.explain(board, llm, m1, { onStep: s => events.push(s) }))!;
     assert.deepEqual(events, ['Checking you are not in a game', 'lichess', 'get', 'get', 'Starting Stockfish', 'engines', 'Analysing e4', 'Asking Claude',
       'llm', 'get', 'set', 'get', 'set']);
     assert.deepEqual([first.result.text, first.result.rows.map(r => r.move), first.saved], ['Reason 1.', ['d4', 'e4'], false]);
     events.length = 0;
-    const second = await requests.explain(board, llm, m1, { onStep: s => events.push(s) });
+    const second = (await requests.explain(board, llm, m1, { onStep: s => events.push(s) }))!;
     assert.deepEqual([events, second.result.text, second.result.note, second.saved], [['Checking you are not in a game', 'lichess', 'get'], 'Reason 1.', 'Saved answer.', true]);
     // refused: no user, an unknown one, one in a game, or a lichess that does not answer. Nothing else is touched (no
     // storage, no engine, no LLM), for a saved answer, a new one and a plan alike
     for (const [user, why] of [[undefined, /Log in to lichess/], ['zz_no_such_user_zz', /Unknown lichess user/], ['in_a_game', /You are playing a game on lichess/],
-      ['fable6', /Could not verify you are not in a game \(HTTP 500\)/]]) {
+      ['fable6', /Could not verify you are not in a game \(HTTP 500\)/]] as const) {
       down = user === 'fable6';
       for (const ask of [() => explain({ ...base, user }), () => explain(at(1, { user })), () => (here = at(2, { user }), requests.plan(board, llm, { model: 'm1' }))]) {
         events.length = 0;
@@ -857,11 +900,11 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
     // Ask again with a best: its answer, saved beside the one without a best, is the one both requests find next; asked
     // again once more, the new answer takes its place
     here = named;
-    const old = await requests.explain(board, llm, m1);
+    const old = (await requests.explain(board, llm, m1))!;
     assert.deepEqual([old.result.text, old.saved, old.again], ['Reason 6.', true, { b: named, move: 'e5', depth: false, model: 'm1' }]);
-    for (const [text, more] of [['Reason 8.', 1], ['Reason 9.', 0]]) {
-      const kept = data.answers.length, anew = await requests.explain(board, llm, { again: old.again });
-      assert.deepEqual([anew.result.text, anew.saved, anew.again, data.answers.length - kept], [text, false, null, more]);
+    for (const [text, more] of [['Reason 8.', 1], ['Reason 9.', 0]] as const) {
+      const kept = data.answers!.length, anew = (await requests.explain(board, llm, { again: old.again }))!;
+      assert.deepEqual([anew.result.text, anew.saved, anew.again, data.answers!.length - kept], [text, false, null, more]);
       served(await explain(named), text);
       served(await explain(unset), text);
     }
@@ -874,18 +917,18 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
     for (let i = 0; i < 2; i++) fresh(await explain(at(3)), DECLINED);
     reply = next;
     // at most 200 answers, the oldest dropped first
-    data.answers = Array.from({ length: 200 }, (_, i) => [`old ${i}`, { text: 'x' }]);
+    data.answers = Array.from({ length: 200 }, (_, i) => [`old ${i}`, { text: 'x' }]) as SavedAnswer[]; // partial: the cap reads no more
     fresh(await explain(at(4)), 'Reason 10.');
-    assert.deepEqual([data.answers.length, data.answers[0][0], data.answers.at(-1)[1].text], [200, 'old 1', 'Reason 10.']);
+    assert.deepEqual([data.answers!.length, data.answers![0][0], data.answers!.at(-1)![1].text], [200, 'old 1', 'Reason 10.']);
     served(await explain(at(4)), 'Reason 10.');
     // a storage that cannot save (the answers, or the reasons) still shows the answer just paid for; so does one that
     // cannot even be read, where nothing is read before the answer: Ask again, on a board with no game
-    const logged = console.error, gone = async () => { throw new Error('gone'); };
+    const logged = console.error, gone = async (): Promise<never> => { throw new Error('gone'); };
     console.error = () => {};
-    for (const lost of ['answers', 'reasons'])
+    for (const lost of ['answers', 'reasons'] as const)
       fresh(await explain(at(5), { model: lost }, door('0.81', { get: storage.get, set: async o => (o[lost] ? gone() : storage.set(o)) })), `Reason ${said}.`);
     here = at(5, { game: null });
-    const blind = await door('0.81', { get: gone, set: gone }).explain(board, llm, { again: { b: here, move: 'a6', depth: false, model: 'm1' } });
+    const blind = (await door('0.81', { get: gone, set: gone }).explain(board, llm, { again: { b: here, move: 'a6', depth: false, model: 'm1' } }))!;
     console.error = logged;
     assert.deepEqual([blind.result.text, blind.saved, said], ['Reason 13.', false, 13]);
 
@@ -894,21 +937,21 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
     // Each paid run sends the reasons kept for the earlier moves of its line (the last 4), each under its move with its
     // number, and keeps its own
     {
-      const from = written.length, r = n => `Reason ${13 + n}.`, plies = [0, 1, 2, 3, 4, 5], there = [...plies, ...plies.toReversed(), ...plies];
-      const walk = async n => (await explain(at(n, { game: 'walk' }), { model: 'walk' })).slice(0, 2), texts = [];
+      const from = written.length, r = (n: number) => `Reason ${13 + n}.`, plies = [0, 1, 2, 3, 4, 5], there = [...plies, ...plies.toReversed(), ...plies];
+      const walk = async (n: number) => (await explain(at(n, { game: 'walk' }), { model: 'walk' })).slice(0, 2), texts = [];
       for (const n of there) texts.push((await walk(n))[0]);
       assert.deepEqual(texts, there.map(n => r(n + 1)));
       assert.deepEqual([await walk(6), await walk(6), await walk(6)], [[r(7), false], [r(7), true], [r(7), true]]);
       const paid = written.slice(from).map(f => f.recent_reasons ?? null);
-      assert.deepEqual([paid.length, paid[0], paid[2], paid[5].map(x => x.said), paid[6].map(x => x.said)], [7, null,
+      assert.deepEqual([paid.length, paid[0], paid[2], paid[5]!.map(x => x.said), paid[6]!.map(x => x.said)], [7, null,
         [{ move: '1. e4', said: r(1), ideas: [] }, { move: '1... e5', said: r(2), ideas: [] }], [r(2), r(3), r(4), r(5)], [r(3), r(4), r(5), r(6)]]);
     }
     // a reason is the answer's first sentence and its verified concepts' names. A position gets those of earlier moves of
     // its line (strict path prefixes), oldest first: not its own, not a side line's, never another game's
     {
       const texts = ['\n  **Nf3** keeps the e5 pawn. It also develops!\nNext time: x.', 'After 12.Nf3 you win! Then', 'No full stop', 'A side line.', 'Fourth.', 'Again.'];
-      const ask = (b, more) => explain(b, { model: 'said', ...more });
-      reply = () => texts.shift();
+      const ask = (b: BoardPosition, more?: ExplainAsk) => explain(b, { model: 'said', ...more });
+      reply = () => texts.shift()!;
       proposer = JSON.stringify([{ concept: 'king', claim: 'Your king is on e1.', checks: [{ pos: 'start', op: 'king_square', args: { side: 'white' }, expect: 'e1' }] }]);
       await ask(at(0, { game: 'said' }), { depth: true });
       proposer = '[]';
@@ -917,81 +960,88 @@ for (const p of [JUDGE, PAIR]) assert.ok(withConceptsEntry(p).includes('"verifie
       const firsts = [{ move: '1. e4', said: '**Nf3** keeps the e5 pawn.', ideas: ['king'] }, { move: '1... e5', said: 'After 12.Nf3 you win!', ideas: [] },
         { move: '2. Nf3', said: 'No full stop', ideas: [] }];
       await ask(here = at(3, { game: 'said' }));
-      assert.deepEqual(written.at(-1).recent_reasons, firsts);
+      assert.deepEqual(written.at(-1)!.recent_reasons, firsts);
       await requests.explain(board, llm, { again: { b: here, move: 'Nc6', depth: false, model: 'said' } });
-      assert.deepEqual(written.at(-1).recent_reasons, firsts.slice(1)); // its own reason was the game's fifth: the oldest left
-      assert.deepEqual(data.reasons.find(([g]) => g === 'said')[1].filter(e => e.path === here.path).map(e => e.said), ['Again.']); // in its old reason's place
+      assert.deepEqual(written.at(-1)!.recent_reasons, firsts.slice(1)); // its own reason was the game's fifth: the oldest left
+      assert.deepEqual(data.reasons!.find(([g]) => g === 'said')![1].filter(e => e.path === here.path).map(e => e.said), ['Again.']); // in its old reason's place
       reply = next;
     }
     // nothing is kept for a decline, an about-equal verdict or a board with no game; a compared move that is the better
     // one (the sheet's played is then the engine's best other move) has the reason filed under it
     {
-      const ask = (b, more) => explain(b, { model: 'kept', ...more });
+      const ask = (b: BoardPosition, more?: ExplainAsk) => explain(b, { model: 'kept', ...more });
       reply = () => DECLINED;
       await ask(at(0, { game: 'kept' }));
       reply = next;
       await ask(at(1, { game: 'kept' }), { move: 'd6' });
       await ask(at(2, { game: null }));
       fresh(await ask(at(3, { game: 'kept' })), `Reason ${said}.`);
-      assert.deepEqual(['recent_reasons' in written.at(-1), data.reasons.some(([g]) => g === null), data.reasons.find(([g]) => g === 'kept')[1].map(e => e.path)],
+      assert.deepEqual(['recent_reasons' in written.at(-1)!, data.reasons!.some(([g]) => g === null), data.reasons!.find(([g]) => g === 'kept')![1].map(e => e.path)],
         [false, false, [spots[3].path]]);
       here = at(0, { game: 'better' });
-      assert.deepEqual((await requests.explain(board, llm, { ...m1, model: 'kept', move: 'Nc3' })).result.rows.map(r => r.move), ['Nc3', 'a3']);
+      assert.deepEqual((await requests.explain(board, llm, { ...m1, model: 'kept', move: 'Nc3' }))!.result.rows.map(r => r.move), ['Nc3', 'a3']);
       await ask(at(1, { game: 'better' }));
-      assert.deepEqual(written.at(-1).recent_reasons, [{ move: '1. Nc3', said: `Reason ${said - 1}.`, ideas: [] }]);
+      assert.deepEqual(written.at(-1)!.recent_reasons, [{ move: '1. Nc3', said: `Reason ${said - 1}.`, ideas: [] }]);
     }
     // at most 50 games, the oldest dropped first
     data.reasons = Array.from({ length: 50 }, (_, i) => [`n${i}`, []]);
     await explain(at(6, { game: 'new' }), { model: 'cap' });
-    assert.deepEqual([data.reasons.length, data.reasons[0][0], data.reasons.at(-1)[0]], [50, 'n1', 'new']);
+    assert.deepEqual([data.reasons.length, data.reasons[0][0], data.reasons.at(-1)![0]], [50, 'n1', 'new']);
     score = null;
   }
 }
-delete globalThis.fetch; // nothing past here may call out
+delete (globalThis as { fetch?: unknown }).fetch; // nothing past here may call out
 
 const RECORDED = new URL('test-engines.json', import.meta.url);
 const record = process.argv.includes('--record');
 
+/** One logged reply: the commands sent and the lines the engine answered with. */
+interface Recorded { cmds: string[]; lines: string[] }
+/** The engines the tests below run on: replayed, or real and recording. */
+interface ReplayEngines extends Engines { quit: () => void; save?: () => void }
+interface RecordingEngines extends ReplayEngines { save: () => void }
+
 /** The real engines, with every reply logged per engine as {cmds, lines}. Search output keeps only what search() reads:
     per MultiPV line the info line pickInfos() picks, cut to multipv, score and pv, and the bestmove. The caller gets the
     same cut lines, so a recording run sees what a replay will. */
-async function recordingEngines() {
-  const real = await nodeEngines(), log = { sf: [], sf2: [], sf15: [] };
+async function recordingEngines(): Promise<RecordingEngines> {
+  const real = await nodeEngines(), log: Record<keyof Engines, Recorded[]> = { sf: [], sf2: [], sf15: [] };
   // depth, nodes, speed and the like vary with the build and machine: drop them so only a change in the facts fails CI.
   // SF 15 prints a blank line after "Final evaluation", which lands in the next reply or nowhere, by how stdout is
   // chunked: blank lines are dropped too (sf15Terms reads only the table rows)
-  const trim = lines => !lines.at(-1).startsWith('bestmove') ? lines.filter(l => l)
-    : [...pickInfos(lines).map(l => l.replace(/ (depth|seldepth|nodes|nps|time|hashfull|tbhits) \d+/g, '')), lines.at(-1)];
-  const wrap = k => ({ until: async (cmds, done) => { const lines = trim(await real[k].until(cmds, done)); log[k].push({ cmds, lines }); return lines; } });
+  const trim = (lines: string[]) => !lines.at(-1)!.startsWith('bestmove') ? lines.filter(l => l)
+    : [...pickInfos(lines).map(l => l.replace(/ (depth|seldepth|nodes|nps|time|hashfull|tbhits) \d+/g, '')), lines.at(-1)!];
+  const wrap = (k: keyof Engines): UciLink => ({ until: async (cmds, done) => { const lines = trim(await real[k].until(cmds, done)); log[k].push({ cmds, lines }); return lines; } });
   // the two sides share sf15, and which one asks first depends on machine speed. Replay only keeps the order of
   // replies to the same commands, so a stable sort by command keeps the file the same on every machine
-  const key = e => e.cmds.join('\n'), byCmds = (a, b) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0;
+  const key = (e: Recorded) => e.cmds.join('\n'), byCmds = (a: Recorded, b: Recorded) => key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0;
   const save = () => writeFileSync(RECORDED, JSON.stringify(Object.fromEntries(Object.entries(log).map(([k, v]) => [k, v.sort(byCmds)]))) + '\n');
   return { sf: wrap('sf'), sf2: wrap('sf2'), sf15: wrap('sf15'), quit: real.quit, save };
 }
 
 /** Engines that answer from the recording: each engine replays its replies to the same commands, in the order recorded.
     Each engine has its own hash history, so the same command can get a different reply on sf and sf2: never shared. */
-function recordedEngines() {
-  const engine = rec => {
-    const q = new Map();
+function recordedEngines(): ReplayEngines {
+  const engine = (rec: Recorded[]): UciLink => {
+    const q = new Map<string, string[][]>();
     for (const { cmds, lines } of rec) { const key = cmds.join('\n'); q.set(key, [...(q.get(key) ?? []), lines]); }
     return { until: async cmds => q.get(cmds.join('\n'))?.shift()
-      ?? assert.fail(`${q.has(cmds.join('\n')) ? 'asked more times than' : 'not'} recorded (node test.js --record): ${cmds.join(' | ')}`) };
+      ?? assert.fail(`${q.has(cmds.join('\n')) ? 'asked more times than' : 'not'} recorded (node test.ts --record): ${cmds.join(' | ')}`) };
   };
-  const log = JSON.parse(readFileSync(RECORDED, 'utf8'));
+  const log: Record<keyof Engines, Recorded[]> = JSON.parse(readFileSync(RECORDED, 'utf8'));
   return { sf: engine(log.sf), sf2: engine(log.sf2), sf15: engine(log.sf15), quit: () => {} };
 }
 
 const engines = record ? await recordingEngines() : recordedEngines();
-let facts;
-const sheets = [];
+let facts!: ExplainerSheet;
+const sheets: object[] = [];
 // the LLM stub: logs each call (and whether it streams); the proposer gets `proposer`, the rule picker `picker`, the
 // explainer's sheet is kept in `facts`
-let calls = [], proposer = null, picker = '[]';
-const stub = (system, f, model, onText) => (calls.push([system, model, ...onText ? ['streams'] : []]),
-  system === PROPOSER ? proposer : system === PICKER ? picker : (sheets.push(facts = f), '(stub)'));
-const ask = (fen, move, best, opts) => explainMove(engines, { fen, move, best }, stub, opts);
+let calls: string[][] = [], proposer: string | null = null, picker = '[]';
+const stub = async (system: string, f: object, model: string, onText?: OnText) => (calls.push([system, model, ...onText ? ['streams'] : []]),
+  system === PROPOSER ? proposer! : system === PICKER ? picker : (sheets.push(facts = f as ExplainerSheet), '(stub)'));
+// every sheet asked for below is a full one but the about-equal case's, which only lists its keys
+const ask = (fen: string, move: string, best: string, opts?: ExplainOptions) => explainMove(engines, { fen, move, best }, stub, opts) as Promise<Explained & { facts: ExplainerSheet }>;
 try {
   const fen = 'r3k2r/1p1bbpp1/pqn1p2p/2ppP3/3P4/2PB1N2/PP1N1PPP/R2Q1RK1 w kq - 2 11';
   let r = await ask(fen, 'dxc5', 'c3c4');
@@ -1003,9 +1053,9 @@ try {
 
   // regression positions: the facts must carry the point a good answer makes
   r = await ask('1r3rk1/p1p2ppp/bb1q4/3p4/BP1Pn3/2P1B3/P4PPP/RN1QR1K1 b - - 4 16', 'Bc4', 'c7c6');
-  assert.equal(facts.opponent_threat.move, 'f3'); // White threatens f3; c6 prepares Bc7 and Qxh2#
-  assert.match(facts.alternative.if_opp_plays_the_threat_at_once, /you Bc7 \[threatens Qxh2#\]/);
-  assert.ok(r.result.lines.includes(facts.alternative.if_opp_plays_the_threat_at_once)); // a link may play the threat line too
+  assert.equal(facts.opponent_threat!.move, 'f3'); // White threatens f3; c6 prepares Bc7 and Qxh2#
+  assert.match(facts.alternative.if_opp_plays_the_threat_at_once!, /you Bc7 \[threatens Qxh2#\]/);
+  assert.ok(r.result.lines.includes(facts.alternative.if_opp_plays_the_threat_at_once!)); // a link may play the threat line too
   calls = [];
   r = await ask('r4rk1/p1p2pp1/1pnb1q1p/3p1b2/P2P4/1NP2N2/1P2BPPP/R2QR1K1 b - - 0 13', 'Rfe8', 'c6e7', { depth: true });
   assert.match(r.text, /about as good as/); // equal moves: no LLM call (no rule picker either), plain verdict, even with depth on
@@ -1020,10 +1070,10 @@ try {
     { kind: 'compared', label: 'compared', move: 'Nxa8', eval: r.facts.played.latest_sf_eval }]);
   assert.notEqual(r.result.rows[0].eval, r.result.rows[1].eval);
   assert.deepEqual([r.result.head, r.result.text, r.result.note, r.result.shapes], [null, '(stub)', null, null]);
-  assert.deepEqual(r.result.lines.slice(0, 1).concat(r.result.lines.includes(r.facts.played.line_with_evals)), [r.facts.alternative.line_with_evals, true]);
+  assert.deepEqual((r.result.lines.slice(0, 1) as (string | boolean)[]).concat(r.result.lines.includes(r.facts.played.line_with_evals)), [r.facts.alternative.line_with_evals, true]);
   r = await ask('r3k1nr/4pp1p/p1ppb1p1/q3b3/N1B1P3/1P6/P1P2PPP/R1BQ1RK1 w kq - 1 12', 'Bd5', 'c1d2');
   assert.match(r.facts.played.line_with_evals, /opp cxd5 \[takes bishop/);
-  assert.match(facts.alternative.if_opp_plays_the_threat_at_once, /opp Bxc4 .* you Bxa5 \[takes queen/);
+  assert.match(facts.alternative.if_opp_plays_the_threat_at_once!, /opp Bxc4 .* you Bxa5 \[takes queen/);
   r = await ask('2bq4/r4kb1/n3pn1r/p2pB1Qp/P2P2p1/N1PB4/5PPP/R4RK1 w - - 12 25', 'Qg6+', 'f2f3');
   assert.match(r.facts.played.line_with_evals, /opp Rxg6 \[takes queen/);
   r = await ask('r2q1rk1/pp1n1ppb/2p4p/b4p1P/3P4/2PBBN2/PP3PP1/R2QR1K1 w - - 0 16', 'Qd2', 'd1b3');
@@ -1041,7 +1091,7 @@ try {
   // Kramnik-Leko 2001: Qa1 prepares Bxd5, which fails at once to Qb6 hitting the queen on b2.
   // With depth on: the proposer, then the explainer with the concepts entry and the verified concepts after the pawn plan
   calls = [];
-  const steps = [], sheetSeen = [];
+  const steps: string[] = [], sheetSeen: unknown[] = [];
   proposer = `Ideas:\n${JSON.stringify([
     { concept: 'king', claim: 'Your king is on g1.', checks: [{ pos: 'start', op: 'king_square', args: { side: 'white' }, expect: 'g1' }] },
     { concept: 'wrong', claim: 'x', checks: [{ pos: 'start', op: 'king_square', args: { side: 'white' }, expect: 'h1' }] }])}`;
@@ -1053,7 +1103,7 @@ try {
   assert.deepEqual(sheetSeen, [[0, r.result.rows, r.result.lines]]);
   assert.deepEqual(steps, ['Looking for positional ideas', 'Asking Claude']);
   // a pick of two models: the first proposes and picks the rule line, the second writes; with depth off the proposer is not called
-  const split = [], by = (system, f, model) => (split.push([system, model]), system === PROPOSER ? proposer : '(stub)');
+  const split: string[][] = [], by = async (system: string, f: object, model: string) => (split.push([system, model]), system === PROPOSER ? proposer! : '(stub)');
   await answer(r.facts, by, { model: 'm1+m2', depth: true });
   await answer(r.facts, by, { model: 'm1+m2' });
   assert.deepEqual(split, [[PROPOSER, 'm1'], [systemFor(true), 'm2'], [PICKER, 'm1'], [systemFor(true), 'm2'], [PICKER, 'm1']]);
@@ -1063,8 +1113,8 @@ try {
   const order = Object.keys(facts);
   assert.equal(order[order.indexOf('pawn_plan_only_in_better_line') + 1], 'verified_concepts');
   assert.equal(facts.verified_concepts, r.concepts);
-  assert.equal(facts.prepares.move, 'Bxd5');
-  assert.match(facts.prepares.line_if_played_at_once, /opp Qb6 \[attacks your queen on b2/);
+  assert.equal(facts.prepares!.move, 'Bxd5');
+  assert.match(facts.prepares!.line_if_played_at_once, /opp Qb6 \[attacks your queen on b2/);
   // the result's lines hold the at-once line too, so the panel links its moves: it starts at the explained position
   assert.match(linkMoves('21.Bxd5 exd5 22.Rxd5 Qb6', r.result.lines), /data-line="Bxd5 exd5 Rxd5 Qb6">Qb6</);
   // Skoberne-Suarez 2012: Rf1 prepares Nxg6; at once the engine line avoids Qxh6, which fails to Qxf2+ (Rf1 guards f2).
@@ -1075,23 +1125,23 @@ try {
   assert.deepEqual(calls, [[PROPOSER, 'claude-fable-5-2'], [systemFor(), 'claude-opus-5-5'], [PICKER, 'claude-fable-5-2']]); // the default pick: one model for the ideas and the rule, one writes
   assert.deepEqual([r.read, r.concepts, 'verified_concepts' in facts, facts.verified_concepts], [false, null, true, null]);
   assert.equal(r.result.note, 'Could not read the positional ideas in the reply.');
-  assert.ok(!r.result.lines.includes(facts.prepares.follow_up_fails)); // it starts mid-line: a link could not play it
-  assert.equal(facts.prepares.move, 'Nxg6');
-  assert.match(facts.prepares.follow_up_fails, /^Why 25\.Qxh6 fails: 25\. you Qxh6 .* 25\.\.\. opp Qxf2\+ /);
-  assert.equal(facts.prepares.better_move_guards, 'f2');
+  assert.ok(!r.result.lines.includes(facts.prepares!.follow_up_fails!)); // it starts mid-line: a link could not play it
+  assert.equal(facts.prepares!.move, 'Nxg6');
+  assert.match(facts.prepares!.follow_up_fails!, /^Why 25\.Qxh6 fails: 25\. you Qxh6 .* 25\.\.\. opp Qxf2\+ /);
+  assert.equal(facts.prepares!.better_move_guards, 'f2');
 
   // Find plan on a quiet position: our own engine picks f4, the planner's checks run on its line, the writer gets PLAN_SYSTEM
-  const quiet = 'r1br2k1/1pq1nppp/p1n1p3/8/2B1P3/1NQ1B3/PP3PPP/2R2RK1 w - - 0 1', planCalls = [], planSteps = [];
+  const quiet = 'r1br2k1/1pq1nppp/p1n1p3/8/2B1P3/1NQ1B3/PP3PPP/2R2RK1 w - - 0 1', planCalls: unknown[] = [], planSteps: string[] = [];
   // and one manoeuvre beyond the line: the b3 knight to the b6 hole, backed by its route; one with no route check and a
   // second one (to d6, which every short route reaches only over a square a black pawn covers) are dropped
-  const toHole = (square, checks) => ({ concept: 'knight to the hole', claim: `Later the knight heads for ${square}.`, beyond_line: true,
+  const toHole = (square: string, checks: Check[]) => ({ concept: 'knight to the hole', claim: `Later the knight heads for ${square}.`, beyond_line: true,
     targets: [{ square, kind: 'occupy' }], checks });
-  const holeChecks = (sq, moves = 3) => [{ pos: 'start', op: 'route', args: { from: 'b3', to: sq }, expect: moves },
+  const holeChecks = (sq: string, moves: Expect = 3) => [{ pos: 'start', op: 'route', args: { from: 'b3', to: sq }, expect: moves },
     { pos: 'start', op: 'pawn_can_ever_attack', args: { square: sq, side: 'black' }, expect: false }];
   const kingside = JSON.stringify([{ concept: 'kingside space', claim: 'f4 grabs space.', targets: [{ square: 'f4', kind: 'occupy' }],
     checks: [{ pos: 'start', op: 'piece_on', args: { square: 'f4' }, expect: 'empty' }, { pos: 'best:1', op: 'piece_on', args: { square: 'f4' }, expect: 'white pawn' }] },
   toHole('c5', [holeChecks('c5')[1]]), toHole('b6', holeChecks('b6')), toHole('d6', holeChecks('d6', 'more than 4'))]);
-  const planStub = (system, f, model) => (planCalls.push([system, model]), system === PLANNER ? kingside : (sheets.push(f), 'Push to **f4** with 1.f4.'));
+  const planStub = async (system: string, f: object, model: string) => (planCalls.push([system, model]), system === PLANNER ? kingside : (sheets.push(f), 'Push to **f4** with 1.f4.'));
   const plan = await findPlan(engines, quiet, planStub, { onStep: t => planSteps.push(t) });
   assert.deepEqual(planCalls, [[PLANNER, 'claude-fable-5-2'], [PLAN_SYSTEM, 'claude-opus-5-5'], [PLAN_PICKER, 'claude-fable-5-2']]); // the default pick
   assert.deepEqual(planSteps, ['Looking for plan ideas', 'Asking Claude']);
@@ -1106,27 +1156,27 @@ try {
   assert.deepEqual(plan.ideas.map(i => [i.concept, i.beyond_line, i.targets.map(t => t.square)]), [['kingside space', undefined, ['f4']], ['knight to the hole', true, ['b6']]]);
   assert.deepEqual(plan.ideas[1].checked, ['now, before your move: the piece on b3 can reach b6 in 3 moves, the other pieces standing still',
     "now, before your move: a pawn of the opponent's can still ever attack b6: no"]);
-  assert.match(plan.facts.imbalances.yours.join(), /hole b6/);
+  assert.match(plan.facts.imbalances.yours!.join(), /hole b6/);
   assert.equal(plan.facts.also_good, null); // h3 is the engine's second move, but too far behind f4 to call about as good
   // Stein-Ljubojevic 1971 (Marovic p16): Nf6, the book's move, is about as good as the engine's Bf8. The planner never
   // sees it; the writer gets it with its labelled line, and the panel shows it as a second row whose line links
-  const seen = [];
-  const closeStub = (system, f) => (seen.push([system, 'also_good' in f]), system === PLANNER
+  const seen: [string, boolean][] = [];
+  const closeStub = async (system: string, f: object) => (seen.push([system, 'also_good' in f]), system === PLANNER
     ? JSON.stringify([{ concept: 'king', claim: 'Your king is on g8.', checks: [{ pos: 'start', op: 'king_square', args: { side: 'black' }, expect: 'g8' }] }])
     : (sheets.push(f), '(stub)'));
   const p16 = await findPlan(engines, '3r2k1/1pn2qbp/pN1p2p1/P1pP1p1n/2N5/3Q4/1PPB1PPP/4R1K1 b - - 2 21', closeStub);
   assert.deepEqual(seen, [[PLANNER, false], [PLAN_SYSTEM, true], [PLAN_PICKER, true]]); // the rule picker gets the writer's sheet
   assert.deepEqual(p16.result.rows.map(m => [m.kind, m.move]), [['best', 'Bf8'], ['also', 'Nf6']]);
-  assert.match(p16.facts.also_good.line_with_evals, /^21\.\.\. you Nf6 \[attacks opp's pawn on d5/);
-  assert.deepEqual(p16.result.lines, [p16.facts.best.line_with_evals, p16.facts.also_good.line_with_evals]);
+  assert.match(p16.facts.also_good!.line_with_evals, /^21\.\.\. you Nf6 \[attacks opp's pawn on d5/);
+  assert.deepEqual(p16.result.lines, [p16.facts.best.line_with_evals, p16.facts.also_good!.line_with_evals]);
   // no idea holds: an error, and the writer is never called
   planCalls.length = 0;
-  await assert.rejects(findPlan(engines, quiet, (system, f, m) => (planCalls.push(system), '[]')), /No clear plan found here/);
+  await assert.rejects(findPlan(engines, quiet, async (system, f, m) => ((planCalls as unknown[]).push(system), '[]')), /No clear plan found here/);
   assert.deepEqual(planCalls, [PLANNER]);
 
   // every field the explainer and judge prompts quote is on a fact sheet built above, so a renamed field fails here
-  const keys = new Set();
-  const walk = v => { if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) { if (!Array.isArray(v)) keys.add(k); walk(x); } };
+  const keys = new Set<string>();
+  const walk = (v: unknown) => { if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) { if (!Array.isArray(v)) keys.add(k); walk(x); } };
   sheets.forEach(walk);
   const notFields = ['you', 'opp', 'check', 'yes', 'partly', 'no', 'tie', 'labelled', 'line', 'term', 'none', 'tactical', 'positional', 'must', 'forced', 'hole']; // quoted labels and verdict values
   const quoted = new Set([...(LEGEND + JUDGE + PAIR + PLAN_SYSTEM).matchAll(/"([a-z][a-z0-9_]*)"/g)].map(m => m[1]));

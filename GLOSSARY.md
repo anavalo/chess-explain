@@ -25,7 +25,7 @@ A structural fact about one side's pawns or pieces (a doubled pawn, a passed paw
 _Avoid_: imbalance, weakness
 
 **Label kind**:
-One row of the kinds table in `features.js`: how a feature of that kind is worded on the fact sheet, and a sample feature whose wording must appear in the sheet legend. Every feature has exactly one label kind; a tactical label on a move (a capture, a check, an attack, a pin) has none.
+One row of the kinds table in `src/features.ts`: how a feature of that kind is worded on the fact sheet, and a sample feature whose wording must appear in the sheet legend. Every feature has exactly one label kind; a tactical label on a move (a capture, a check, an attack, a pin) has none.
 _Avoid_: label type, tag type
 
 **Imbalance**:
@@ -53,7 +53,7 @@ The call in a deeper read, to the picked model, that names positional ideas for 
 _Avoid_: coach, concept LLM
 
 **Board check**:
-One question a program asks the board at a named position (is e5 an outpost, how many pieces attack f7), with the value expected. One row of the checks table in `concepts.js`: how the board answers and how the sheet words the answer.
+One question a program asks the board at a named position (is e5 an outpost, how many pieces attack f7), with the value expected. One row of the checks table in `src/concepts.ts`: how the board answers and how the sheet words the answer.
 _Avoid_: op, primitive, tool
 
 **Verified concept**:

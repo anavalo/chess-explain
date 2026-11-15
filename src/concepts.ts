@@ -1,33 +1,78 @@
 // The deeper read, run before the answer when the panel's positional depth switch is on: the picked model proposes
 // concepts for a fact sheet, each backed by board checks; verify() runs the checks and drops a claim unless every one
 // holds; render() turns the survivors into the sheet field "verified_concepts" (checks in words, sides as your/opp's).
-import { SquareSet, attacks, between, opposite, parseSquare, makeSquare, squareFile, squareRank } from './vendor/chessops.js';
-import { linePlies, position, play, sanToUci } from './explain.js';
-import { enemyPawnCanAttack, isOutpost, route } from './features.js';
-import { MODEL, PLANNER, PROPOSER, stepModels } from './prompt.js';
+import { SquareSet, attacks, between, opposite, parseSquare, makeSquare, squareFile, squareRank } from './chessops.ts';
+import { linePlies, position, play, sanToUci } from './explain.ts';
+import { enemyPawnCanAttack, isOutpost, route } from './features.ts';
+import { MODEL, PLANNER, PROPOSER, stepModels } from './prompt.ts';
+import type { Board, Color, Position, Square } from './chessops.ts';
+import type { FullFactSheet, Llm, PlanFacts, PlanLine, SheetLine, Side } from './explain.ts';
+import type { Owner } from './features.ts';
+
+/** A check's args, as the model writes them: which ones a check reads depends on its op. */
+export interface CheckArgs { square?: string; from?: string; to?: string; side?: string; colour?: string; file?: string }
+/** What a check's run() gives, compared with its `expect`. */
+export type CheckValue = string | number | boolean;
+/** A check's `expect`: a value, or a {min, max} range for a count. */
+export type Expect = CheckValue | { min?: number; max?: number };
+/** One board check of a claim: run CHECKS[op] at position `pos` with `args`, compare with `expect`. */
+export interface Check { pos: string; op: string; args?: CheckArgs; expect: Expect }
+/** A check after verify(): its value (absent when it threw), whether it held, and the error when it threw. */
+export interface CheckResult extends Check { value?: CheckValue; ok: boolean; error?: string }
+/** One row of CHECKS. */
+export interface CheckRow {
+  run: (pos: Position, args: CheckArgs) => CheckValue;
+  say: (args: CheckArgs, value: CheckValue, s: (side: string | undefined) => Owner) => string;
+}
+/** What verify() reads of any claim: its board checks. */
+export interface Claim { checks?: Check[] }
+/** A proposer's concept or a planner's plan idea, as the reply holds it. */
+export interface ConceptClaim extends Claim {
+  concept: string;
+  claim: string;
+  beyond_line?: boolean;
+  targets?: { square: string; kind: string }[];
+}
+/** A claim after verify(). */
+export type Verified<C extends Claim = ConceptClaim> = Omit<C, 'checks'> & { checks: CheckResult[]; verified: boolean; contrast: boolean };
+/** One entry of "verified_concepts" (and of "verified_plan_ideas", see PlanIdea): render()'s output. */
+export interface VerifiedConcept { concept: string; claim: string; checked: string[] }
+/** A board target of a plan idea. */
+export interface IdeaTarget { square: string; kind: 'attack' | 'occupy' }
+/** One entry of "verified_plan_ideas". */
+export interface PlanIdea extends VerifiedConcept { beyond_line?: true; targets: IdeaTarget[] }
+/** The fact sheet after a deeper read. */
+export type DeepSheet = FullFactSheet & { verified_concepts?: VerifiedConcept[] | null };
+/** The plan sheet after the planner's read. */
+export type PlanSheet = PlanFacts & { verified_plan_ideas?: PlanIdea[] | null };
+/** A shape Find plan draws on the lichess board: an arrow (with `dest`) or a circle. */
+export interface PlanShape { orig: string; dest?: string; brush: 'green' | 'red' }
+/** What the checks read of a sheet: its position and the lines a position name points into. */
+interface LineSheet { fen: string; side_to_move: Side; played?: SheetLine; alternative?: SheetLine; best?: PlanLine }
 
 const LIGHT = SquareSet.lightSquares();
 const VALUE = { pawn: 1, knight: 3, bishop: 3, rook: 5, queen: 9, king: 0 };
 const START = { white: { knight: ['b1', 'g1'], bishop: ['c1', 'f1'] }, black: { knight: ['b8', 'g8'], bishop: ['c8', 'f8'] } };
-const side = s => { const v = String(s).toLowerCase(); if (v === 'white' || v === 'black') return v; throw new Error(`side must be white or black, got ${s}`); };
-const sq = s => { const v = parseSquare(s); if (v === undefined) throw new Error(`bad square ${s}`); return v; };
-const pieceAt = (b, s) => { const p = b.get(s); if (!p) throw new Error(`no piece on ${makeSquare(s)}`); return p; };
-const attackersOf = (pos, s, color) => pos.kingAttackers(s, color, pos.board.occupied).size();
+const side = (s: string | undefined) => { const v = String(s).toLowerCase(); if (v === 'white' || v === 'black') return v; throw new Error(`side must be white or black, got ${s}`); };
+// a missing arg (the model left it out) throws inside parseSquare, and verify() reports it
+const sq = (s: string | undefined) => { const v = parseSquare(s!); if (v === undefined) throw new Error(`bad square ${s}`); return v; };
+const pieceAt = (b: Board, s: Square) => { const p = b.get(s); if (!p) throw new Error(`no piece on ${makeSquare(s)}`); return p; };
+const attackersOf = (pos: Position, s: Square, color: Color) => pos.kingAttackers(s, color, pos.board.occupied).size();
 // the plies of a line's main row: [{no: '1.', san: 'e4'}, {no: '1...', san: 'e5'}]
-const lineSans = l => linePlies(l.line_with_evals)[0];
+const lineSans = (l: { line_with_evals: string }) => linePlies(l.line_with_evals)[0];
 // a position name past "start": played_leaf, better:3, best_leaf (the plan sheet's line), ...
 const NAMED = /^(played|better|best)(?:_leaf|:(\d+))$/;
-const lineOf = (sheet, name) => ({ played: sheet.played, better: sheet.alternative, best: sheet.best })[name];
+const lineOf = (sheet: LineSheet, name: string) => ({ played: sheet.played, better: sheet.alternative, best: sheet.best })[name];
 
-const yn = v => (v === true ? 'yes' : v === false ? 'no' : v);
+const yn = (v: CheckValue) => (v === true ? 'yes' : v === false ? 'no' : v);
 
 /** The board checks, one row each. `run(position, args)` is the value the check's `expect` is compared with;
     `say(args, value, s)` words that value on the sheet, where `s(side)` is "your" or "opp's". The proposer and the
-    planner read of them in prompt.js: a test holds that every row has its line there, and a case of its own. */
-export const CHECKS = {
+    planner read of them in prompt.ts: a test holds that every row has its line there, and a case of its own. */
+export const CHECKS: Record<string, CheckRow> = {
   piece_on: {
     run: (pos, { square }) => { const p = pos.board.get(sq(square)); return p ? `${p.color} ${p.role}` : 'empty'; },
-    say: (a, v, s) => `${a.square}: ${v === 'empty' ? 'empty' : `${s(v.split(' ')[0])} ${v.split(' ')[1]}`}`,
+    say: (a, v, s) => `${a.square}: ${v === 'empty' ? 'empty' : `${s(String(v).split(' ')[0])} ${String(v).split(' ')[1]}`}`,
   },
   attacks: {
     run: (pos, { from, to }) => { const f = sq(from); return attacks(pieceAt(pos.board, f), f, pos.board.occupied).has(sq(to)); },
@@ -79,13 +124,13 @@ export const CHECKS = {
     run: (pos, { square }) => {
       const s = sq(square), p = pieceAt(pos.board, s), f = squareFile(s), r = squareRank(s);
       if (p.role !== 'pawn') throw new Error(`no pawn on ${square}`);
-      const ahead = t => (p.color === 'white' ? squareRank(t) > r : squareRank(t) < r);
-      return ![...pos.board.pawn].some(t => ahead(t) && (pos.board.get(t).color === p.color ? squareFile(t) === f : Math.abs(squareFile(t) - f) <= 1));
+      const ahead = (t: Square) => (p.color === 'white' ? squareRank(t) > r : squareRank(t) < r);
+      return ![...pos.board.pawn].some(t => ahead(t) && (pos.board.get(t)!.color === p.color ? squareFile(t) === f : Math.abs(squareFile(t) - f) <= 1));
     },
     say: (a, v) => `the pawn on ${a.square} is passed: ${yn(v)}`,
   },
   king_square: {
-    run: (pos, { side: c }) => makeSquare(pos.board.kingOf(side(c))),
+    run: (pos, { side: c }) => makeSquare(pos.board.kingOf(side(c))!),
     say: (a, v, s) => `${s(a.side)} king on ${v}`,
   },
   undeveloped_minors: {
@@ -93,10 +138,10 @@ export const CHECKS = {
     say: (a, v, s) => `${s(a.side)} knights and bishops still on their starting squares: ${v}`,
   },
   material: {
-    run: (pos, { side: c }) => [...pos.board[side(c)]].reduce((n, s) => n + VALUE[pos.board.get(s).role], 0),
+    run: (pos, { side: c }) => [...pos.board[side(c)]].reduce((n, s) => n + VALUE[pos.board.get(s)!.role], 0),
     say: (a, v, s) => `${s(a.side)} material: ${v}`,
   },
-  // moves the piece needs to get there, the rest of the board standing still (see route() in features.js)
+  // moves the piece needs to get there, the rest of the board standing still (see route() in features.ts)
   route: {
     run: (pos, { from, to }) => route(pos.board, sq(from), sq(to)) ?? 'more than 4',
     say: (a, v) => `the piece on ${a.from} can reach ${a.to} in ${v} moves, the other pieces standing still`,
@@ -113,10 +158,10 @@ export const CHECKS = {
 
 /** The positions a check may name: start, played_leaf, better_leaf, or played:N / better:N (after N plies of that line);
     on a plan sheet best_leaf and best:N. */
-function positions(sheet) {
+function positions(sheet: LineSheet): (name: string) => Position {
   const start = position(sheet.fen);
-  const at = (l, n) => { const ucis = sanToUci(sheet.fen, lineSans(l).slice(0, n).map(m => m.san)); return ucis.reduce(play, start); };
-  const leaf = l => { if (!l.explained_fen) throw new Error('this line has no explained position'); return position(l.explained_fen); };
+  const at = (l: SheetLine | PlanLine, n: number) => { const ucis = sanToUci(sheet.fen, lineSans(l).slice(0, n).map(m => m.san)); return ucis.reduce(play, start); };
+  const leaf = (l: SheetLine | PlanLine) => { if (!l.explained_fen) throw new Error('this line has no explained position'); return position(l.explained_fen); };
   return name => {
     if (name === 'start') return start;
     const m = NAMED.exec(name), l = m && lineOf(sheet, m[1]);
@@ -125,12 +170,12 @@ function positions(sheet) {
   };
 }
 
-const matches = (v, e) => (e && typeof e === 'object' && !Array.isArray(e)
-  ? (e.min === undefined || v >= e.min) && (e.max === undefined || v <= e.max)
+const matches = (v: CheckValue, e: Expect) => (e && typeof e === 'object' && !Array.isArray(e)
+  ? (e.min === undefined || Number(v) >= e.min) && (e.max === undefined || Number(v) <= e.max)
   : String(v).toLowerCase() === String(e).toLowerCase());
 
 /** Runs every claim's checks on the board. Returns the claims with {checks: [{..., value, ok, error?}], verified, contrast}. */
-export function verify(sheet, claims) {
+export function verify<C extends Claim>(sheet: LineSheet, claims: C[]): Verified<C>[] {
   const posOf = positions(sheet);
   return claims.map(c => {
     const checks = (Array.isArray(c?.checks) ? c.checks : []).map(k => {
@@ -138,7 +183,7 @@ export function verify(sheet, claims) {
         if (!Object.hasOwn(CHECKS, k.op)) throw new Error(`unknown op ${k.op}`);
         const value = CHECKS[k.op].run(posOf(k.pos), k.args ?? {});
         return { ...k, value, ok: matches(value, k.expect) };
-      } catch (e) { return { ...k, ok: false, error: e.message }; }
+      } catch (e) { return { ...k, ok: false, error: (e as Error).message }; }
     });
     const ok = checks.length > 0 && checks.every(k => k.ok);
     return { ...c, checks, verified: ok, contrast: new Set(checks.map(k => k.pos)).size > 1 };
@@ -146,23 +191,23 @@ export function verify(sheet, claims) {
 }
 
 /** The sheet field "verified_concepts" for verify()'s output: only verified claims, or null when none survived. */
-export function render(sheet, verified) {
+export function render(sheet: LineSheet, verified: Verified[]): VerifiedConcept[] | null {
   const you = sheet.side_to_move.toLowerCase();
-  const s = c => (side(c) === you ? 'your' : "opp's");
-  const where = p => {
+  const s = (c: string | undefined): Owner => (side(c) === you ? 'your' : "opp's");
+  const where = (p: string) => {
     if (p === 'start') return 'now, before your move';
-    const m = NAMED.exec(p), l = lineOf(sheet, m[1]);
+    const m = NAMED.exec(p)!, l = lineOf(sheet, m[1]!)!;
     const sans = m[2] === undefined ? l.explained_at_position_after : lineSans(l).slice(0, Number(m[2])).map(m => m.no + m.san).join(' ');
     return `after ${sans}`;
   };
   const out = verified.filter(c => c.verified).map(c => ({ concept: c.concept, claim: c.claim,
-    checked: c.checks.map(k => `${where(k.pos)}: ${CHECKS[k.op].say(k.args ?? {}, k.value, s)}`) }));
+    checked: c.checks.map(k => `${where(k.pos)}: ${CHECKS[k.op].say(k.args ?? {}, k.value!, s)}`) }));
   return out.length ? out : null;
 }
 
 /** The claim list in the proposer's reply: the first [...] span that parses as an array, or null when there is none.
     ponytail: tries every [ / ] pair, quadratic in brackets; fine for replies of a few KB. */
-export function claimsIn(reply) {
+export function claimsIn<C extends Claim = ConceptClaim>(reply: string): C[] | null {
   const opens = [...reply.matchAll(/\[/g)].map(m => m.index), closes = [...reply.matchAll(/\]/g)].map(m => m.index).reverse();
   for (const i of opens) for (const j of closes) {
     if (j < i) break;
@@ -176,13 +221,14 @@ export function claimsIn(reply) {
     concepts A/B tested. Returns {facts, concepts, read} (concepts null when no claim survived; read false when the reply
     held no claim list). Throws when the sheet has no ANCHOR, so a renamed field fails the tests instead of dropping
     the concepts. A sheet that already holds an earlier read's concepts loses them first: the proposer never sees them. */
-export async function withConcepts({ verified_concepts: old, ...facts }, llm, model = stepModels(MODEL).ideas) {
+export async function withConcepts({ verified_concepts: old, ...facts }: DeepSheet, llm: Llm, model = stepModels(MODEL).ideas): Promise<{ facts: DeepSheet; concepts: VerifiedConcept[] | null; read: boolean }> {
   if (!(ANCHOR in facts)) throw new Error(`the fact sheet has no "${ANCHOR}" to put the verified concepts after`);
   const claims = claimsIn(await llm(PROPOSER, facts, model));
   const concepts = claims ? render(facts, verify(facts, claims)) : null;
-  const out = {};
-  for (const [k, v] of Object.entries(facts)) { out[k] = v; if (k === ANCHOR) out.verified_concepts = concepts; }
-  return { facts: out, concepts, read: claims !== null };
+  // every key of facts copied in order, verified_concepts after ANCHOR: a whole DeepSheet once the loop is done
+  const out: Partial<DeepSheet> = {};
+  for (const [k, v] of Object.entries(facts)) { Reflect.set(out, k, v); if (k === ANCHOR) out.verified_concepts = concepts; }
+  return { facts: out as DeepSheet, concepts, read: claims !== null };
 }
 const ANCHOR = 'pawn_plan_only_in_better_line';
 
@@ -192,7 +238,7 @@ const ANCHOR = 'pawn_plan_only_in_better_line';
     {facts, ideas, read}: ideas is null when no idea held; read is false when the reply held no claim list. One idea may
     be a manoeuvre the engine line does not play ("beyond_line": true); it counts only with a route check, and a second
     one is dropped. */
-export async function withPlan(facts, llm, model = stepModels(MODEL).ideas) {
+export async function withPlan(facts: Omit<PlanFacts, 'also_good'>, llm: Llm, model = stepModels(MODEL).ideas): Promise<{ facts: Omit<PlanSheet, 'also_good'>; ideas: PlanIdea[] | null; read: boolean }> {
   const claims = claimsIn(await llm(PLANNER, facts, model));
   // one manoeuvre beyond the engine line at most: the first that holds and shows its route on the board
   let beyond = 0;
@@ -202,20 +248,21 @@ export async function withPlan(facts, llm, model = stepModels(MODEL).ideas) {
   const ideas = render(facts, checked)?.map((idea, i) => {
     const named = new Set(kept[i].checks.flatMap(k => Object.values(k.args ?? {})).map(String));
     const targets = (Array.isArray(kept[i].targets) ? kept[i].targets : [])
-      .filter(t => /^[a-h][1-8]$/.test(t?.square) && named.has(t.square) && (t.kind === 'attack' || t.kind === 'occupy'))
+      .filter((t): t is IdeaTarget => /^[a-h][1-8]$/.test(t?.square) && named.has(t.square) && (t.kind === 'attack' || t.kind === 'occupy'))
       .map(({ square, kind }) => ({ square, kind }));
-    return { ...idea, ...kept[i].beyond_line === true && { beyond_line: true }, targets };
+    return { ...idea, ...kept[i].beyond_line === true && { beyond_line: true as const }, targets };
   }) ?? null;
-  const out = {};
-  for (const [k, v] of Object.entries(facts)) { if (k === 'pawn_pushes_in_line') out.verified_plan_ideas = ideas; out[k] = v; }
-  return { facts: out, ideas, read: claims !== null };
+  // every key of facts copied in order, verified_plan_ideas before pawn_pushes_in_line: a whole sheet once the loop is done
+  const out: Partial<PlanSheet> = {};
+  for (const [k, v] of Object.entries(facts)) { if (k === 'pawn_pushes_in_line') out.verified_plan_ideas = ideas; Reflect.set(out, k, v); }
+  return { facts: out as Omit<PlanSheet, 'also_good'>, ideas, read: claims !== null };
 }
 
 /** The shapes Find plan draws on the lichess board: a green arrow for the plan's first move, and a circle on each idea
     target the plan's text names (the first 4, in idea order): red to attack, green to occupy. */
-export function planShapes(sheet, ideas, text) {
+export function planShapes(sheet: Pick<PlanFacts, 'fen' | 'best'>, ideas: PlanIdea[] | null, text: string): PlanShape[] {
   const [uci] = sanToUci(sheet.fen, [sheet.best.move]);
-  const shapes = [{ orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush: 'green' }], seen = new Set();
+  const shapes: PlanShape[] = [{ orig: uci.slice(0, 2), dest: uci.slice(2, 4), brush: 'green' }], seen = new Set<string>();
   for (const { square, kind } of (ideas ?? []).flatMap(i => i.targets)) {
     if (seen.size === 4 || seen.has(square) || !new RegExp(`(?<![a-h])${square}(?![0-9])`).test(text)) continue;
     seen.add(square);

@@ -1,15 +1,23 @@
 // The closing line of an answer or a plan: the rule line, a book rule of thumb tied to the board, when the rule picker
 // finds one whose board checks hold. Without one an answer keeps the advice line the explainer wrote itself ("Next
-// time:", rule 15 in prompt.js), and a plan has no closing line.
+// time:", rule 15 in prompt.ts), and a plan has no closing line.
 // closed() is a written text with its closing line; closingOf() reads a closed text back for the rule checks.
-import { DECLINED } from './explain.js';
-import { claimsIn, verify } from './concepts.js';
-import { PICKER, PLAN_PICKER } from './prompt.js';
-import { RULE_POOL } from './rules.js';
+import { DECLINED } from './explain.ts';
+import { claimsIn, verify } from './concepts.ts';
+import { PICKER, PLAN_PICKER } from './prompt.ts';
+import { RULE_POOL } from './rules.ts';
+import type { Llm, OnText } from './explain.ts';
+import type { Claim, DeepSheet, PlanSheet } from './concepts.ts';
+import type { RuleProblem } from './prompt.ts';
+
+/** One pick in the rule picker's reply (PICKER, PLAN_PICKER). */
+export interface RulePick extends Claim { rule: string; kind: 'follows' | 'bent'; here: string }
+/** closingOf()'s reading of a closed text. */
+export interface Closing { read: string; found: RuleProblem[] }
 
 const RULES = new Map(RULE_POOL.map(r => [r.id, r.rule]));
 const TIE = 12, ADVICE = 15; // the most words a "Here:" tie and an advice line may run to
-const count = s => String(s ?? '').trim().split(/\s+/).filter(Boolean).length;
+const count = (s?: string) => String(s ?? '').trim().split(/\s+/).filter(Boolean).length;
 
 /** The advice line's start, "Next time:" (bold or not), at a line start; and what a streamed line may yet grow into. */
 const NEXT = /^\**Next time:\**/m;
@@ -25,8 +33,8 @@ const ALSO = /^\**Also good:/;
     plan has one, else last. No rule line, a decline or no text: the text as written. `onText` hears the stream only up
     to the advice line (a last line that may yet become one is held back too), then the closed text, so the closing
     line shows once, never swapped. */
-export async function closed(write, sheet, llm, model, onText) {
-  const plan = !!sheet.best;
+export async function closed(write: (onText: OnText | undefined) => Promise<string>, sheet: DeepSheet | PlanSheet, llm: Llm, model: string, onText?: OnText): Promise<string> {
+  const plan = 'best' in sheet && !!sheet.best;
   const [text, rule] = await Promise.all([write(onText && (t => onText(beforeAdvice(t)))),
     plan && sheet.plan_kind === 'tactical' ? null : ruleLine(sheet, llm, model, plan ? PLAN_PICKER : PICKER)]);
   const out = placed(text, rule, plan);
@@ -39,22 +47,22 @@ export async function closed(write, sheet, llm, model, onText) {
     a followed rule comes before a bent one. Returns "Rule: <the pool's sentence>\nHere: <tie>" ("Rule bent: ..." for a
     bent one), or null when no pick holds or anything fails: the picker never fails an answer or a plan. closingOf()
     reads this format. */
-async function ruleLine(sheet, llm, model, prompt) {
+async function ruleLine(sheet: DeepSheet | PlanSheet, llm: Llm, model: string, prompt: string): Promise<string | null> {
   try {
-    const picks = (claimsIn(await llm(prompt, sheet, model)) ?? [])
+    const picks = (claimsIn<RulePick>(await llm(prompt, sheet, model)) ?? [])
       .filter(c => RULES.has(c.rule) && count(c.here) >= 1 && count(c.here) <= TIE);
     const held = verify(sheet, picks).filter(c => c.verified);
     const pick = held.find(c => c.kind === 'follows') ?? held.find(c => c.kind === 'bent');
     if (!pick) return null;
     const rule = RULES.get(pick.rule);
-    return `${pick.kind === 'follows' ? 'Rule' : 'Rule bent'}: ${rule[0].toLowerCase()}${rule.slice(1)}\nHere: ${String(pick.here).trim()}`;
+    return `${pick.kind === 'follows' ? 'Rule' : 'Rule bent'}: ${rule![0].toLowerCase()}${rule!.slice(1)}\nHere: ${String(pick.here).trim()}`;
   } catch {
     return null;
   }
 }
 
 /** Streamed text up to its advice line; a last line that may yet become one is held back too. */
-function beforeAdvice(text) {
+function beforeAdvice(text: string) {
   const m = NEXT.exec(text);
   if (m) return text.slice(0, m.index);
   const last = text.slice(text.lastIndexOf('\n') + 1);
@@ -62,7 +70,7 @@ function beforeAdvice(text) {
 }
 
 /** `text` with the `rule` line in its place (see closed); `plan`: the text is a plan. */
-function placed(text, rule, plan) {
+function placed(text: string, rule: string | null, plan: boolean) {
   if (!rule || !text || text === DECLINED) return text;
   const lines = text.trimEnd().split('\n');
   if (plan) {
@@ -73,13 +81,13 @@ function placed(text, rule, plan) {
   return (i < 0 ? [...lines, rule] : [...lines.slice(0, i), rule, ...lines.slice(i + 1)]).join('\n');
 }
 
-/** A closed text, read back for the rule checks. Returns {read, found}. `read` is what checkAnswer() (prompt.js)
+/** A closed text, read back for the rule checks. Returns {read, found}. `read` is what checkAnswer() (prompt.ts)
     reads and counts: the text without a rule line's sentence, which is the pool's and not the writer's; the "Here:" tie
     stays. `found` is rule 15's problems, as checkAnswer()'s [{rule, problem}]: a tie over TIE words, an advice line
     that is not last or runs over ADVICE words. */
-export function closingOf(answer) {
-  const found = [];
-  const flag = problem => found.push({ rule: 15, problem });
+export function closingOf(answer: string): Closing {
+  const found: RuleProblem[] = [];
+  const flag = (problem: string) => found.push({ rule: 15, problem });
   const tie = count(answer.match(/^Here:(.*)$/m)?.[1]);
   if (tie > TIE) flag(`here ${tie} words`);
   const lines = answer.trim().split('\n'), advice = lines.findIndex(l => NEXT.test(l));

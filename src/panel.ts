@@ -1,10 +1,13 @@
-import { llmWith, sanToUci, startEngines, uciEngine } from './explain.js';
-import { panelRequests } from './request.js';
-import { inTab, lichessBoard } from './lichess.js';
-import { linkMoves, md } from './md.js';
+import { llmWith, sanToUci, startEngines, uciEngine } from './explain.ts';
+import { panelRequests } from './request.ts';
+import { inTab, lichessBoard } from './lichess.ts';
+import { linkMoves, md } from './md.ts';
+import type { Llm } from './explain.ts';
+import type { Again, ExplainGot, PlanGot, ResultRow, TaskResult } from './request.ts';
+import type { BoardPosition, Shape, TabBoard } from './lichess.ts';
 
 // Each view (Explain, Plan) keeps its own answer; `out` is the one the running request writes to.
-const outs = { explain: document.getElementById('out-explain'), plan: document.getElementById('out-plan') };
+const outs = { explain: document.getElementById('out-explain')!, plan: document.getElementById('out-plan')! };
 let out = outs.explain;
 // the background clears the board's plan shapes when this port closes, i.e. when the panel closes
 chrome.runtime.connect({ name: 'panel' });
@@ -21,25 +24,25 @@ const engines = crossOriginIsolated && startEngines(path => {
   return e;
 });
 if (engines) engines.catch(() => {}); // a crash while starting is reported by the request that needs the engines
-const keyInput = document.getElementById('key');
-const settings = document.getElementById('settings'), gear = document.getElementById('gear');
-const showSettings = open => {
+const keyInput = document.querySelector<HTMLInputElement>('#key')!;
+const settings = document.getElementById('settings')!, gear = document.getElementById('gear')!;
+const showSettings = (open: HTMLElement['hidden']) => {
   settings.hidden = !open;
-  gear.setAttribute('aria-expanded', open);
+  gear.setAttribute('aria-expanded', String(open));
 };
 gear.onclick = () => showSettings(settings.hidden);
 
 // The key lives in chrome.storage.local (this profile only, never synced) and goes only to api.anthropic.com.
 async function showKeyStatus() {
-  const { apiKey } = await chrome.storage.local.get('apiKey');
-  const status = document.getElementById('key-status');
+  const { apiKey } = await chrome.storage.local.get<{ apiKey?: string }>('apiKey');
+  const status = document.getElementById('key-status')!;
   status.textContent = apiKey ? `saved …${apiKey.slice(-4)}` : 'not set';
   status.classList.toggle('ok', !!apiKey);
   showSettings(!apiKey);
   return apiKey;
 }
 
-document.getElementById('key-form').onsubmit = async e => {
+document.getElementById('key-form')!.onsubmit = async e => {
   e.preventDefault();
   const apiKey = keyInput.value.trim();
   await (apiKey ? chrome.storage.local.set({ apiKey }) : chrome.storage.local.remove('apiKey'));
@@ -50,27 +53,27 @@ showKeyStatus();
 
 // the model is a setting too: a pick is one model for every call of a request, or one for the ideas call and one for
 // the writer (see stepModels). A saved pick the picker does not offer becomes the default.
-const model = () => document.querySelector('input[name="model"]:checked').value;
-chrome.storage.local.get('model').then(({ model: m }) => {
-  const radio = m && document.querySelector(`input[name="model"][value="${CSS.escape(m)}"]`);
+const model = () => document.querySelector<HTMLInputElement>('input[name="model"]:checked')!.value;
+chrome.storage.local.get<{ model?: string }>('model').then(({ model: m }) => {
+  const radio = m && document.querySelector<HTMLInputElement>(`input[name="model"][value="${CSS.escape(m)}"]`);
   if (radio) radio.checked = true;
   else if (m) chrome.storage.local.set({ model: model() });
 });
-settings.onchange = e => e.target.name === 'model' && chrome.storage.local.set({ model: e.target.value });
+settings.onchange = e => e.target instanceof HTMLInputElement && e.target.name === 'model' && chrome.storage.local.set({ model: e.target.value });
 // positional depth: before the answer, the picked model proposes positional ideas, the board checks them, and the
 // answer is written with the ideas that held. One more call; on unless turned off, remembered like the model.
-const deep = document.getElementById('deep');
-chrome.storage.local.get('deep').then(({ deep: on }) => (deep.checked = on !== false));
+const deep = document.querySelector<HTMLInputElement>('#deep')!;
+chrome.storage.local.get<{ deep?: boolean }>('deep').then(({ deep: on }) => (deep.checked = on !== false));
 deep.onchange = () => chrome.storage.local.set({ deep: deep.checked });
 // One request at a time: while one runs, every button that starts one is disabled, a saved answer's Ask again too.
 let busy = false;
-const setBusy = on => {
+const setBusy = (on: boolean) => {
   busy = on;
-  for (const b of document.querySelectorAll('#go, #plan, .again')) b.disabled = on;
+  for (const b of document.querySelectorAll<HTMLButtonElement>('#go, #plan, .again')) b.disabled = on;
 };
 
 // Builds an element; `html` is only ever our own markup or md() output, which escapes the model's text.
-function el(tag, cls, { text, html } = {}, parent = out) {
+function el(tag: string, cls: string, { text, html }: { text?: string; html?: string } = {}, parent: HTMLElement = out) {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
   if (text !== undefined) e.textContent = text;
@@ -79,7 +82,7 @@ function el(tag, cls, { text, html } = {}, parent = out) {
   return e;
 }
 
-const error = (text, parent = out) => el('div', 'card error', { text }, parent);
+const error = (text: string, parent: HTMLElement = out) => el('div', 'card error', { text }, parent);
 
 // a spinner card whose label counts the seconds; returns {set(stage), done()}
 function spinner(stage = '') {
@@ -89,30 +92,30 @@ function spinner(stage = '') {
   const started = Date.now();
   const tick = () => (label.textContent = `${stage}… ${Math.round((Date.now() - started) / 1000)} s`);
   const timer = setInterval(tick, 1000);
-  return { set: s => ((stage = s), tick()), done: () => { clearInterval(timer); status.remove(); } };
+  return { set: (s: string) => ((stage = s), tick()), done: () => { clearInterval(timer); status.remove(); } };
 }
 
 /** The answer card, returned; a move link in it plays its line (one of `lines`, from b's position) on the lichess board. */
-function answerCard(text, lines, b) {
+function answerCard(text: string, lines: string[], b: BoardPosition) {
   const area = out, answer = el('div', 'card answer', { html: linkMoves(md(text), lines) });
   answer.onclick = async e => {
-    const a = e.target.closest('a[data-line]');
+    const a = e.target instanceof Element && e.target.closest<HTMLElement>('a[data-line]');
     if (!a) return;
     e.preventDefault();
     try {
       const board = await activeBoard();
       if (!board) return error('Switch to the lichess tab to play the line.', area);
-      await board.play(b.fen, b.path, sanToUci(b.fen, a.dataset.line.split(' ')));
+      await board.play(b.fen, b.path, sanToUci(b.fen, a.dataset.line!.split(' ')));
     } catch (e) {
       console.error(e);
-      error(e.message, area);
+      error((e as Error).message, area);
     }
   };
   return answer;
 }
 
 /** The moves card: a task result's head and rows (see explainMove). */
-function movesCard(result) {
+function movesCard(result: { head?: TaskResult['head']; rows: ResultRow[] }) {
   const moves = el('div', 'card moves');
   if (result.head) {
     const head = el('div', 'plan-head', {}, moves);
@@ -128,43 +131,43 @@ function movesCard(result) {
 }
 
 /** Shows a task's result (see explainMove) for the position `b`: every word in it comes from the task. */
-function render(result, b) {
+function render(result: TaskResult, b: BoardPosition) {
   movesCard(result);
   answerCard(result.text, result.lines, b);
   if (result.note) el('div', 'card note', { text: result.note });
 }
 
 /** The lichess board of the active tab, with its `tab` id; null when that tab is not lichess. */
-const activeBoard = async () => {
+const activeBoard = async (): Promise<TabBoard | null> => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tab?.url?.startsWith('https://lichess.org/') ? { ...lichessBoard(inTab(tab.id)), tab: tab.id } : null;
+  return tab?.url?.startsWith('https://lichess.org/') ? { ...lichessBoard(inTab(tab.id!)), tab: tab.id! } : null;
 };
 
 // The views: Explain and Plan. The plan's board shapes ([fen, shapes]) are drawn only while the Plan view shows, on
 // the board the plan was asked for (`planBoard`): another tab may be the active one by the time the plan arrives.
-const view = () => document.querySelector('input[name="view"]:checked').value;
-let shapes = null, planBoard = null;
+const view = () => document.querySelector<HTMLInputElement>('input[name="view"]:checked')!.value;
+let shapes: [string, Shape[]] | null = null, planBoard: TabBoard | null = null;
 async function syncShapes() {
   const board = planBoard ?? await activeBoard();
   if (board) await (view() === 'plan' && shapes ? board.draw(...shapes) : board.clear()).catch(console.error);
 }
-document.getElementById('view').onchange = () => {
-  for (const s of document.querySelectorAll('[data-view]')) s.hidden = s.dataset.view !== view();
+document.getElementById('view')!.onchange = () => {
+  for (const s of document.querySelectorAll<HTMLElement>('[data-view]')) s.hidden = s.dataset.view !== view();
   syncShapes();
 };
 
 /** The engines once they have started; throws when they cannot. */
 async function ready() {
   if (!engines) throw new Error('Stockfish cannot start: the panel is not cross-origin isolated. Reload the extension at chrome://extensions.');
-  return Promise.race([engines, new Promise((_, fail) =>
+  return Promise.race([engines, new Promise<never>((_, fail) =>
     setTimeout(() => fail(new Error('Stockfish did not start within 30 s.')), 30_000))]);
 }
 
 /** A spinner whose stages are also logged in the console, with the seconds since it started. */
 function staged() {
   const s = spinner(), started = Date.now();
-  const log = stage => console.log(`${((Date.now() - started) / 1000).toFixed(1)} s: ${stage}`);
-  return { step: stage => (log(stage), s.set(stage)), done: () => (log('done'), s.done()) };
+  const log = (stage: string) => console.log(`${((Date.now() - started) / 1000).toFixed(1)} s: ${stage}`);
+  return { step: (stage: string) => (log(stage), s.set(stage)), done: () => (log('done'), s.done()) };
 }
 
 // This panel's requests (see panelRequests): Explain and Find plan, the fact sheets they build and those of the next
@@ -173,20 +176,20 @@ const requests = panelRequests({ storage: chrome.storage.local, version: chrome.
 chrome.tabs.onActivated.addListener(() => requests.stopAhead());
 
 /** Explain for the board's position, or `again`: a saved answer's request (see panelRequests), asked afresh. */
-async function explain(llm, board, again) {
+async function explain(llm: Llm, board: TabBoard, again?: Again | null) {
   // a saved answer waits on the fair-play check alone, the first stage of every request
   const s = staged();
   // a new one shows its moves once the sheet is built, then the answer as it is written (redrawn once a frame at most)
-  let card, lines, text = null, frame = 0;
-  const onSheet = (rows, l, b) => { movesCard({ rows }); lines = l; card = answerCard('', lines, b); };
-  const onText = t => {
+  let card: HTMLElement, lines: string[], text: string | null = null, frame = 0;
+  const onSheet = (rows: ResultRow[], l: string[], b: BoardPosition) => { movesCard({ rows }); lines = l; card = answerCard('', lines, b); };
+  const onText = (t: string) => {
     if (text === null) s.step('Writing');
     text = t;
-    frame ||= requestAnimationFrame(() => { frame = 0; card.innerHTML = linkMoves(md(text), lines); });
+    frame ||= requestAnimationFrame(() => { frame = 0; card.innerHTML = linkMoves(md(text!), lines); });
   };
-  let got;
+  let got: ExplainGot | null;
   try {
-    got = await requests.explain(board, llm, { move: document.getElementById('move').value.trim(), depth: deep.checked, model: model(), again },
+    got = await requests.explain(board, llm, { move: document.querySelector<HTMLInputElement>('#move')!.value.trim(), depth: deep.checked, model: model(), again },
       { onStep: s.step, onSheet, onText });
   } finally {
     s.done();
@@ -195,20 +198,20 @@ async function explain(llm, board, again) {
   const { result, b } = got;
   out.replaceChildren();
   render(result, b);
-  if (got.again) el('button', 'again', { text: 'Ask again' }).onclick = () => run((l, bd) => explain(l, bd, got.again), 'explain');
+  if (got.again) el('button', 'again', { text: 'Ask again' }).onclick = () => run((l, bd) => explain(l, bd, got!.again), 'explain');
   // about equal: no reason to give, but a plan for the position may say what to aim at. Asked only on this click.
   if (result.equal) {
     el('button', 'again', { text: 'Find a plan for this position' }).onclick = () => {
-      document.querySelector('input[name="view"][value="plan"]').click();
+      document.querySelector<HTMLInputElement>('input[name="view"][value="plan"]')!.click();
       run((l, bd) => plan(l, bd, b), 'plan');
     };
   }
 }
 
 /** Find plan for the board's position, or for `at`, an about-equal verdict's position: the board goes there first. */
-async function plan(llm, board, at) {
+async function plan(llm: Llm, board: TabBoard, at?: BoardPosition) {
   const s = staged();
-  let got;
+  let got: PlanGot | null;
   try {
     got = await requests.plan(board, llm, { model: model(), at }, { onStep: s.step });
   } finally {
@@ -217,14 +220,14 @@ async function plan(llm, board, at) {
   if (!got) return;
   out.replaceChildren();
   render(got.result, got.b);
-  shapes = [got.b.fen, got.result.shapes];
+  shapes = [got.b.fen, got.result.shapes!];
   planBoard = board;
   await syncShapes();
 }
 
 /** One request at a time: Explain or Find plan, each in its own view (`name`). Clears that view's last answer first,
     and for a new plan the board's shapes. */
-async function run(task, name) {
+async function run(task: (llm: Llm, board: TabBoard) => Promise<void>, name: 'explain' | 'plan') {
   if (busy) return;
   setBusy(true);
   out = outs[name];
@@ -240,14 +243,14 @@ async function run(task, name) {
   } catch (e) {
     console.error(e);
     out.replaceChildren();
-    error(e.message);
+    error((e as Error).message);
   } finally {
     setBusy(false);
   }
 }
 
-document.getElementById('form').onsubmit = e => {
+document.getElementById('form')!.onsubmit = e => {
   e.preventDefault();
   run(explain, 'explain');
 };
-document.getElementById('plan').onclick = () => run(plan, 'plan');
+document.getElementById('plan')!.onclick = () => run(plan, 'plan');

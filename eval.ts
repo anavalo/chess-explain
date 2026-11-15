@@ -3,8 +3,8 @@
 // move loses 0.5-1.6 pawns to the engine's best (at least 0.3 at the eval's 2M nodes), and the first 3 plies of both
 // lines hold no capture or check.
 // The engines give the same lines on every run, so run this before and after a change and diff the two folders.
-// usage: ANTHROPIC_API_KEY=... node eval.js [out-dir] [--no-llm] [--model ID] [--deep] [--facts DIR] [--set FILE] [--summary] [--judge]   (out-dir defaults to eval-out)
-// out-dir/summary.txt flags format slips in each answer; node eval.js out-dir --summary re-checks without a run.
+// usage: ANTHROPIC_API_KEY=... node eval.ts [out-dir] [--no-llm] [--model ID] [--deep] [--facts DIR] [--set FILE] [--summary] [--judge]   (out-dir defaults to eval-out)
+// out-dir/summary.txt flags format slips in each answer; node eval.ts out-dir --summary re-checks without a run.
 // --facts DIR reuses DIR's fact sheets (no engines), so only the LLM runs, 16 at a time.
 // --judge has Claude Opus grade each answer against its fact sheet (a few cents per answer, kept in <name>.judge.json).
 // --set FILE runs a JSON list of {id, fen, played, better, reference_reason?} instead of quiet-132; with a reference_reason the
@@ -31,14 +31,60 @@ import { execFile, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { Readable } from 'node:stream';
+import type { ReadableStream as NodeReadableStream } from 'node:stream/web';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
-import { NODES, aboutEqual, linePlies, llmWith, nodeEngines, play, position, san, sanToUci, search } from './extension/explain.js';
-import { closingOf } from './extension/closing.js';
-import { answer, planAnswer } from './extension/request.js';
-import { JUDGE, PAIR, PICKER, PLANNER, PLAN_PICKER, PLAN_SYSTEM, checkAnswer, systemFor, withConceptsEntry } from './extension/prompt.js';
+import { nodeEngines } from './src/cli.ts';
+import { NODES, aboutEqual, linePlies, llmWith, play, position, san, sanToUci, search } from './src/explain.ts';
+import type { FactSheet, PlanFacts } from './src/explain.ts';
+import { closingOf } from './src/closing.ts';
+import { answer, planAnswer } from './src/request.ts';
+import { JUDGE, PAIR, PICKER, PLANNER, PLAN_PICKER, PLAN_SYSTEM, checkAnswer, systemFor, withConceptsEntry } from './src/prompt.ts';
 
-// ---- the judge (its prompts are in extension/prompt.js) ----
+/** One position of an eval set: quiet-132, a --set FILE, or a --sample holdout (which adds the screen's gap). */
+interface EvalPosition { id: string; fen: string; played: string; better: string; reference_reason?: string; gap?: number }
+/** A drawn position before the engine screen. */
+type Candidate = Pick<EvalPosition, 'id' | 'fen' | 'played'>;
+/** <dir>/<name>.txt split: the fact sheet JSON and the answer (null with --no-llm). */
+type Run = { sheet: string; answer: string } | { sheet: string; answer: null };
+type Grade = 'yes' | 'partly' | 'no';
+type PairPick = 'A' | 'B' | 'tie';
+/** The API's token counts, kept with each verdict for the cost line. */
+interface Usage { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }
+/** <name>.judge.json (VERDICT / WITH_REFERENCE); usage is missing on subagent-written verdicts, cause on older ones. */
+interface Verdict {
+  decisive_point: Grade;
+  false_claims: { claim: string; facts: string }[];
+  invented_term_cause: boolean;
+  cause?: 'labelled' | 'line' | 'term' | 'none';
+  played_fault_quote: string;
+  better_gain_quote: string;
+  note: string;
+  reference_reason?: Grade;
+  usage?: Usage;
+}
+/** <name>.pair-<DIR>.json (PAIR_VERDICT / PAIR_WITH_REFERENCE), picks in out-dir/DIR terms. */
+interface PairVerdict {
+  decisive_quote_a: string;
+  decisive_quote_b: string;
+  decisive_point: PairPick;
+  fewer_false_claims: PairPick;
+  note: string;
+  reference_quote_a?: string;
+  reference_quote_b?: string;
+  reference_reason?: PairPick;
+  swap: boolean;
+  usage: Usage;
+}
+
+/** The Messages API reply, as claude() reads it. */
+interface ApiReply { error?: { message: string }; stop_reason: string; content: { type: string; text: string }[]; usage: Usage }
+/** A sheet the CLI wrote: a plan sheet has "best", the others do not. */
+type CliSheet = (FactSheet & { best?: undefined }) | PlanFacts;
+/** What a failed execFile rejects with. */
+type ExecFailure = Error & { stderr?: string };
+
+// ---- the judge (its prompts are in src/prompt.ts) ----
 
 const VERDICT = {
   type: 'object',
@@ -79,7 +125,7 @@ const PAIR_WITH_REFERENCE = {
   required: [...PAIR_VERDICT.required, 'reference_quote_a', 'reference_quote_b', 'reference_reason'],
 };
 
-const str = { type: 'string' }, bool = { type: 'boolean' };
+const str = { type: 'string' } as const, bool = { type: 'boolean' } as const;
 const { values: o, positionals: [out = 'eval-out'] } = parseArgs({
   allowPositionals: true,
   options: { 'no-llm': bool, model: str, facts: str, set: str, summary: bool, judge: bool, pair: str, sample: str, month: str,
@@ -87,19 +133,19 @@ const { values: o, positionals: [out = 'eval-out'] } = parseArgs({
 });
 if (o.deep && o['no-llm']) throw new Error('--deep needs the LLM');
 // the judges get the "verified_concepts" legend entry on --deep runs
-const legend = prompt => (o.deep ? withConceptsEntry(prompt) : prompt);
+const legend = (prompt: string) => (o.deep ? withConceptsEntry(prompt) : prompt);
 if (o.sample) {
   await sample(Number(o.sample), o.month);
   process.exit(0);
 }
-const set = JSON.parse(readFileSync(o.set ?? fileURLToPath(new URL('eval-sets/quiet-132.json', import.meta.url)), 'utf8'));
-const reference = Object.fromEntries(set.map(p => [p.id, p.reference_reason]));
+const set: EvalPosition[] = JSON.parse(readFileSync(o.set ?? fileURLToPath(new URL('eval-sets/quiet-132.json', import.meta.url)), 'utf8'));
+const reference = Object.fromEntries(set.map((p: EvalPosition) => [p.id, p.reference_reason]));
 if (o.print) {
   // the exact prompts, for subagent runs on the subscription: the explainer prompt, or a judge prompt with
   // the JSON its verdict must match (the reference variant when --set gives reference reasons)
   const ref = Object.values(reference).some(Boolean);
-  const withSchema = (prompt, schema) => `${prompt}\n\nReply with only JSON matching this schema:\n${JSON.stringify(schema, null, 1)}`;
-  const prompts = {
+  const withSchema = (prompt: string, schema: object) => `${prompt}\n\nReply with only JSON matching this schema:\n${JSON.stringify(schema, null, 1)}`;
+  const prompts: Record<string, () => string> = {
     explainer: () => systemFor(o.deep),
     judge: () => withSchema(legend(JUDGE), ref ? WITH_REFERENCE : VERDICT),
     pair: () => withSchema(legend(PAIR), ref ? PAIR_WITH_REFERENCE : PAIR_VERDICT),
@@ -119,26 +165,26 @@ if (o.compare) {
 const facts = o.facts ?? null;
 const pair = o.pair?.replace(/\/$/, '') ?? null;
 const flags = [...o['no-llm'] ? ['--no-llm'] : [], ...o.model ? ['--model', o.model] : [], ...o.deep ? ['--deep'] : [], ...o.plan ? ['--plan'] : []];
-const cli = fileURLToPath(new URL('extension/explain.js', import.meta.url));
+const cli = fileURLToPath(new URL('src/cli.ts', import.meta.url));
 const run = promisify(execFile);
 mkdirSync(out, { recursive: true });
 
 // each position runs in its own process (fresh engines), four at a time; --summary only re-checks out-dir
-const queue = o.summary || pair ? [] : [...set];
+const queue: EvalPosition[] = o.summary || pair ? [] : [...set];
 await Promise.all(Array.from({ length: facts ? 16 : 4 }, async () => {
   for (let p; (p = queue.shift());) {
     const { id: name, fen, played, better } = p;
     let text;
     try {
       if (facts) {
-        const s = JSON.parse(readRun(facts, name)?.sheet);
-        const llm = llmWith(process.env.ANTHROPIC_API_KEY);
+        const s: CliSheet = JSON.parse(readRun(facts, name)?.sheet!); // a failed run: JSON.parse(undefined) throws, caught below
+        const llm = llmWith(process.env.ANTHROPIC_API_KEY!); // --facts runs the LLM: the key is set
         // a plan sheet (it has "best") gets its plan, not an explanation
         const a = await (s.best ? planAnswer(s, llm, { model: o.model }) : answer(s, llm, { model: o.model, depth: o.deep }));
         text = `${JSON.stringify(a.facts, null, 1)}\n\n${a.text}\n`;
       } else text = (await run(process.execPath, [cli, fen, ...o.plan ? [] : [played, '--vs', better], ...flags], { maxBuffer: 1 << 24 })).stdout;
     } catch (e) {
-      text = `ERROR: ${e.stderr || e.message}`;
+      text = `ERROR: ${(e as ExecFailure).stderr || (e as ExecFailure).message}`;
     }
     writeFileSync(`${out}/${name}.txt`, text);
     console.log(name, text.startsWith('ERROR') ? 'failed' : 'ok');
@@ -159,7 +205,7 @@ if (o.judge) {
   await judgeAll(explained.filter(n => !existsSync(`${out}/${n}.judge.json`)));
 }
 if (o.masked) for (const n of explained) mask(n);
-const verdicts = [], recovered = [];
+const verdicts: Verdict[] = [], recovered: boolean[] = [];
 let pastCount = 0;
 const report = explained.map(n => {
   const r = readRun(out, n);
@@ -167,7 +213,7 @@ const report = explained.map(n => {
   const past = r?.answer ? pastLeaf(r) : [];
   if (past.length) { pastCount++; found.push(`past leaf: ${past.join(' ')}`); }
   if (existsSync(`${out}/${n}.judge.json`)) {
-    const v = JSON.parse(readFileSync(`${out}/${n}.judge.json`, 'utf8'));
+    const v: Verdict = JSON.parse(readFileSync(`${out}/${n}.judge.json`, 'utf8'));
     verdicts.push(v);
     if (v.decisive_point !== 'yes') found.push(`judge: decisive point ${v.decisive_point}`);
     for (const c of v.false_claims) found.push(`judge: false claim "${c.claim}" (${c.facts})`);
@@ -175,7 +221,7 @@ const report = explained.map(n => {
     if (v.reference_reason && v.reference_reason !== 'yes') found.push(`judge: reference reason ${v.reference_reason}`);
   }
   if (existsSync(`${out}/${n}.masked.json`)) {
-    const ok = JSON.parse(readFileSync(`${out}/${n}.masked.json`, 'utf8')).better === JSON.parse(r.sheet).alternative.move;
+    const ok = JSON.parse(readFileSync(`${out}/${n}.masked.json`, 'utf8')).better === JSON.parse(r!.sheet).alternative.move;
     recovered.push(ok);
     if (!ok) found.push('masked: better move not recovered');
   }
@@ -190,7 +236,7 @@ const words = explained.map(n => closingOf(readRun(out, n)?.answer ?? '').read.s
 console.log(`answers quoting moves past the leaf: ${pastCount}`);
 if (words.length) console.log(`median ${words[words.length >> 1]} words, ${words.filter(w => w > 120).length} over 120`);
 if (verdicts.length) {
-  const count = f => verdicts.filter(f).length;
+  const count = (f: (v: Verdict) => unknown) => verdicts.filter(f).length;
   console.log(`judged ${verdicts.length}: decisive point yes ${count(v => v.decisive_point === 'yes')}, `
     + `partly ${count(v => v.decisive_point === 'partly')}, no ${count(v => v.decisive_point === 'no')}; `
     + `false claims in ${count(v => v.false_claims.length)} (${verdicts.reduce((n, v) => n + v.false_claims.length, 0)} total); `
@@ -202,7 +248,7 @@ if (verdicts.length) {
 if (recovered.length) console.log(`masked: better move recovered from the text in ${recovered.filter(Boolean).length} of ${recovered.length}`);
 
 /** Judges each named answer in out-dir, four at a time, and writes <name>.judge.json next to it. */
-async function judgeAll(names) {
+async function judgeAll(names: string[]) {
   // API-bound, not CPU-bound: more in flight than the engine runs
   await Promise.all(Array.from({ length: 16 }, async () => {
     for (let n; (n = names.shift());) {
@@ -213,25 +259,25 @@ async function judgeAll(names) {
         writeFileSync(`${out}/${n}.judge.json`, JSON.stringify(v, null, 1) + '\n');
         console.log(n, 'judged');
       } catch (e) {
-        console.log(n, `judge failed: ${e.message}`);
+        console.log(n, `judge failed: ${(e as Error).message}`);
       }
     }
   }));
 }
 
-function judge(facts, answer, ref) {
-  return claude(legend(JUDGE), `Fact sheet:\n${facts}\n\nAnswer:\n${answer}${ref ? `\n\nReference reason:\n${ref}` : ''}`, ref ? WITH_REFERENCE : VERDICT);
+function judge(facts: string, answer: string, ref: string | undefined) {
+  return claude<Verdict>(legend(JUDGE), `Fact sheet:\n${facts}\n\nAnswer:\n${answer}${ref ? `\n\nReference reason:\n${ref}` : ''}`, ref ? WITH_REFERENCE : VERDICT);
 }
 
 const JUDGE_MODEL = 'claude-opus-5-5'; // the judge is one model, whatever the explainer's pick is
 
 /** One Opus call with a cached system prompt and a JSON schema; returns the parsed JSON plus usage. */
-async function claude(system, content, schema) {
+async function claude<V>(system: string, content: string, schema: object): Promise<V & { usage: Usage }> {
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'x-api-key': process.env.ANTHROPIC_API_KEY!, // the judges need the key
       'anthropic-version': '2023-06-01',
       // on a safety decline, the API re-runs the request on a fallback model
       'anthropic-beta': 'server-side-fallback-2026-07-01',
@@ -246,19 +292,19 @@ async function claude(system, content, schema) {
     }),
     signal: AbortSignal.timeout(300_000),
   });
-  const body = await r.json();
+  const body = await r.json() as ApiReply;
   if (!r.ok) throw new Error(`Anthropic API error ${r.status}: ${body.error?.message ?? r.statusText}`);
   if (body.stop_reason !== 'end_turn') throw new Error(`stopped: ${body.stop_reason}`);
-  return { ...JSON.parse(body.content.find(b => b.type === 'text').text), usage: body.usage };
+  return { ...JSON.parse(body.content.find(b => b.type === 'text')!.text) as V, usage: body.usage };
 }
 
 /** Compares each named answer in out-dir with the one in the --pair folder, prints the tally and the judge's cost. */
-async function pairAll(names) {
-  const file = n => `${out}/${n}.pair-${basename(pair)}.json`;
+async function pairAll(names: string[]) {
+  const file = (n: string) => `${out}/${n}.pair-${basename(pair!)}.json`; // only called with --pair
   const todo = names.filter(n => !existsSync(file(n)));
   await Promise.all(Array.from({ length: 16 }, async () => {
     for (let n; (n = todo.shift());) {
-      const [a, b] = [out, pair].map(d => readRun(d, n));
+      const [a, b] = [out, pair!].map(d => readRun(d, n));
       if (!a?.answer || !b?.answer) continue;
       // half the positions show B first, so the judge's lean toward the second answer cancels out in the totals
       const swap = [...n].reduce((h, c) => h + c.charCodeAt(0), 0) % 2 === 1;
@@ -266,17 +312,17 @@ async function pairAll(names) {
       const sheets = sheetA === sheetB ? `Fact sheet (both answers):\n${sheetA}` : `Fact sheet A:\n${sheetA}\n\nFact sheet B:\n${sheetB}`;
       const ref = reference[n] ? `\n\nReference reason:\n${reference[n]}` : '';
       try {
-        const v = await claude(legend(PAIR), `${sheets}\n\nAnswer A:\n${answerA}\n\nAnswer B:\n${answerB}${ref}`, ref ? PAIR_WITH_REFERENCE : PAIR_VERDICT);
-        if (swap) for (const k of ['decisive_point', 'fewer_false_claims', 'reference_reason']) v[k] = { A: 'B', B: 'A' }[v[k]] ?? v[k];
+        const v = await claude<Omit<PairVerdict, 'swap' | 'usage'>>(legend(PAIR), `${sheets}\n\nAnswer A:\n${answerA}\n\nAnswer B:\n${answerB}${ref}`, ref ? PAIR_WITH_REFERENCE : PAIR_VERDICT);
+        if (swap) for (const k of ['decisive_point', 'fewer_false_claims', 'reference_reason'] as const) v[k] = ({ A: 'B', B: 'A' } as Record<string, PairPick>)[v[k]!] ?? v[k]!;
         writeFileSync(file(n), JSON.stringify({ ...v, swap }, null, 1) + '\n');
         console.log(n, 'compared');
       } catch (e) {
-        console.log(n, `compare failed: ${e.message}`);
+        console.log(n, `compare failed: ${(e as Error).message}`);
       }
     }
   }));
-  const vs = names.filter(n => existsSync(file(n))).map(n => JSON.parse(readFileSync(file(n), 'utf8')));
-  const tally = k => ['A', 'B', 'tie'].map(w => `${w} ${vs.filter(v => v[k] === w).length}`).join(' / ');
+  const vs = names.filter(n => existsSync(file(n))).map((n): PairVerdict => JSON.parse(readFileSync(file(n), 'utf8')));
+  const tally = (k: 'decisive_point' | 'fewer_false_claims' | 'reference_reason') => ['A', 'B', 'tie'].map(w => `${w} ${vs.filter(v => v[k] === w).length}`).join(' / ');
   const usd = vs.reduce((s, { usage: u }) => s + (u.input_tokens * 4 + u.output_tokens * 20
     + (u.cache_read_input_tokens ?? 0) * 0.2 + (u.cache_creation_input_tokens ?? 0) * 5) / 1e6, 0);
   console.log(`\n${vs.length} pairs, A = ${out}, B = ${pair}: decisive point ${tally('decisive_point')}`
@@ -286,26 +332,26 @@ async function pairAll(names) {
 
 /** Pairs out-dir's judge verdicts (B) with DIR's (A) by position and prints the flips, overall and split by the SF 15
     gate (the terms carry at least half the gap). Noise is 2*sqrt(discordant): a net inside it is a coin toss. */
-function compare(dir) {
-  const verdict = (d, n) => existsSync(`${d}/${n}.judge.json`) ? JSON.parse(readFileSync(`${d}/${n}.judge.json`, 'utf8')) : null;
+function compare(dir: string) {
+  const verdict = (d: string, n: string): Verdict | null => existsSync(`${d}/${n}.judge.json`) ? JSON.parse(readFileSync(`${d}/${n}.judge.json`, 'utf8')) : null;
   const names = readdirSync(out).filter(f => f.endsWith('.judge.json')).map(f => f.slice(0, -11)).filter(n => verdict(dir, n));
   for (const n of names) for (const d of [dir, out]) explanationOnly(d, n, '--compare');
-  const gate = n => { const s = JSON.parse(readRun(out, n).sheet); return s.sf15_total_gap != null && s.sf15_total_gap >= s.latest_sf_gap / 2; };
-  const flips = (ns, hit) => {
-    const pairs = ns.map(n => [hit(verdict(dir, n)), hit(verdict(out, n))]);
+  const gate = (n: string) => { const s = JSON.parse(readRun(out, n)!.sheet); return s.sf15_total_gap != null && s.sf15_total_gap >= s.latest_sf_gap / 2; };
+  const flips = (ns: string[], hit: (v: Verdict) => boolean) => {
+    const pairs = ns.map(n => [hit(verdict(dir, n)!), hit(verdict(out, n)!)]);
     const lost = pairs.filter(([a, b]) => a && !b).length, won = pairs.filter(([a, b]) => !a && b).length;
     return `${pairs.filter(([a]) => a).length} -> ${pairs.filter(([, b]) => b).length}, agree ${pairs.length - lost - won}, `
       + `lost ${lost}, won ${won}, net ${won - lost >= 0 ? '+' : ''}${won - lost}, noise ±${(2 * Math.sqrt(lost + won)).toFixed(1)}`;
   };
-  const claims = d => names.reduce((s, n) => s + verdict(d, n).false_claims.length, 0);
+  const claims = (d: string) => names.reduce((s, n) => s + verdict(d, n)!.false_claims.length, 0);
   console.log(`${names.length} positions, A = ${dir}, B = ${out}; false claims ${claims(dir)} -> ${claims(out)} total`);
-  const causes = d => names.map(n => verdict(d, n).cause).filter(Boolean);
+  const causes = (d: string) => names.map(n => verdict(d, n)!.cause).filter(Boolean);
   if (causes(dir).length && causes(out).length) {
-    const moved = {};
-    for (const n of names) { const k = `${verdict(dir, n).cause}->${verdict(out, n).cause}`; moved[k] = (moved[k] ?? 0) + 1; }
+    const moved: Record<string, number> = {};
+    for (const n of names) { const k = `${verdict(dir, n)!.cause}->${verdict(out, n)!.cause}`; moved[k] = (moved[k] ?? 0) + 1; }
     console.log(`cause A->B: ${Object.entries(moved).sort(([, x], [, y]) => y - x).map(([k, c]) => `${k} ${c}`).join(', ')}`);
   }
-  for (const [label, ns] of [['all', names], ['gate pass', names.filter(gate)], ['gate fail', names.filter(n => !gate(n))]]) {
+  for (const [label, ns] of [['all', names], ['gate pass', names.filter(gate)], ['gate fail', names.filter(n => !gate(n))]] as const) {
     console.log(`${label} (${ns.length}): decisive yes ${flips(ns, v => v.decisive_point === 'yes')}`);
     console.log(`${' '.repeat(label.length + String(ns.length).length + 3)}  no false claim ${flips(ns, v => !v.false_claims.length)}`);
   }
@@ -313,7 +359,7 @@ function compare(dir) {
 
 /** Throws on a plan sheet in <dir>/<name>.txt (it has "best" and no "alternative"), naming the file: `flag` grades
     explanations of two moves, and would grade a plan as one. */
-function explanationOnly(dir, name, flag) {
+function explanationOnly(dir: string, name: string, flag: string) {
   const sheet = readRun(dir, name)?.sheet;
   if (!sheet) return;
   const s = JSON.parse(sheet);
@@ -322,7 +368,7 @@ function explanationOnly(dir, name, flag) {
 
 /** Reads <dir>/<name>.txt, the CLI output: the fact sheet JSON, a blank line and the answer (no answer with --no-llm).
     Null for a run that failed. */
-function readRun(dir, name) {
+function readRun(dir: string, name: string): Run | null {
   const text = readFileSync(`${dir}/${name}.txt`, 'utf8'), cut = text.indexOf('\n\n');
   if (text.startsWith('ERROR')) return null;
   return cut < 0 ? { sheet: text, answer: null } : { sheet: text.slice(0, cut), answer: text.slice(cut + 2) };
@@ -330,25 +376,25 @@ function readRun(dir, name) {
 
 /** Moves the answer quotes from past "explained_at_position_after" in either line: SANs that show up nowhere else on the
     sheet (not before the leaf, not in a side line), so a hit means the answer leans on the deep, unlabelled part of a line. */
-function pastLeaf({ sheet, answer }) {
+function pastLeaf({ sheet, answer }: { sheet: string; answer: string }) {
   const s = JSON.parse(sheet);
   let rest = sheet;
-  const deep = new Set();
+  const deep = new Set<string>();
   for (const side of [s.played, s.alternative, s.best].filter(Boolean)) {
-    const cut = side.explained_at_position_after.split(' ').filter(t => !/^\d+\.+$/.test(t)).length;
+    const cut = side.explained_at_position_after.split(' ').filter((t: string) => !/^\d+\.+$/.test(t)).length;
     const plies = linePlies(side.line_with_evals).flat(); // all rows: a leaf at the main row's end still cuts the "Why" rows
     if (plies.length <= cut) continue;
     const tail = side.line_with_evals.slice(plies[cut].at); // the main row from the leaf on, and the "Why" rows after it
     rest = rest.replace(JSON.stringify(tail).slice(1, -1), '');
     for (const p of linePlies(tail).flat()) deep.add(p.san.replace(/[+#]$/, ''));
   }
-  const esc = m => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const esc = (m: string) => m.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return [...deep].filter(m => !new RegExp(`(?<![A-Za-z0-9])${esc(m)}(?![A-Za-z0-9])`).test(rest)
     && new RegExp(`(?<![A-Za-z0-9])${esc(m)}(?![A-Za-z0-9])`).test(answer));
 }
 
 /** The rule checks on one run's answer. */
-function problems({ sheet, answer }) {
+function problems({ sheet, answer }: Run) {
   if (!answer) return [];
   const s = JSON.parse(sheet), { read, found } = closingOf(answer);
   return [...found, ...checkAnswer(read, s, { maxWords: s.best ? 200 : 120 })].map(c => c.problem);
@@ -356,7 +402,7 @@ function problems({ sheet, answer }) {
 
 /** Writes <name>.masked.txt: the answer with the better move written "[better move]" and the played one "[played move]",
     so a reader who names the better move from the position got it from what the text says about each (Parfenova 2026). */
-function mask(n) {
+function mask(n: string) {
   const r = readRun(out, n);
   if (!r?.answer) return;
   const sheet = JSON.parse(r.sheet);
@@ -379,22 +425,22 @@ ${answer}`);
     from move 10 on (as in the 132 set), where the move played lost 0.5-1.6 pawns by those evals with |eval| <= 2.5 before
     it. Kept when Stockfish 19 at the panel's node count rates its best move 0.3-2 pawns better and the first 3 plies of
     both lines are quiet (no capture, check or promotion). The screen of the 132 set, on games nobody picked. */
-async function sample(n, month) {
+async function sample(n: number, month: string | undefined) {
   if (!(n > 0) || !/^\d{4}-\d\d$/.test(month ?? '')) throw new Error('usage: --sample N --month YYYY-MM');
   const res = await fetch(`https://database.lichess.org/standard/lichess_db_standard_rated_${month}.pgn.zst`);
   if (!res.ok) throw new Error(`lichess database ${month}: HTTP ${res.status}`);
-  const candidates = [], kept = [];
+  const candidates: Candidate[] = [], kept: EvalPosition[] = [];
   const parser = new PgnParser(game => {
     const h = game.headers, elo = ['WhiteElo', 'BlackElo'].map(k => Number(h.get(k)));
-    if (!/Rated (Rapid|Classical) game/.test(h.get('Event')) || elo.some(e => !(e >= 1600 && e <= 2200))) return;
-    const pos = startingPosition(h).unwrap(), id = h.get('Site')?.split('/').pop(), here = [];
-    let before = null; // lichess's eval before the move, White's view
+    if (!/Rated (Rapid|Classical) game/.test(h.get('Event')!) || elo.some(e => !(e >= 1600 && e <= 2200))) return;
+    const pos = startingPosition(h).unwrap(), id = h.get('Site')?.split('/').pop(), here: Candidate[] = [];
+    let before: number | null = null; // lichess's eval before the move, White's view
     for (const node of game.moves.mainlineNodes()) {
       const mv = parseSan(pos, node.data.san);
       if (!mv) break;
       const ev = (node.data.comments ?? []).map(c => parseComment(c).evaluation).find(Boolean);
       const after = ev && 'pawns' in ev ? ev.pawns : null;
-      const drop = (before - after) * (pos.turn === 'white' ? 1 : -1);
+      const drop = (before! - after!) * (pos.turn === 'white' ? 1 : -1);
       if (pos.fullmoves >= 10 && before !== null && after !== null && Math.abs(before) <= 2.5 && drop >= 0.5 && drop <= 1.6)
         here.push({ id: `${id}-${pos.fullmoves}${pos.turn[0]}`, fen: makeFen(pos.toSetup()), played: node.data.san });
       pos.play(mv);
@@ -407,7 +453,8 @@ async function sample(n, month) {
   try {
     // the zstd CLI: node's zlib rejects the skippable frames pzstd writes before every frame
     const zstd = spawn('zstd', ['-dcq']).on('error', e => { throw new Error(`zstd CLI needed for --sample (${e.message})`); });
-    Readable.fromWeb(res.body).pipe(zstd.stdin).on('error', () => {}); // EPIPE once we stop reading
+    // as: lib.dom's and node's web stream types disagree on BYOB reads
+    Readable.fromWeb(res.body! as NodeReadableStream).pipe(zstd.stdin).on('error', () => {}); // EPIPE once we stop reading
     for await (const chunk of zstd.stdout.setEncoding('utf8')) {
       parser.parse(chunk, { stream: true });
       for (let c; kept.length < n && (c = candidates.shift());) {
@@ -416,10 +463,10 @@ async function sample(n, month) {
         screened++;
         if (!best.pv.length || best.pv[0] === uci || 'mate' in best.score || 'mate' in mine.score) continue;
         const gap = (best.score.cp - mine.score.cp) / 100;
-        const quiet = pv => { let b = pos; return pv.slice(0, 3).every(m => { const ok = !/[x+#=]/.test(san(b, m)); b = play(b, m); return ok; }); };
+        const quiet = (pv: string[]) => { let b = pos; return pv.slice(0, 3).every(m => { const ok = !/[x+#=]/.test(san(b, m)); b = play(b, m); return ok; }); };
         if (gap < 0.3 || gap > 2 || !quiet(best.pv) || !quiet(mine.pv)) continue;
         kept.push({ ...c, better: san(pos, best.pv[0]), gap });
-        console.log(`${kept.length}/${n} ${c.id} ${c.played} vs ${kept.at(-1).better} (${gap.toFixed(2)}), ${screened} screened`);
+        console.log(`${kept.length}/${n} ${c.id} ${c.played} vs ${kept.at(-1)!.better} (${gap.toFixed(2)}), ${screened} screened`);
       }
       if (kept.length >= n) { zstd.kill(); break; }
     }
