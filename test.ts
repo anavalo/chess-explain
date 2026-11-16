@@ -11,7 +11,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { Chess, makeFen, makeUci, parseFen, parseSquare, parseUci } from './src/chessops.ts';
 import { nodeEngines } from './src/cli.ts';
 import {
-  DECLINED, ask as anthropic, factSheet, llmWith, uciEngine, lineToLeaf, moveLabels, pawnPushes, pickInfos, pins, planFacts, sanToUci, sf15Terms, trapped,
+  DECLINED, ask as anthropic, factSheet, llmWith, uciEngine, lineToLeaf, moveLabels, pawnPushes, pickInfos, pins, planFacts, positionBefore, sanToUci, sf15Terms, trapped,
 } from './src/explain.ts';
 import { answer, explainMove, findPlan, panelRequests, planAnswer, sheetCache } from './src/request.ts';
 import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, outpostSquares, pawnWeaknesses, word } from './src/features.ts';
@@ -108,17 +108,24 @@ assert.deepEqual(pins(pos('6k1/8/8/8/8/8/8/3r1RK1 w - - 0 1'), 'white'), []); //
 // structure: outposts, pawn weaknesses, move labels, notes at the end of a line
 assert.equal(isOutpost(pos('4k3/8/8/8/4P3/8/8/4K3 w - - 0 1').board, parseSquare('d5'), 'white'), true);
 assert.equal(isOutpost(pos('4k3/8/2p5/8/4P3/8/8/4K3 w - - 0 1').board, parseSquare('d5'), 'white'), false); // ...c5 hits it
-assert.deepEqual(pawnWeaknesses(pos('4k3/8/8/8/8/2P5/2P5/4K3 w - - 0 1').board, 'white'),
+assert.deepEqual(pawnWeaknesses(pos('4k3/1p6/8/8/8/2P5/2P5/4K3 w - - 0 1').board, 'white'),
   [{ kind: 'doubled', file: 'c' }, { kind: 'isolated', file: 'c' }]);
+// with no b7 pawn to stop them they are passed, and a passed pawn is not called isolated
+assert.deepEqual(pawnWeaknesses(pos('4k3/8/8/8/8/2P5/2P5/4K3 w - - 0 1').board, 'white'), [{ kind: 'doubled', file: 'c' }]);
 assert.deepEqual(pawnWeaknesses(pos('4k3/8/8/4p3/2P1P3/3P4/8/4K3 w - - 0 1').board, 'white'), [{ kind: 'backward', square: 'd3' }]);
 const labels = (fen: string, uci: string) => { const p = pos(fen), q = p.clone(); q.play(parseUci(uci)!); return moveLabels(p, q, uci, 'white'); };
-assert.deepEqual(labels('4k3/8/8/8/8/2n5/1PP5/4K3 w - - 0 1', 'b2c3'), ['your c-pawns doubled', 'your c-pawn isolated']);
+assert.deepEqual(labels('4k3/1p6/8/8/8/2n5/1PP5/4K3 w - - 0 1', 'b2c3'), ['your c-pawns doubled', 'your c-pawn isolated']);
 assert.deepEqual(labels('4k3/8/8/8/8/8/8/R3K3 w - - 0 1', 'a1d1'), ['rook on open file']);
 assert.deepEqual(labels('2b1kb2/8/8/8/8/8/8/2R1K3 w - - 0 1', 'c1c8'), ["opp's bishop pair gone"]);
 assert.deepEqual(labels('4k3/8/8/8/4P3/2N5/8/4K3 w - - 0 1', 'c3d5'), ['knight on outpost d5']);
-assert.deepEqual(labels('4k3/8/8/3p4/2P5/8/8/4K3 w - - 0 1', 'c4d5'), ['your d-pawn isolated', 'your passed d-pawn']);
+// a passed pawn is not called isolated too; an isolated pawn an enemy pawn can still stop is
+assert.deepEqual(labels('4k3/8/8/3p4/2P5/8/8/4K3 w - - 0 1', 'c4d5'), ['your passed d-pawn']);
+assert.deepEqual(labels('4k3/4p3/8/3p4/2P5/8/8/4K3 w - - 0 1', 'c4d5'), ['your d-pawn isolated', "opp's e-pawn isolated"]);
 assert.deepEqual(labels('6k1/8/8/8/8/8/5PPP/6K1 w - - 0 1', 'g2g4'), ['pawn gains space', 'your king shield lost its g-pawn']);
 assert.deepEqual(labels('6k1/8/8/8/8/8/5PPP/6K1 w - - 0 1', 'h2h3'), []); // luft keeps the shield
+// the e6 pawn is pinned to the e8 king by the e1 rook: it cannot take on d5, so the bishop is not there to win
+assert.equal(positionBefore(Chess.fromSetup(parseFen('1r2k3/3b1p1p/3qpP2/p2B1Pr1/1p1Q2p1/8/PPP4P/1K1RR3 b - - 2 23').unwrap()).unwrap())
+  .opponent_pieces_you_can_win?.some(p => p.startsWith('bishop on d5')) ?? false, false);
 assert.deepEqual(labels('4k3/1p6/8/8/8/8/8/R3K3 w - - 0 1', 'a1a7'), ['rook on 7th rank']);
 // c4 can no longer reach d4, and nothing on the e-file can take d5 again: both squares become outposts
 assert.deepEqual(labels('4k3/8/8/4p3/8/8/2P5/4K3 w - - 0 1', 'c2c4'), ['pawn gains space', 'your outpost square d5', "opp's outpost square d4"]);

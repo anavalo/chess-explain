@@ -9,7 +9,7 @@
 
 import {
   Chess, SquareSet, attacks, castlingSide, kingCastlesTo, makeFen, makeSan, makeSquare, makeUci, opposite, parseFen,
-  parseSan, parseUci, squareFile, squareRank,
+  parseSan, parseUci, ray, squareFile, squareRank,
 } from './chessops.ts';
 import {
   endNotes, hasBishopPair, imbalances, isOutpost, islandChange, key, leafDiff, orNull, outpostSquares, owner, passedPawns,
@@ -534,12 +534,24 @@ async function failedRecapture(sf: UciLink, b: Position, sq: Square, score: Scor
   return [rec, ...r.pv];
 }
 
-/** The piece on `sq` is attacked by a cheaper piece, or attacked more times than defended. */
+/** `color`'s pieces that attack `sq` and may take there: one pinned to its king takes only along the pin line.
+    ponytail: a king in check is not considered (its pieces may still be counted). */
+function takers(pos: Position, color: Color, sq: Square): Square[] {
+  const b = pos.board, king = b.kingOf(color);
+  const atk = [...attackers(pos, color, sq)];
+  if (king === undefined) return atk;
+  const checkers = pos.kingAttackers(king, opposite(color), b.occupied);
+  return atk.filter(a => a === king
+    || [...pos.kingAttackers(king, opposite(color), b.occupied.without(a)).diff(checkers)].every(pinner => ray(king, pinner).has(sq)));
+}
+
+/** The piece on `sq` is attacked by a cheaper piece, or attacked more times than defended (pinned pieces counted only
+    where they may take). */
 function inDanger(pos: Position, sq: Square): boolean {
-  const p = pos.board.get(sq)!, atk = attackers(pos, opposite(p.color), sq);
-  if (atk.isEmpty()) return false;
-  return Math.min(...[...atk].map(a => VALUE[pos.board.getRole(a)!])) < VALUE[p.role]
-    || atk.size() > attackers(pos, p.color, sq).size();
+  const p = pos.board.get(sq)!, atk = takers(pos, opposite(p.color), sq);
+  if (!atk.length) return false;
+  return Math.min(...atk.map(a => VALUE[pos.board.getRole(a)!])) < VALUE[p.role]
+    || atk.length > takers(pos, p.color, sq).length;
 }
 
 /** `owner`'s pieces that are in danger, with their cheapest attacker. */
@@ -548,7 +560,7 @@ function loosePieces(pos: Position, owner: Color): string[] {
   for (const sq of pos.board[owner].reversed()) {
     const p = pos.board.get(sq)!;
     if (p.role === 'king' || !inDanger(pos, sq)) continue;
-    const cheapest = [...attackers(pos, opposite(owner), sq)]
+    const cheapest = takers(pos, opposite(owner), sq)
       .reduce((x, y) => (VALUE[pos.board.getRole(y)!] < VALUE[pos.board.getRole(x)!] ? y : x));
     out.push(`${p.role} on ${makeSquare(sq)} attacked by ${pos.board.getRole(cheapest)} on ${makeSquare(cheapest)}`);
   }
@@ -575,7 +587,7 @@ export function trapped(pos: Position): Square[] {
 }
 
 /** What is already on the board before you move: check, loose pieces, pins. */
-function positionBefore(pos: Position): PositionBefore {
+export function positionBefore(pos: Position): PositionBefore {
   const checkers = [...pos.ctx().checkers].map(s => `${pos.board.getRole(s)} on ${makeSquare(s)}`);
   const pinned = (color: Color) => orNull(pins(pos, color).map(p => `${pinText(pos, p)}, by ${pos.board.getRole(p.pinner)} on ${makeSquare(p.pinner)}`));
   return {

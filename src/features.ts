@@ -136,26 +136,31 @@ export function route(board: Board, from: Square, to: Square, max = 4): number |
   return undefined;
 }
 
+/** How soon a piece of `color` can settle on the empty square `sq`: the fewest moves a knight (up to 3) or a bishop (up to
+    2) needs, or undefined when none gets there or the enemy's pieces cover it more often than `color`'s do (the KID's d3
+    under Ne1, Be2 and Qd1: a knight that goes there is taken, not settled).
+    ponytail: a static count; pieces that move or that attack through others are not seen */
+function settle(board: Board, sq: Square, color: Color): number | undefined {
+  const cover = (c: Color) => [...board[c]].filter(p => attacks(board.get(p)!, p, board.occupied).has(sq)).length;
+  if (cover(opposite(color)) > cover(color)) return undefined;
+  const moves = [...board.knight.intersect(board[color])].map(k => (k === sq ? 0 : route(board, k, sq, 3)))
+    .concat([...board.bishop.intersect(board[color])].map(b => (b === sq ? 0 : route(board, b, sq, 2)))).filter(n => n !== undefined);
+  return moves.length ? Math.min(...moves) : undefined;
+}
+
 /** Holes for `color` in the enemy camp (its 5th-6th rank, b-g files): squares no enemy pawn can ever attack, next to an
-    enemy pawn that has gone past them, with no pawn and no enemy piece on them (a piece there holds the square) and none
-    of `color`'s pawns defending them (that is an outpost), and not covered by more enemy pieces than own. Silman's holes, where a piece can settle for good. Only the
-    two a piece of `color` can reach soonest, and only those a knight reaches in 3 moves or a bishop of the square's
-    colour in 2: a far hole nobody can use is noise. */
+    enemy pawn that has gone past them, with no pawn and no enemy piece on them (a piece there holds the square) and none of
+    `color`'s pawns defending them (that is an outpost). Silman's holes, where a piece can settle for good: only the two
+    a piece of `color` can settle on soonest (see settle): a far hole nobody can use is noise. */
 export function holes(board: Board, color: Color): FeatureOf<'hole'>[] {
   const found: { sq: Square; near: number }[] = [], theirs = board.pawn.intersect(board[opposite(color)]);
-  const knights = [...board.knight.intersect(board[color])], bishops = [...board.bishop.intersect(board[color])];
   const camp = SquareSet.fromRank(color === 'white' ? 4 : 3).union(SquareSet.fromRank(color === 'white' ? 5 : 2));
   for (const sq of HOLE_FILES.intersect(camp).diff(board.pawn).diff(board[opposite(color)])) {
     const f = squareFile(sq), sides = SquareSet.fromFile(f - 1).union(SquareSet.fromFile(f + 1));
     if (!theirs.intersects(sides) || enemyPawnCanAttack(board, sq, color)) continue;
     if (pawnAttacks(opposite(color), sq).intersects(board.pawn.intersect(board[color]))) continue; // an outpost
-    // the enemy's pieces hold it (the KID's d3 under Ne1, Be2 and Qd1): a knight that goes there is taken, not settled
-    // ponytail: a static count; pieces that move or that attack through others are not seen
-    const cover = (c: Color) => [...board[c]].filter(p => attacks(board.get(p)!, p, board.occupied).has(sq)).length;
-    if (cover(opposite(color)) > cover(color)) continue;
-    const moves = [...knights.map(k => (k === sq ? 0 : route(board, k, sq, 3))), ...bishops.map(b => (b === sq ? 0 : route(board, b, sq, 2)))]
-      .filter(n => n !== undefined);
-    if (moves.length) found.push({ sq, near: Math.min(...moves) });
+    const near = settle(board, sq, color);
+    if (near !== undefined) found.push({ sq, near });
   }
   // ponytail: two holes at most, nearest first (ties by square); raise if answers miss a third that matters
   return found.sort((a, b) => a.near - b.near || a.sq - b.sq).slice(0, 2).sort((a, b) => a.sq - b.sq)
@@ -163,7 +168,9 @@ export function holes(board: Board, color: Color): FeatureOf<'hole'>[] {
 }
 
 /** Empty outposts for `color`: holes in the enemy pawns that a `color` knight or bishop could take. Only next to an
-    enemy pawn that has gone past it; with no enemy pawn near, every pawn-protected square would count.
+    enemy pawn that has gone past it; with no enemy pawn near, every pawn-protected square would count. No reach or
+    cover filter, unlike holes: authors call a contested or not yet reachable outpost square weak (book audit 2026-11-16:
+    such filters removed 20 squares the author backs for 6 the author rejects).
     ponytail: c-f files only, where a piece there matters most; add the wings if answers miss a g5/b5 hole. */
 export function outpostSquares(board: Board, color: Color): Feature[] {
   const out: Feature[] = [], theirs = board.pawn.intersect(board[opposite(color)]);
@@ -174,14 +181,19 @@ export function outpostSquares(board: Board, color: Color): Feature[] {
   return out;
 }
 
-/** `color`'s isolated, doubled and backward pawns, as SF 15 defines them (src/pawns.cpp). */
+/** `color`'s isolated, doubled and backward pawns, as SF 15 defines them (src/pawns.cpp), except that a passed pawn is
+    not called isolated: it is an asset to push, not a target (book audit 2026-11-16: 6 author contradictions, 0 support). */
 export function pawnWeaknesses(board: Board, color: Color): Feature[] {
   const own = board.pawn.intersect(board[color]), theirs = board.pawn.diff(own), out: Feature[] = [];
   for (const p of own) {
     const f = squareFile(p), file = SquareSet.fromFile(f), name = FILE_NAMES[f];
     const neighbours = own.intersect(SquareSet.fromFile(Math.max(f - 1, 0)).union(SquareSet.fromFile(Math.min(f + 1, 7)))).diff(file);
     if (own.intersect(file).size() > 1) out.push({ kind: 'doubled', file: name });
-    if (neighbours.isEmpty()) { out.push({ kind: 'isolated', file: name }); continue; }
+    if (neighbours.isEmpty()) {
+      const passed = ![...theirs].some(t => Math.abs(squareFile(t) - f) <= 1 && (color === 'white' ? squareRank(t) > squareRank(p) : squareRank(t) < squareRank(p)));
+      if (!passed) out.push({ kind: 'isolated', file: name });
+      continue;
+    }
     // behind all its neighbours, and the square in front is blocked or attacked by an enemy pawn
     const behind = [...neighbours].every(n => (color === 'white' ? squareRank(n) > squareRank(p) : squareRank(n) < squareRank(p)));
     const up = ahead(color, p);
