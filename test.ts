@@ -144,11 +144,14 @@ assert.equal(leafDiff(null, pos('8/8/8/8/4k3/4P3/5K2/8 b - - 1 1'), 'white'), nu
 
 // imbalances before any move: doubled rooks on the a-file are one label; both bishop pairs cancel out
 assert.deepEqual(imbalances(pos('4r3/R4pk1/2pq1rpp/1p1pn3/1P1Q4/2P1P1P1/4BP1P/R5K1 b - - 2 30')), {
-  yours: ['rook on semi-open e-file', 'pawn on c6 backward', 'outpost square c4', 'hole d3', 'hole f3'],
+  yours: ['rook on semi-open e-file', 'pawn on c6 backward', 'outpost square c4', 'hole b3', 'hole f3'],
   opponents: ['rook on open a-file', 'pawn on c3 backward', 'outpost square c5'],
   both: ["piece imbalance: your knight for opp's bishop"],
 });
 assert.deepEqual(imbalances(pos('rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1')), { yours: null, opponents: null, both: null });
+// above, d3 is held by White's Be2 and Qd4 against one knight; in the King's Indian (user's report) Ne1, Be2 and Qd1
+// hold d3 against nothing: a knight sent there is taken, so it is no hole
+assert.deepEqual(holes(pos('r1bq1rk1/ppp1npbp/3p1np1/3Pp3/2P1P3/2N5/PP2BPPP/R1BQNRK1 b - - 0 1').board, 'black'), []);
 // Silman's b6 and d6 holes (Xie Jun-Larsen): no black pawn can ever cover them and no white pawn defends them yet.
 // Only holes a piece can use soon, the two nearest: f6 (the bishop reaches it in 2, as d6) loses the tie to d6
 assert.deepEqual(imbalances(pos('r1b2rk1/1p1nqpbp/2p2np1/p3p3/P3P3/2NQBN1P/1PP1BPP1/R4RK1 w - - 0 1')).yours, ['hole b6', 'hole d6']);

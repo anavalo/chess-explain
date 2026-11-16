@@ -138,7 +138,7 @@ export function route(board: Board, from: Square, to: Square, max = 4): number |
 
 /** Holes for `color` in the enemy camp (its 5th-6th rank, b-g files): squares no enemy pawn can ever attack, next to an
     enemy pawn that has gone past them, with no pawn and no enemy piece on them (a piece there holds the square) and none
-    of `color`'s pawns defending them (that is an outpost). Silman's holes, where a piece can settle for good. Only the
+    of `color`'s pawns defending them (that is an outpost), and not covered by more enemy pieces than own. Silman's holes, where a piece can settle for good. Only the
     two a piece of `color` can reach soonest, and only those a knight reaches in 3 moves or a bishop of the square's
     colour in 2: a far hole nobody can use is noise. */
 export function holes(board: Board, color: Color): FeatureOf<'hole'>[] {
@@ -149,6 +149,10 @@ export function holes(board: Board, color: Color): FeatureOf<'hole'>[] {
     const f = squareFile(sq), sides = SquareSet.fromFile(f - 1).union(SquareSet.fromFile(f + 1));
     if (!theirs.intersects(sides) || enemyPawnCanAttack(board, sq, color)) continue;
     if (pawnAttacks(opposite(color), sq).intersects(board.pawn.intersect(board[color]))) continue; // an outpost
+    // the enemy's pieces hold it (the KID's d3 under Ne1, Be2 and Qd1): a knight that goes there is taken, not settled
+    // ponytail: a static count; pieces that move or that attack through others are not seen
+    const cover = (c: Color) => [...board[c]].filter(p => attacks(board.get(p)!, p, board.occupied).has(sq)).length;
+    if (cover(opposite(color)) > cover(color)) continue;
     const moves = [...knights.map(k => (k === sq ? 0 : route(board, k, sq, 3))), ...bishops.map(b => (b === sq ? 0 : route(board, b, sq, 2)))]
       .filter(n => n !== undefined);
     if (moves.length) found.push({ sq, near: Math.min(...moves) });
