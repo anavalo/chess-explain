@@ -233,4 +233,10 @@ export const RULE_POOL: Rule[] = [
   {"id":"B4-007","rule":"We count extra rook material only when our rooks get open files to work on."},
   {"id":"B4-048","rule":"Against a backward pawn, we trade the minor pieces but keep the queens."},
   {"id":"B4-049","rule":"We use a pawn cascade to gain space and open files for our rooks."},
+  {"id":"W-001","rule":"With a bishop against a knight, we aim for an open position free of central pawns."},
+  {"id":"W-002","rule":"When our bishop is bad, we move our central pawns off its colour."},
+  {"id":"W-003","rule":"With an isolated pawn, we put our rooks on the half-open files beside it."},
+  {"id":"W-004","rule":"We don't call a backward pawn weak when it can safely advance."},
+  {"id":"W-005","rule":"When we can't use our extra or passed pawn yet, we keep it as endgame insurance."},
+  {"id":"W-006","rule":"We don't step off a contested open file to dodge rook trades; that hands the file over."},
 ];

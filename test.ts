@@ -257,11 +257,11 @@ const told = (prompt: string) => [...prompt.matchAll(/^- ([a-z_]+) \{/gm)].map(m
 assert.deepEqual(told(PLANNER), Object.keys(CHECKS).sort());
 assert.deepEqual(told(PROPOSER), Object.keys(CHECKS).filter(op => op !== 'route').sort());
 // the rule picker gets the proposer's check rows word for word, and every rule of the pool, for a fact sheet and for a
-// plan sheet, each with its own position names; the pool has at most the 231 rules stage 0 tested, unique ids and no source
+// plan sheet, each with its own position names; the pool has the 231 rules stage 0 tested plus 6 Workbook rules, unique ids and no source
 const rowLines = (prompt: string) => prompt.split('\n').filter(l => /^- [a-z_]+ \{/.test(l));
 assert.deepEqual([rowLines(PICKER), rowLines(PLAN_PICKER)], [rowLines(PROPOSER), rowLines(PROPOSER)]);
 assert.ok(PICKER.includes('"better_leaf"') && !PICKER.includes('"best_leaf"') && PLAN_PICKER.includes('"best_leaf"') && !PLAN_PICKER.includes('"better_leaf"'));
-assert.ok(RULE_POOL.length > 0 && RULE_POOL.length <= 231 && new Set(RULE_POOL.map(r => r.id)).size === RULE_POOL.length);
+assert.ok(RULE_POOL.length > 0 && RULE_POOL.length <= 237 && new Set(RULE_POOL.map(r => r.id)).size === RULE_POOL.length);
 assert.ok(!/flores/i.test(JSON.stringify(RULE_POOL)) && RULE_POOL.every(r => [PICKER, PLAN_PICKER].every(p => p.includes(`\n${r.id}: ${r.rule}\n`))));
 // the claim list is found past brackets in the reasoning; no list at all is told apart from an empty one
 assert.deepEqual(claimsIn('The sheet says [takes pawn]. Claims:\n[{"concept": "a"}]\nDone [ok].'), [{ concept: 'a' }]);
