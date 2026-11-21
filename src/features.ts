@@ -24,7 +24,10 @@ export type Feature =
   | { kind: 'islandCount'; count: number }
   | { kind: 'pieceImbalance'; mine: string; theirs: string }
   | { kind: 'oppositeBishops' }
-  | { kind: 'badBishop'; square: SquareName; color: Color; fixed: SquareName[] };
+  | { kind: 'badBishop'; square: SquareName; color: Color; fixed: SquareName[] }
+  | { kind: 'space'; zone: Zone };
+/** A part of the board for space: the a-c, c-f or f-h files. */
+export type Zone = 'queenside' | 'central' | 'kingside';
 export type FeatureKind = Feature['kind'];
 export type FeatureOf<K extends FeatureKind> = Extract<Feature, { kind: K }>;
 /** 'move' words a label on a move in a line; unset, a label on a position. */
@@ -61,7 +64,7 @@ export const orNull = <T>(list: T[]): T[] | null => (list.length ? list : null);
 // ---- features: structural facts about one side's pawns and pieces, and the one place they are worded ----
 
 /** A feature's identity: two features with the same key are the same fact (two rooks on one open file are one). */
-export const key = (f: { kind: FeatureKind; square?: SquareName; file?: FileName }) => `${f.kind} ${f.square ?? f.file ?? ''}`;
+export const key = (f: { kind: FeatureKind; square?: SquareName; file?: FileName; zone?: Zone }) => `${f.kind} ${f.square ?? f.file ?? f.zone ?? ''}`;
 const uniq = (features: Feature[]): Feature[] => [...new Map(features.map(f => [key(f), f])).values()];
 
 /** The label kinds: how a feature of each kind reads on the fact sheet, without its owner, and a `sample` feature with
@@ -85,6 +88,7 @@ export const KINDS: { [K in FeatureKind]: Kind<K> } = {
   // shared by both sides, so worded with their owner, from `you`'s view
   pieceImbalance: { word: ({ mine, theirs }) => `piece imbalance: ${mine && theirs ? `your ${mine} for opp's ${theirs}` : mine ? `your extra ${mine}` : `opp's extra ${theirs}`}` },
   oppositeBishops: { word: () => 'opposite-coloured bishops', sample: {} },
+  space: { word: f => `more ${f.zone} space` }, // self-explaining: no legend entry, so it is one fact, not a plan lead
   badBishop: { word: (f, ctx, you) => `${owner(f.color, you!)} bishop on ${f.square} is bad: ${owner(f.color, you!)} pawns on ${f.fixed.join(', ')} are fixed on its colour` },
 };
 export const word = <K extends FeatureKind>(f: FeatureOf<K>, ctx?: LabelCtx, you?: Color): string => KINDS[f.kind].word(f, ctx, you);
@@ -250,12 +254,33 @@ export function rookFile(board: Board, sq: Square, color: Color): FeatureOf<'roo
   return open && { kind: 'rookFile', open, file: FILE_NAMES[squareFile(sq)] };
 }
 
+const WHITE_HALF = [0, 1, 2, 3].map(r => SquareSet.fromRank(r)).reduce((a, b) => a.union(b)), BLACK_HALF = WHITE_HALF.complement();
+const ZONES: [Zone, SquareSet][] = [['queenside', files([0, 1, 2])], ['central', CENTRE_FILES], ['kingside', files([5, 6, 7])]];
+/** SF 15's SpaceThreshold (non-pawn material of both sides, in its middlegame piece values): below it space is not counted. */
+const SPACE_NPM = 11551, NPM = { queen: 2538, rook: 1276, bishop: 825, knight: 781 };
+
+/** Where `color` has more space: the zones (queenside a-c, centre c-f, kingside f-h) in which its pawns attack at least
+    two more squares of the enemy half than the enemy's pawns attack of its half. Squares a pawn attacks across the middle
+    are the territory it gains (the "pawn gains space" label marks the push); as in SF 15, only while enough pieces are
+    left to use the room.
+    ponytail: pawn attacks only; pieces that hold squares and blocked pawns are not counted. */
+export function space(board: Board, color: Color): FeatureOf<'space'>[] {
+  if (PIECES.reduce((n, r) => n + board[r].size() * NPM[r], 0) < SPACE_NPM) return [];
+  const gained = (c: Color) => {
+    let hit = SquareSet.empty();
+    for (const p of board.pawn.intersect(board[c])) hit = hit.union(pawnAttacks(c, p));
+    return hit.intersect(c === 'white' ? BLACK_HALF : WHITE_HALF);
+  };
+  const mine = gained(color), theirs = gained(opposite(color));
+  return ZONES.filter(([, z]) => mine.intersect(z).size() >= theirs.intersect(z).size() + 2).map(([zone]) => ({ kind: 'space', zone }));
+}
+
 /** The pawn and square features of one side, `(board, color) -> [feature]`, for a position and for the change a move makes. */
-const STRUCTURE = [passedPawns, pawnWeaknesses, shieldHoles, outpostSquares, holes];
+const STRUCTURE = [passedPawns, pawnWeaknesses, shieldHoles, outpostSquares, holes, space];
 
 /** Silman's imbalances as features: what already differs on the board before any move, for the side to move
     ("yours"), the opponent, and both (the piece imbalance and the end notes). Each list may be empty.
-    ponytail: structure only; space, development and initiative are left to the SF 15 terms. */
+    ponytail: structure and space only; development and initiative are left to the SF 15 terms. */
 export function features(pos: Position, you: Color = pos.turn): FeatureSets {
   const b = pos.board, them = opposite(you);
   const side = (color: Color) => {

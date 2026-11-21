@@ -14,7 +14,7 @@ import {
   DECLINED, ask as anthropic, factSheet, llmWith, uciEngine, lineToLeaf, moveLabels, pawnPushes, pickInfos, pins, planFacts, positionBefore, sanToUci, sf15Terms, trapped,
 } from './src/explain.ts';
 import { answer, explainMove, findPlan, panelRequests, planAnswer, sheetCache } from './src/request.ts';
-import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, outpostSquares, pawnWeaknesses, word } from './src/features.ts';
+import { KINDS, endNotes, holes, imbalances, route, isOutpost, leafDiff, outpostSquares, pawnWeaknesses, space, word } from './src/features.ts';
 import { lichessBoard } from './src/lichess.ts';
 import { linkMoves, md } from './src/md.ts';
 import { JUDGE, LEGEND, PAIR, PICKER, PLANNER, PLAN_PICKER, PLAN_SYSTEM, PROPOSER, checkAnswer, stepModels, systemFor, withConceptsEntry } from './src/prompt.ts';
@@ -54,7 +54,7 @@ const legend = LEGEND.replace(/\s+/g, ' ');
 for (const [kind, { sample }] of Object.entries(KINDS))
   // @ts-expect-error: deliberate bad input, a sample's fields are placeholder text (see KINDS), not a real Feature
   if (sample) assert.ok(legend.includes(word({ kind, ...sample }, 'move')), `legend lacks ${kind}: ${word({ kind, ...sample }, 'move')}`);
-assert.equal(Object.values(KINDS).filter(k => !k.sample).length, 2); // pieceImbalance and badBishop: described, not quoted
+assert.equal(Object.values(KINDS).filter(k => !k.sample).length, 3); // pieceImbalance and badBishop: described, not quoted; space: not described
 
 // rule checks: each answer fails exactly the rules listed; move numbers, squares and ranks are not numbers
 const sheet: CheckedSheet & { played: { line_with_evals: string } } = { played: { line_with_evals: '12. you Nf3 [x] (+0.3) 12... opp Nc6 (+0.2)' } };
@@ -180,6 +180,14 @@ assert.ok(imbalances(pos('rnbq2n1/ppp3kr/3p3p/8/2BPPPpb/2N1B3/PPP1K3/R2Q3R b - -
 assert.ok(!JSON.stringify(imbalances(pos('r3k2r/1pqn1pb1/p2p1np1/N2Pp2p/8/4BP2/PPPQB1PP/R3K2R w KQkq - 6 14'))).includes('king still'));
 // without queens the king belongs in the centre
 assert.ok(!JSON.stringify(imbalances(pos('r1b2rk1/pp3ppp/2n5/8/8/2N5/PPP2PPP/R1B1KB1R w KQ - 0 12'))).includes('king still'));
+
+// space: in the closed King's Indian White's c4, d5 and e4 attack b5, c6, d5, e6 and f5 across the middle, Black's e5
+// only d4 and f4: more queenside and central space for White (2 vs 0, 4 vs 2), kingside even (f5 vs f4). With only
+// rooks and minor pieces left the room is not counted (SF 15's threshold)
+const kid = 'r1bq1rk1/pppnn1bp/3p2p1/3Pp3/2P1P3/2N5/PP2BPPP/R1BQNRK1 w - - 0 1';
+assert.deepEqual(space(pos(kid).board, 'white').map(f => word(f)), ['more queenside space', 'more central space']);
+assert.deepEqual(space(pos(kid).board, 'black'), []);
+assert.deepEqual(space(pos('r4rk1/pp2n1bp/3p2p1/3Pp3/2P1P3/2N5/PP3PPP/R4RK1 w - - 0 1').board, 'white'), []);
 
 // SF 15 terms: middlegame column with all pieces on, endgame column with none, from the asking side's view, in pawns
 const evalTable = ['|      Term    |    White    |    Black    |    Total    |', '|              |   MG    EG  |   MG    EG  |   MG    EG  |',
